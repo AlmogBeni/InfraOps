@@ -11,7 +11,6 @@ from app.api.v1.audit import router as audit_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.certificates import router as certificates_router
 from app.api.v1.dashboard import router as dashboard_router
-from app.api.v1.health import router as health_router
 from app.api.v1.infrastructure import router as infrastructure_router
 from app.api.v1.provisioning import router as provisioning_router
 
@@ -27,4 +26,3 @@ api_v1_router.include_router(admin_applications_router)
 api_v1_router.include_router(admin_platform_router)
 api_v1_router.include_router(audit_router)
 api_v1_router.include_router(dashboard_router)
-api_v1_router.include_router(health_router)

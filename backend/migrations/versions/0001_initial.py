@@ -28,8 +28,8 @@ DETECTION_METHOD = (
 )
 
 
-def _enum(name: str, values: tuple[str, ...]) -> sa.Enum:
-    return sa.Enum(*values, name=name, create_type=False, native_enum=True)
+def _enum(name: str, values: tuple[str, ...]) -> postgresql.ENUM:
+    return postgresql.ENUM(*values, name=name, create_type=False)
 
 
 def _create_enums() -> None:
@@ -53,7 +53,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("name", sa.String(length=50), nullable=False, unique=True),
         sa.Column("description", sa.String(length=500), nullable=False,
-                  server_default="", server_default_sa=sa.text("''")),
+                  server_default=sa.text("''")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
                   server_default=sa.func.now()),
     )

@@ -112,10 +112,24 @@ async def refresh_tokens(
     )
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(response: Response, db: DbSession, source_ip: ClientIp) -> None:
-    response.delete_cookie(REFRESH_COOKIE, path=f"{get_settings().api_v1_prefix}/auth")
-    await AuditRecorder(db).record(AuditAction.AUTH_LOGOUT, result="success", source_ip=source_ip)
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def logout(db: DbSession, source_ip: ClientIp) -> Response:
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(
+        REFRESH_COOKIE,
+        path=f"{get_settings().api_v1_prefix}/auth",
+    )
+    await AuditRecorder(db).record(
+        AuditAction.AUTH_LOGOUT,
+        result="success",
+        source_ip=source_ip,
+    )
+    return response
 
 
 @router.get("/me", response_model=UserOut)

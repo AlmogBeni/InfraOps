@@ -43,7 +43,7 @@ from app.services.settings_store import (
     load_effective,
 )
 from app.services.vmware.base import VCenterTarget, VMwareService
-from app.secrets.service import SecretsService
+from app.secrets.service import SecretsService, get_secrets_service
 
 log = get_logger(__name__)
 
@@ -57,7 +57,7 @@ class PreflightValidator:
     ) -> None:
         self._db = db
         self._vmware = vmware
-        self._secrets = secrets or SecretsService()
+        self._secrets = secrets or get_secrets_service()
 
     async def validate(
         self, request: ProvisioningRequest, *, run_ip_conflict_checks: bool = True

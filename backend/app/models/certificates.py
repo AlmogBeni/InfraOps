@@ -72,7 +72,12 @@ class Certificate(Base):
         SaEnum(CertificateType, name="certificate_type"), nullable=False
     )
     destination_store: Mapped[CertificateStore] = mapped_column(
-        SaEnum(CertificateStore, name="certificate_store"), nullable=False
+        SaEnum(
+            CertificateStore,
+            name="certificate_store",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
     )
     subject_cn: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     fingerprint_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

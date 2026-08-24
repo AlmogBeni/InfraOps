@@ -61,7 +61,13 @@ class ProvisioningJob(Base):
 
     id: Mapped[uuid.UUID] = uuid_primary_key()
     job_type: Mapped[JobType] = mapped_column(
-        SaEnum(JobType, name="job_type"), nullable=False, default=JobType.VM_PROVISIONING
+        SaEnum(
+            JobType,
+            name="job_type",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=JobType.VM_PROVISIONING,
     )
     status: Mapped[JobStatus] = mapped_column(
         SaEnum(JobStatus, name="job_status"), nullable=False, default=JobStatus.QUEUED, index=True
