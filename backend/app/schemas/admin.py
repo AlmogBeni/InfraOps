@@ -109,7 +109,6 @@ class PlatformSettingsOut(BaseModel):
     vm_name_policy_regex: str
     allowed_installer_roots: list[str]
     default_timeouts: DefaultTimeouts
-    ipam_enabled: bool
     environment_label: str
 
 
@@ -119,7 +118,6 @@ class PlatformSettingsUpdate(BaseModel):
     vm_name_policy_regex: str | None = Field(default=None, max_length=300)
     allowed_installer_roots: list[str] | None = Field(default=None, max_length=20)
     default_timeouts: DefaultTimeouts | None = None
-    ipam_enabled: bool | None = None
     environment_label: str | None = Field(default=None, max_length=40)
 
     @field_validator("vm_name_policy_regex")

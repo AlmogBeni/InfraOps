@@ -35,7 +35,11 @@ from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
 from app.services.certificates.store_logic import POWERSHELL_PATH
 from app.services.vmware.base import VmRef
-from app.services.settings_store import SETTING_VM_NAME_POLICY, load_effective
+from app.services.settings_store import (
+    SETTING_ALLOWED_INSTALLER_ROOTS,
+    SETTING_VM_NAME_POLICY,
+    load_effective,
+)
 from app.workers.context import JobRunContext
 from app.workers.state_machine import ORDERED_STAGES
 
@@ -228,6 +232,33 @@ async def stage_validate_request(ctx: JobRunContext) -> StageOutcome:
             retryable=False,
         )
     r = ctx.request
+    if r.application_ids:
+        selected = await ctx.db.execute(
+            select(Application).where(Application.id.in_(r.application_ids))
+        )
+        applications = list(selected.scalars().all())
+        allowed_roots = [
+            str(root).lower() for root in rows.get(SETTING_ALLOWED_INSTALLER_ROOTS, [])
+        ]
+        outside = [
+            app.installer_path
+            for app in applications
+            if not any(app.installer_path.lower().startswith(root) for root in allowed_roots)
+        ]
+        if not allowed_roots or outside:
+            raise InfraOperationError(
+                "Application installer repository policy is not satisfied.",
+                reason=(
+                    "No approved installer roots are configured."
+                    if not allowed_roots
+                    else f"Installer paths outside approved roots: {', '.join(outside)}"
+                ),
+                recommended_action=(
+                    "Configure approved installer roots and correct the application catalog "
+                    "before resubmitting."
+                ),
+                retryable=False,
+            )
     return StageOutcome(
         output=(
             f"Request validated.\n"
@@ -464,9 +495,9 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
                 retryable=True,
             )
         checks.append(f"Gateway {net.ipv4.gateway} reachable")
-        if net.ipv4.dns_servers:
+        if net.ipv4.dns_servers and ctx.request.guest.domain_join:
             dns = net.ipv4.dns_servers[0]
-            fqdn = ctx.request.guest.domain_join.domain if ctx.request.guest.domain_join else "company.local"
+            fqdn = ctx.request.guest.domain_join.domain
             dns_script = (
                 f"$r = Resolve-DnsName -Name {ps_single_quote(fqdn)} -Server {ps_single_quote(dns)} "
                 "-ErrorAction SilentlyContinue; if ($r) { 'DNS-OK' } else { exit 1 }"
@@ -484,6 +515,8 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
                     retryable=True,
                 )
             checks.append(f"DNS lookup via {dns} working")
+        elif net.ipv4.dns_servers:
+            checks.append("DNS servers configured; name-resolution probe skipped (no domain supplied)")
     else:
         probe = "'$ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '169.254*' -and $_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1).IPAddress; if ($ip) { \"DHCP-IP:$ip\" } else { exit 1 }"
         result = await ctx.guest_ops.run_program(

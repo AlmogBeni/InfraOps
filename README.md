@@ -24,8 +24,8 @@ backend (FastAPI · Pydantic v2 · SQLAlchemy 2 async)
 PostgreSQL (jobs, steps, catalogs, immutable audit_events)
     ▲
     └── worker process (asyncio job engine, SKIP LOCKED queue)
-          ├── VMwareService      → mock | pyvmomi vSphere adapter
-          ├── GuestOperations    → mock | VMware Tools guest API
+          ├── VMwareService      → pyvmomi vSphere adapter
+          ├── GuestOperations    → VMware Tools guest API
           ├── CertificateDeployer→ certutil into LocalMachine Root/CA
           └── ApplicationInstaller → msiexec/EXE/PowerShell with detection
 ```
@@ -34,8 +34,8 @@ Key design rules:
 
 * Infrastructure integrations live behind service interfaces (`app/services/*`) — HTTP
   handlers never touch vCenter or guest APIs directly.
-* `INFRASTRUCTURE_MODE=mock` provides a fully functional simulated estate so the entire
-  workflow runs without any VMware.
+* Production requires `INFRASTRUCTURE_MODE=real`; mock adapters are retained only as
+  explicitly selected development test doubles.
 * Secrets are resolved by name through a `SecretsProvider` (env / Vault). No credentials
   exist in code, configuration or the database.
 * Every provisioning stage is persisted with start/finish times, human-readable output,
@@ -54,7 +54,7 @@ Full details: [`docs/architecture.md`](docs/architecture.md)
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env        # adjust values; defaults work for mock mode
+cp .env.example .env        # fill every required production value
 docker compose up --build
 ```
 
@@ -68,17 +68,15 @@ This starts:
 | postgres | internal :5432            | migrations run automatically            |
 | redis    | internal :6379            | job event pub/sub                       |
 
-Migrations (`alembic upgrade head`) and seed data run automatically on backend start.
+Migrations (`alembic upgrade head`) and minimal RBAC/bootstrap initialization run
+automatically on backend start. No infrastructure, certificate, application, or demo-user
+records are created.
 
-### Development seed accounts
+### First administrator
 
-| Username  | Role           | Password                          |
-|-----------|----------------|-----------------------------------|
-| `admin`   | administrator  | value of `DEV_ADMIN_PASSWORD`     |
-| `operator`| operator       | same                              |
-| `viewer`  | viewer         | same                              |
-
-Default `.env.example` password: `ChangeMe_DevOnly!123` — **never use in production**.
+On the first start only, set `BOOTSTRAP_ADMIN_USERNAME` and a unique
+`BOOTSTRAP_ADMIN_PASSWORD` of at least 16 characters. Once login succeeds, remove the
+password from `.env` and restart. Subsequent starts detect the existing administrator.
 
 ## Local development without Docker
 
@@ -90,7 +88,7 @@ pip install -r requirements-dev.txt
 export DATABASE_URL="postgresql+asyncpg://infraops:infraops@localhost:5432/infraops"
 export REDIS_URL="redis://localhost:6379/0"
 alembic upgrade head
-python -m app.seed
+python -m app.bootstrap
 uvicorn app.main:app --reload            # terminal 1
 python -m app.workers.runner             # terminal 2
 
@@ -106,8 +104,8 @@ See [`.env.example`](.env.example) for the full annotated list. Highlights:
 
 | Variable | Purpose |
 |---|---|
-| `INFRASTRUCTURE_MODE` | `mock` (default) or `real` (pyvmomi vSphere adapter) |
-| `SECRETS_PROVIDER` | `env` (development) or `vault` (HashiCorp Vault KV v2) |
+| `INFRASTRUCTURE_MODE` | Must be `real` in production (pyvmomi vSphere adapter) |
+| `SECRETS_PROVIDER` | `env` or HashiCorp Vault KV v2 |
 | `SECRETS_<NAME>` | env-provider secret values, e.g. `SECRETS_VCSA_PROD_PASSWORD` |
 | `DATABASE_URL` / `REDIS_URL` | PostgreSQL (asyncpg) and Redis DSNs |
 | `SECRET_KEY` | JWT signing key — change for anything beyond local dev |
@@ -137,27 +135,16 @@ cd frontend && npm install && npm test
 
 Covered areas include IP/subnet validation, provisioning request schemas, dependency
 resolution (cycles, missing/disabled deps), the RBAC matrix, certificate store logic and
-command construction safety, pipeline stage registry integrity, and end-to-end flows
-against the mock VMware/guest providers.
+command construction safety, pipeline stage registry integrity, and adapter contract flows
+against test doubles.
 
-## Mock infrastructure mode
+## Production data
 
-With `INFRASTRUCTURE_MODE=mock` (the default) the platform simulates:
-
-* Sites `HQ`, datacenters `DC01-Corporate` / `DC02-Lab`
-* Clusters `PROD-CLUSTER` (DRS), `EDGE-CLUSTER`, `LAB-CLUSTER`; hosts incl. one in maintenance
-* Datastores `PROD-SAN-01/02`, `PROD-VSAN-01`, datastore cluster `PROD-SAN-CLUSTER`
-* Networks `VLAN100-PROD`, `VLAN200-MGMT`, `VLAN300-DB`, `VLAN400-LAB`
-* Templates *Windows Server 2022/2025 – Corporate Base*
-* Existing VMs `APP-PROD-004` / `SQL-TEST-002` (duplicate-name & IP-conflict demos)
-
-Cloned VMs consume datastore capacity, register their IPs, gain VMware Tools after power-on
-and accept guest commands exactly like the real adapters — including idempotent certificate
-and application detection. Try provisioning `APP-PROD-004` to see duplicate-name blocking.
-
-Switching to `INFRASTRUCTURE_MODE=real` swaps in the pyvmomi adapters behind the identical
-interfaces; no application code changes are required. See
-[`docs/vmware-integration.md`](docs/vmware-integration.md).
+The database starts empty except for the three RBAC role definitions and the one-time
+administrator. Configure vCenter connections, site mappings, public certificate packages,
+approved applications, credential references, and platform policy through the administrator
+screens. The `0002_remove_dev_seed_data` migration removes records created by older
+versions of the automatic demo seed. See [`docs/production-deployment.md`](docs/production-deployment.md).
 
 ## Secret management design
 
@@ -176,17 +163,19 @@ The database stores only logical references (`secret_references` table + fields 
 * Rate-limited login; uniform authentication failures.
 * Audit log is append-only (DB trigger) with defensive redaction of sensitive keys.
 * Guest commands are assembled exclusively from validated structured values; installer
-  paths must match approved repository roots; operators can never supply commands.
+  paths must match approved repository roots or execution is blocked; operators can never
+  supply commands.
 * Technical error detail is hidden from non-administrators.
 * Full list and deployment hardening checklist: [`docs/security.md`](docs/security.md).
 
 ## Deployment recommendations
 
-1. Serve only on an internal network / VPN; put TLS termination in front (set
-   `COOKIE_SECURE=true`).
+1. Serve only on an internal network / VPN; terminate TLS at the host reverse proxy. Compose
+   publishes the frontend to `127.0.0.1:8080` by default and does not publish the backend.
 2. Use a dedicated vCenter service account restricted to the privileges listed in
    [`docs/vmware-integration.md`](docs/vmware-integration.md).
-3. Set a strong `SECRET_KEY`, switch `ENVIRONMENT=production`, configure Vault.
+3. Set a strong `SECRET_KEY`, keep `ENVIRONMENT=production`, and configure an appropriate
+   secrets provider.
 4. Run one worker per host is unnecessary — a single worker handles concurrency via
    `WORKER_CONCURRENCY`; scale out safely thanks to `SKIP LOCKED` claiming.
 5. Back up PostgreSQL; it holds the authoritative job history and audit trail.
@@ -198,6 +187,7 @@ timeline, retries, SSE events). A future module (e.g. VM decommissioning) needs:
 
 1. A stage registry (`workers/state_machine.py` pattern) + handlers (`stages.py` pattern).
 2. Request/response Pydantic schemas and an API router.
-3. Any new integration behind a service interface with mock + real implementations.
+3. Any new integration behind a service interface with production adapters and isolated
+   test doubles.
 
 No restructuring of jobs, progress, audit or the frontend job view is required.

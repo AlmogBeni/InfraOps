@@ -17,9 +17,10 @@ Callers pass a `VCenterTarget` (id, host, port, **secret references**, verify_ss
 credentials never travel through the application; they are resolved from the secrets
 provider at connect time and never cached or logged.
 
-## Mock implementation (`INFRASTRUCTURE_MODE=mock`)
+## Development test double (`INFRASTRUCTURE_MODE=mock`)
 
-A complete in-memory estate (see README table). Behaviour mirrors production semantics:
+The in-memory adapter is available only when development/test configuration explicitly
+selects it. Production configuration validation rejects mock mode. It exercises:
 
 * clones consume datastore capacity and fail on duplicates/insufficient space,
 * VMware Tools become ready ~3 s after power-on (`wait_for_tools` polls),

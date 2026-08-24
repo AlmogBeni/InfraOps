@@ -35,7 +35,7 @@ const EMPTY_FORM: AppForm = {
   version: '',
   description: '',
   installer_type: 'MSI',
-  installer_path: '\\\\software.company.local\\packages\\',
+  installer_path: '',
   install_arguments: '/qn /norestart',
   detection_method: 'MSI_PRODUCT_CODE',
   product_code: '',

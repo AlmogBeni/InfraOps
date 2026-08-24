@@ -29,13 +29,11 @@ from app.schemas.provisioning import (
 from app.services.network.conflict import (
     DnsForwardProvider,
     IcmpPingProvider,
-    IpamProvider,
     VMwareInventoryProvider,
     run_conflict_check,
 )
 from app.services.provisioning.preflight import PreflightValidator
 from app.services.provisioning.service import cancel_job, retry_stages, submit_provisioning
-from app.services.settings_store import SETTING_IPAM_ENABLED, load_effective
 from app.services.vmware.base import VCenterTarget
 from app.services.vmware.factory import get_vmware_service
 
@@ -130,7 +128,6 @@ async def check_ip_conflict(
     user=require(Permission.PROVISIONING_VALIDATE),
     vcenter_id: uuid.UUID | None = Query(default=None),
 ) -> IpConflictReport:
-    settings_rows = await load_effective(db)
     target: VCenterTarget | None = None
     if vcenter_id is not None:
         row = await db.get(VCenterConnection, vcenter_id)
@@ -148,8 +145,6 @@ async def check_ip_conflict(
     ]
     if target is not None:
         providers.append(VMwareInventoryProvider(get_vmware_service(), target))
-    providers.append(IpamProvider(enabled=bool(settings_rows.get(SETTING_IPAM_ENABLED))))
-
     report = await run_conflict_check(payload.address, payload.prefix, providers)
     await AuditRecorder(db).record(
         AuditAction.IP_CONFLICT_CHECK_PERFORMED,

@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
+
+# Tests explicitly opt into development/mock mode. Runtime defaults are
+# production-safe and deliberately fail closed without real configuration.
+os.environ.setdefault("ENVIRONMENT", "development")
+os.environ.setdefault("INFRASTRUCTURE_MODE", "mock")
+os.environ.setdefault("SECRET_KEY", "test-only-secret-key-with-at-least-32-characters")
+os.environ.setdefault("COOKIE_SECURE", "false")
 
 from app.schemas.provisioning import (
     AdapterType,

@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import ssl
 import uuid
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 from app.core.errors import InfraOperationError
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.secrets.service import SecretsService
 from app.services.guest.base import CommandResult, GuestCredentials, GuestOperations
@@ -31,6 +34,21 @@ _TRANSFER_TIMEOUT_SECONDS = 60.0
 
 if HAS_PYVMOMI:
     from pyVmomi import vim
+
+
+def _file_transfer_url(url: str, target: VCenterTarget) -> str:
+    """Replace vSphere's wildcard transfer host with the verified vCenter host."""
+    parts = urlsplit(url)
+    if parts.hostname != "*":
+        return url
+    port = f":{parts.port}" if parts.port is not None else ""
+    return urlunsplit((parts.scheme, f"{target.host}{port}", parts.path, parts.query, parts.fragment))
+
+
+def _file_transfer_verify(target: VCenterTarget) -> bool | ssl.SSLContext:
+    if not target.verify_ssl:
+        return False
+    return ssl.create_default_context(cafile=get_settings().vcenter_ca_file or None)
 
 
 def _wrap(operation: str, exc: Exception, *, retryable: bool = True) -> InfraOperationError:
@@ -196,8 +214,10 @@ class VMwareToolsGuestOperations(GuestOperations):
             )
 
         try:
-            url = await asyncio.to_thread(prepare_url)
-            async with httpx.AsyncClient(timeout=_TRANSFER_TIMEOUT_SECONDS, verify=False) as client:
+            url = _file_transfer_url(await asyncio.to_thread(prepare_url), target)
+            async with httpx.AsyncClient(
+                timeout=_TRANSFER_TIMEOUT_SECONDS, verify=_file_transfer_verify(target)
+            ) as client:
                 response = await client.put(url, content=content)
             if response.status_code >= 300:
                 raise RuntimeError(f"File transfer HTTP {response.status_code}")
@@ -218,8 +238,11 @@ class VMwareToolsGuestOperations(GuestOperations):
 
         try:
             info = await asyncio.to_thread(prepare)
-            async with httpx.AsyncClient(timeout=_TRANSFER_TIMEOUT_SECONDS, verify=False) as client:
-                response = await client.get(info.url)
+            url = _file_transfer_url(info.url, target)
+            async with httpx.AsyncClient(
+                timeout=_TRANSFER_TIMEOUT_SECONDS, verify=_file_transfer_verify(target)
+            ) as client:
+                response = await client.get(url)
             if response.status_code >= 300:
                 raise RuntimeError(f"File transfer HTTP {response.status_code}")
             return response.content

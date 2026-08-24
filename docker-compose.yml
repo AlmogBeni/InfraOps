@@ -5,13 +5,13 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-infraops}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-infraops}
-      POSTGRES_DB: ${POSTGRES_DB:-infraops}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-infraops} -d ${POSTGRES_DB:-infraops}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?POSTGRES_USER is required} -d ${POSTGRES_DB:?POSTGRES_DB is required}"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -33,14 +33,12 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-infraops}:${POSTGRES_PASSWORD:-infraops}@postgres:5432/${POSTGRES_DB:-infraops}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       REDIS_URL: redis://redis:6379/0
     command: >
       sh -c "alembic upgrade head &&
-             python -m app.seed &&
+             python -m app.bootstrap &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
-    ports:
-      - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,7 +57,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-infraops}:${POSTGRES_PASSWORD:-infraops}@postgres:5432/${POSTGRES_DB:-infraops}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       REDIS_URL: redis://redis:6379/0
     command: ["python", "-m", "app.workers.runner"]
     depends_on:
@@ -68,7 +66,7 @@ services:
       redis:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
 
   frontend:
     build:
@@ -76,13 +74,13 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE: /api/v1
-        VITE_ENVIRONMENT_LABEL: ${VITE_ENVIRONMENT_LABEL:-DEV}
+        VITE_ENVIRONMENT_LABEL: ${VITE_ENVIRONMENT_LABEL:-PROD}
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   postgres-data:

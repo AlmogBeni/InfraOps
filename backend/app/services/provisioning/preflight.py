@@ -31,14 +31,12 @@ from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.network.conflict import (
     DnsForwardProvider,
     IcmpPingProvider,
-    IpamProvider,
     VMwareInventoryProvider,
     run_conflict_check,
 )
 from app.services.network.validation import validate_static_ipv4
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
-    SETTING_IPAM_ENABLED,
     SETTING_VM_NAME_POLICY,
     load_effective,
 )
@@ -156,7 +154,6 @@ class PreflightValidator:
                     IcmpPingProvider(),
                     DnsForwardProvider(),
                     VMwareInventoryProvider(self._vmware, target),
-                    IpamProvider(enabled=bool(settings_rows.get(SETTING_IPAM_ENABLED))),
                 ]
                 try:
                     report = await run_conflict_check(ipv4.address, ipv4.prefix, providers)
@@ -181,16 +178,20 @@ class PreflightValidator:
         # ── Installer repository reachability policy ─────────────────────────
         allowed_roots = [str(root).lower() for root in
                          (settings_rows.get(SETTING_ALLOWED_INSTALLER_ROOTS) or [])]
+        selected_applications = await self._selected_applications(request)
         outside = [
             app.installer_path
-            for app in await self._selected_applications(request)
+            for app in selected_applications
             if allowed_roots and not any(app.installer_path.lower().startswith(root) for root in allowed_roots)
         ]
-        if outside:
-            add("installer_policy", "Installer locations approved", CheckStatus.WARN,
+        if selected_applications and not allowed_roots:
+            add("installer_policy", "Installer repository policy", CheckStatus.FAIL,
+                "No approved installer repository roots are configured. Configure at least "
+                "one root before selecting applications.")
+        elif outside:
+            add("installer_policy", "Installer locations approved", CheckStatus.FAIL,
                 f"{len(outside)} installer path(s) are outside the approved software "
-                "repository roots configured by administrators.",
-                blocking=False)
+                "repository roots configured by administrators.")
         else:
             add("installer_policy", "Installer locations approved", CheckStatus.PASS)
 

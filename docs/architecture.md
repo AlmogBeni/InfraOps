@@ -19,8 +19,8 @@ Provisioning** — on top of generic job machinery designed for future modules
 │  api/         thin routers: auth, discovery, provisioning, admin…  │
 │  auth/        local provider + RBAC matrix (permissions.py)        │
 │  services/    domain logic, no HTTP concerns                       │
-│   vmware/     VMwareService: mock | vsphere(pyvmomi)               │
-│   guest/      GuestOperations: mock | vmware_tools                 │
+│   vmware/     VMwareService: vsphere(pyvmomi); dev test double     │
+│   guest/      GuestOperations: vmware_tools; dev test double       │
 │   certificates/ store_logic (pure) + deployer                      │
 │   applications/ detection_rules, resolver, installer               │
 │   network/    validation (pure) + conflict providers               │
@@ -83,7 +83,7 @@ SKIPPED rather than silently omitted.
 | `GuestOperations` | MockGuestOperations, VMwareToolsGuestOperations | structured args only |
 | `ConflictCheckProvider` | ICMP, DNS, reverse DNS, vCenter inventory, IPAM hook | aggregated confidence report |
 
-Swapping mock→real changes one factory line (`INFRASTRUCTURE_MODE`); nothing else moves.
+Production startup rejects mock mode; tests explicitly opt into the in-memory adapters.
 
 ## Observability
 

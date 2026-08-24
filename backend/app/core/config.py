@@ -10,6 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,8 +47,8 @@ class Settings(BaseSettings):
 
     # ── Application ──────────────────────────────────────────────────────────
     app_name: str = "InfraOps"
-    environment: Environment = Environment.DEVELOPMENT
-    secret_key: str = "dev-only-secret-key-change-me-in-production"
+    environment: Environment = Environment.PRODUCTION
+    secret_key: str = ""
     api_v1_prefix: str = "/api/v1"
 
     # ── Logging ──────────────────────────────────────────────────────────────
@@ -61,13 +62,14 @@ class Settings(BaseSettings):
     db_max_overflow: int = 5
 
     # ── Infrastructure integrations ──────────────────────────────────────────
-    infrastructure_mode: InfrastructureMode = InfrastructureMode.MOCK
+    infrastructure_mode: InfrastructureMode = InfrastructureMode.REAL
+    vcenter_ca_file: str = ""
 
     # ── Authentication ───────────────────────────────────────────────────────
     auth_mode: AuthMode = AuthMode.LOCAL
     access_token_expire_minutes: int = 15
     refresh_token_expire_minutes: int = 720
-    cookie_secure: bool = False
+    cookie_secure: bool = True
     rate_limit_login_per_minute: int = 10
 
     # ── Secrets management ───────────────────────────────────────────────────
@@ -76,9 +78,6 @@ class Settings(BaseSettings):
     vault_token: str = ""
     vault_kv_mount: str = "secret"
 
-    # ── Guest OS automation defaults ─────────────────────────────────────────
-    guest_default_username: str = "administrator"
-
     # ── Job worker ───────────────────────────────────────────────────────────
     worker_concurrency: int = 2
     worker_poll_interval_seconds: float = 2.0
@@ -86,12 +85,14 @@ class Settings(BaseSettings):
     # ── HTTP ─────────────────────────────────────────────────────────────────
     # Comma-separated list of allowed browser origins (kept as a raw string so
     # environment parsing never requires JSON).
-    cors_origins: str = "http://localhost:5173,http://localhost:8080"
+    cors_origins: str = ""
 
-    # ── Development seed data ────────────────────────────────────────────────
-    dev_admin_username: str = "admin"
-    dev_admin_email: str = "admin@example.internal"
-    dev_admin_password: str = "ChangeMe_DevOnly!123"
+    # ── One-time local administrator bootstrap ───────────────────────────────
+    # These are read only when the database has no administrator. Remove the
+    # password from the runtime environment after the first successful start.
+    bootstrap_admin_username: str = ""
+    bootstrap_admin_email: str = ""
+    bootstrap_admin_password: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -101,6 +102,34 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == Environment.PRODUCTION
+
+    @model_validator(mode="after")
+    def _validate_production_safety(self) -> "Settings":
+        if not self.is_production:
+            return self
+
+        problems: list[str] = []
+        if self.infrastructure_mode != InfrastructureMode.REAL:
+            problems.append("INFRASTRUCTURE_MODE must be 'real' in production")
+        if len(self.secret_key) < 32:
+            problems.append("SECRET_KEY must contain at least 32 characters in production")
+        if not self.cookie_secure:
+            problems.append("COOKIE_SECURE must be true in production")
+        if self.auth_mode != AuthMode.LOCAL:
+            problems.append(
+                "only AUTH_MODE=local is implemented; LDAP/OIDC must not be selected"
+            )
+        origins = self.cors_origin_list
+        if "*" in origins:
+            problems.append("CORS_ORIGINS must not contain '*' in production")
+        insecure_origins = [origin for origin in origins if not origin.startswith("https://")]
+        if insecure_origins:
+            problems.append("all configured CORS_ORIGINS must use https in production")
+        if self.database_url == "postgresql+asyncpg://infraops:infraops@localhost:5432/infraops":
+            problems.append("DATABASE_URL must not use the development database credentials")
+        if problems:
+            raise ValueError("Unsafe production configuration: " + "; ".join(problems))
+        return self
 
 
 @lru_cache

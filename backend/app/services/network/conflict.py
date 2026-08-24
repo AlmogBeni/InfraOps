@@ -114,22 +114,6 @@ class VMwareInventoryProvider(ConflictCheckProvider):
                               detail="Not present in the vCenter guest inventory.")
 
 
-class IpamProvider(ConflictCheckProvider):
-    """Placeholder hook for a future IPAM integration (e.g. Infoblox)."""
-
-    name = "IPAM"
-
-    def __init__(self, enabled: bool) -> None:
-        self._enabled = enabled
-
-    async def check(self, address: str, prefix: int) -> ProviderResult:
-        if not self._enabled:
-            return ProviderResult(provider=self.name, status=ConflictProviderStatus.NOT_CONFIGURED,
-                                  detail="IPAM integration is not configured.")
-        return ProviderResult(provider=self.name, status=ConflictProviderStatus.NOT_CONFIGURED,
-                              detail="IPAM provider selected but no connector is implemented yet.")
-
-
 async def run_conflict_check(
     address: str,
     prefix: int,
@@ -170,8 +154,8 @@ async def run_conflict_check(
     )
 
 
-def default_providers(vmware: VMwareService | None = None, target: VCenterTarget | None = None,
-                      ipam_enabled: bool = False) -> list[ConflictCheckProvider]:
+def default_providers(vmware: VMwareService | None = None,
+                      target: VCenterTarget | None = None) -> list[ConflictCheckProvider]:
     providers: list[ConflictCheckProvider] = [
         IcmpPingProvider(),
         DnsForwardProvider(),
@@ -179,5 +163,4 @@ def default_providers(vmware: VMwareService | None = None, target: VCenterTarget
     ]
     if vmware is not None and target is not None:
         providers.append(VMwareInventoryProvider(vmware, target))
-    providers.append(IpamProvider(enabled=ipam_enabled))
     return providers

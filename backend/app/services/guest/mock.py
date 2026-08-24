@@ -36,6 +36,7 @@ class _MockGuestState:
         self.hostname: str | None = None
         self.ip_address: str | None = None
         self.reboot_pending: bool = False
+        self.files: dict[str, bytes] = {}
 
 
 _MOCK_GUESTS: dict[str, _MockGuestState] = {}
@@ -103,6 +104,14 @@ class MockGuestOperations(GuestOperations):
             probe = re.search(r"([0-9a-f]{40,64})", arguments.lower())
             if probe:
                 state.cert_thumbprints.add(probe.group(1).upper())
+            else:
+                path_match = re.search(r'"([^\"]+\.cer)"', arguments, re.IGNORECASE)
+                content = state.files.get(path_match.group(1).lower()) if path_match else None
+                if content:
+                    from app.services.certificates.store_logic import certificate_metadata
+
+                    fingerprint = certificate_metadata(content.decode("utf-8"))["fingerprint_sha256"]
+                    state.cert_thumbprints.add(fingerprint)
             return "MOCK: certificate imported into store"
 
         # Guest network configuration.
@@ -161,22 +170,24 @@ class MockGuestOperations(GuestOperations):
         content: bytes, guest_path: str,
     ) -> None:
         await asyncio.sleep(_LATENCY_FILE)
+        mock_guest_state(vm_name).files[guest_path.lower()] = content
         log.info("MOCK guest upload to %s: %s (%d bytes)", vm_name, guest_path, len(content))
 
     async def download_file(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str
     ) -> bytes:
         await asyncio.sleep(_LATENCY_FILE)
-        return b"MOCK-FILE-CONTENT"
+        return mock_guest_state(vm_name).files.get(guest_path.lower(), b"MOCK-FILE-CONTENT")
 
     async def delete_file(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str
     ) -> None:
         await asyncio.sleep(_LATENCY_FILE)
+        mock_guest_state(vm_name).files.pop(guest_path.lower(), None)
         log.info("MOCK guest delete on %s: %s", vm_name, guest_path)
 
     async def file_exists(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str
     ) -> bool:
         await asyncio.sleep(_LATENCY_FILE)
-        return True
+        return guest_path.lower() in mock_guest_state(vm_name).files

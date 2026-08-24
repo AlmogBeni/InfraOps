@@ -43,8 +43,8 @@ def create_app() -> FastAPI:
             "Phase 1: VM provisioning against VMware vSphere with guest OS "
             "configuration, certificate deployment and application installation."
         ),
-        docs_url="/api/docs",
-        openapi_url="/api/openapi.json",
+        docs_url=None if settings.is_production else "/api/docs",
+        openapi_url=None if settings.is_production else "/api/openapi.json",
         lifespan=lifespan,
     )
 

@@ -348,7 +348,6 @@ export interface PlatformSettingsOut {
   vm_name_policy_regex: string
   allowed_installer_roots: string[]
   default_timeouts: DefaultTimeouts
-  ipam_enabled: boolean
   environment_label: string
 }
 

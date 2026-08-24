@@ -43,6 +43,8 @@ by deployment hardening guidance.
   `ipaddress`.
 * Guest commands built exclusively from validated structured values; PowerShell values
   single-quote escaped; control characters rejected in installer arguments.
+* Application execution fails closed unless every installer path is under an
+  administrator-configured repository root.
 * Operators cannot supply commands, paths or secret retrieval — catalogs are
   administrator-defined and validated server-side (detection rules normalised, unknown
   keys dropped).

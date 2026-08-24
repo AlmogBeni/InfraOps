@@ -29,7 +29,6 @@ from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
     SETTING_DEFAULT_TIMEOUTS,
     SETTING_ENVIRONMENT_LABEL,
-    SETTING_IPAM_ENABLED,
     SETTING_VM_NAME_POLICY,
     load_effective,
     save_platform_setting,
@@ -101,7 +100,6 @@ def _settings_out(effective: dict[str, object]) -> PlatformSettingsOut:
             network_configuration_minutes=int(timeouts.get("network_configuration_minutes", 5)),
             guest_operations_minutes=int(timeouts.get("guest_operations_minutes", 10)),
         ),
-        ipam_enabled=bool(effective.get(SETTING_IPAM_ENABLED)),
         environment_label=str(effective.get(SETTING_ENVIRONMENT_LABEL) or "INTERNAL"),
     )
 

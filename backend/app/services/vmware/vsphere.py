@@ -18,6 +18,7 @@ import threading
 import time
 
 from app.core.errors import InfraOperationError, NotFoundError, ServiceUnavailableError
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics import vcenter_api_errors_total
 from app.schemas.infrastructure import (
@@ -149,9 +150,9 @@ class VsphereVMwareService(VMwareService):
         return instance
 
     def _connect_blocking(self, target: VCenterTarget, username: str, password: str):
-        context = None
+        ca_file = get_settings().vcenter_ca_file or None
+        context = ssl.create_default_context(cafile=ca_file)
         if not target.verify_ssl:
-            context = ssl.create_default_context()
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
         try:

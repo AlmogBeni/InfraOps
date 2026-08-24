@@ -10,14 +10,12 @@ from app.models.platform import PlatformSetting
 SETTING_VM_NAME_POLICY = "vm_name_policy_regex"
 SETTING_ALLOWED_INSTALLER_ROOTS = "allowed_installer_roots"
 SETTING_DEFAULT_TIMEOUTS = "default_timeouts"
-SETTING_IPAM_ENABLED = "ipam_enabled"
 SETTING_ENVIRONMENT_LABEL = "environment_label"
 
 DEFAULTS: dict[str, object] = {
     SETTING_VM_NAME_POLICY: "",
-    SETTING_ALLOWED_INSTALLER_ROOTS: ["\\\\software.company.local\\packages\\"],
+    SETTING_ALLOWED_INSTALLER_ROOTS: [],
     SETTING_DEFAULT_TIMEOUTS: {},
-    SETTING_IPAM_ENABLED: False,
     SETTING_ENVIRONMENT_LABEL: "INTERNAL",
 }
 

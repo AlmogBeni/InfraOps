@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, Badge, Spinner } from '@/components/ui/feedback'
-import { Checkbox, FormRow, Input, Textarea } from '@/components/ui/form-controls'
+import { FormRow, Input, Textarea } from '@/components/ui/form-controls'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import type { PlatformSettingsOut } from '@/types/api'
@@ -27,7 +27,6 @@ export function SettingsPage() {
         vm_name_policy_regex: payload.vm_name_policy_regex,
         allowed_installer_roots: payload.allowed_installer_roots,
         default_timeouts: payload.default_timeouts,
-        ipam_enabled: payload.ipam_enabled,
         environment_label: payload.environment_label,
       }),
     onSuccess: () => {
@@ -54,7 +53,7 @@ export function SettingsPage() {
           </FormRow>
 
           <FormRow label="Approved installer repository roots" htmlFor="setting-roots"
-                   hint="One UNC root per line. Installer paths outside these roots raise a dry-run warning.">
+                   hint="One UNC root per line. Application provisioning is blocked when a path falls outside these roots.">
             <Textarea id="setting-roots" rows={3} className="font-mono text-xs"
                       value={draft.allowed_installer_roots.join('\n')}
                       onChange={(event) =>
@@ -65,9 +64,6 @@ export function SettingsPage() {
                       } />
           </FormRow>
 
-          <Checkbox label="Enable IPAM conflict source (placeholder until an IPAM connector exists)"
-                    checked={draft.ipam_enabled}
-                    onChange={(event) => setDraft({ ...draft, ipam_enabled: event.target.checked })} />
         </CardContent>
       </Card>
 

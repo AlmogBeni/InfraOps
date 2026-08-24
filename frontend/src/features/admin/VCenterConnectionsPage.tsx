@@ -15,8 +15,8 @@ const EMPTY_FORM = {
   name: '',
   host: '',
   port: 443,
-  username_secret_ref: 'vcsa-prod/username',
-  password_secret_ref: 'vcsa-prod/password',
+  username_secret_ref: '',
+  password_secret_ref: '',
   verify_ssl: true,
   notes: '',
 }
@@ -187,7 +187,7 @@ export function VCenterConnectionsPage() {
           </FormRow>
         </div>
         <FormRow label="Username secret reference" htmlFor="vc-user-ref" required
-                 hint="e.g. vcsa-prod/username — resolved via the secrets provider at connect time.">
+                 hint="For example, vcenter/username — resolved via the secrets provider at connect time.">
           <Input id="vc-user-ref" className="font-mono" value={form.username_secret_ref}
                  onChange={(event) => setForm({ ...form, username_secret_ref: event.target.value })} />
         </FormRow>

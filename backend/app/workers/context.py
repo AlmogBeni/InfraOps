@@ -58,11 +58,10 @@ class JobRunContext:
         """Resolve guest credentials once per run (never logged, never persisted)."""
         if self.guest_credentials is not None:
             return self.guest_credentials
-        base = (
-            self.request.guest.domain_join.credential_secret_ref
-            if self.request.guest.domain_join
-            else "guest-local-admin"
-        )
+        # VMware Tools authenticates to the guest before it has joined the
+        # domain. Domain-join credentials are used only by Add-Computer inside
+        # the guest and must never replace the template's local administrator.
+        base = "guest-local-admin"
         username_ref = f"{base}/username"
         password_ref = f"{base}/password"
         username = await self.secrets.get_secret(username_ref)
