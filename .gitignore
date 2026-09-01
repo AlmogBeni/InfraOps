@@ -35,3 +35,7 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# This is application source, not a runtime log directory.
+!frontend/src/features/logs/
+!frontend/src/features/logs/**
