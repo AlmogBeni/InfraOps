@@ -66,18 +66,18 @@ export function Dialog({
         aria-modal="true"
         aria-labelledby={titleId}
         className={cn(
-          'relative z-10 flex max-h-[88vh] w-full animate-panel-reveal flex-col overflow-hidden rounded-2xl border border-white/20 bg-white shadow-[0_28px_80px_rgba(12,20,16,0.3)]',
+          'relative z-10 flex max-h-[88vh] w-full animate-panel-reveal flex-col overflow-hidden rounded-3xl border border-white/30 bg-white shadow-[0_28px_80px_rgba(12,20,16,0.3)]',
           wide ? 'max-w-3xl' : 'max-w-lg',
         )}
       >
-        <header className="flex items-center justify-between border-b border-[#e2e6e1] bg-[#f8f9f6] px-5 py-4">
+        <header className="flex items-center justify-between border-b border-[#dce4dd] bg-[linear-gradient(135deg,#fbfcf9_0%,#eef5ef_100%)] px-5 py-4">
           <h2 id={titleId} className="text-base font-semibold tracking-[-0.02em] text-[#1b2420]">{title}</h2>
           <button type="button" onClick={onClose} aria-label="Close dialog" className="rounded-lg p-1.5 text-[#758079] transition-colors hover:bg-[#e9ede7] hover:text-[#202923]">
             <X className="h-4 w-4" />
           </button>
         </header>
         <div className="overflow-y-auto px-5 py-5">{children}</div>
-        {footer && <footer className="flex flex-wrap justify-end gap-2 border-t border-[#e2e6e1] bg-[#f8f9f6] px-5 py-4">{footer}</footer>}
+        {footer && <footer className="flex flex-wrap justify-end gap-2 border-t border-[#dce4dd] bg-[linear-gradient(135deg,#f8faf6_0%,#eef4ef_100%)] px-5 py-4">{footer}</footer>}
       </div>
     </div>
   )

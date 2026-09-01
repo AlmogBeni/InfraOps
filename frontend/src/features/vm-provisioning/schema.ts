@@ -135,7 +135,7 @@ export const stepSchemas = {
     .object({
       vcenter_id: z.string().min(1, 'Select a vCenter.'),
       datacenter_id: z.string().min(1, 'Select a datacenter.'),
-      cluster_id: z.string().min(1, 'Select a cluster.'),
+      cluster_id: z.string().min(1, 'Select a compute target.'),
       host_mode: z.enum(['auto', 'manual']),
       host_id: z.string().nullable(),
     })
@@ -164,7 +164,7 @@ export const stepSchemas = {
       source_type: z.enum(['blank', 'template']),
       vcenter_id: z.string().min(1, 'Select a vCenter.'),
       datacenter_id: z.string().min(1, 'Select a datacenter.'),
-      cluster_id: z.string().min(1, 'Cluster is required.'),
+      cluster_id: z.string().min(1, 'Compute target is required.'),
       host_mode: z.enum(['auto', 'manual']),
       host_id: z.string().nullable(),
       template_id: z.string(),

@@ -1,6 +1,6 @@
 import { ArrowRight, Building2, FileArchive, HardDrive, RefreshCw, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
@@ -10,6 +10,7 @@ import { useDatacenters, useTemplates, useVcenters } from '@/features/vm-provisi
 import { formatBytes, formatDateTime } from '@/lib/utils'
 
 export function TemplatesPage() {
+  const navigate = useNavigate()
   const vcenters = useVcenters()
   const [vcenterId, setVcenterId] = useState('')
   const [datacenterId, setDatacenterId] = useState('')
@@ -98,7 +99,17 @@ export function TemplatesPage() {
                 <div className="flex items-center justify-between gap-3"><dt className="text-[#758079]">Updated</dt><dd className="font-medium">{formatDateTime(item.last_modified)}</dd></div>
                 {item.location && <div className="flex items-start justify-between gap-3"><dt className="flex items-center gap-2 text-[#758079]"><Building2 className="h-3.5 w-3.5" /> Location</dt><dd className="max-w-[60%] truncate font-medium" title={item.location}>{item.location}</dd></div>}
               </dl>
-              <Button className="mt-auto w-full" onClick={() => { window.location.href = `/provisioning/new?template_id=${encodeURIComponent(item.id)}&vcenter_id=${encodeURIComponent(vcenterId)}&datacenter_id=${encodeURIComponent(datacenterId)}` }}>
+              <Button
+                className="mt-auto w-full"
+                onClick={() => {
+                  const target = new URLSearchParams({
+                    template_id: item.id,
+                    vcenter_id: vcenterId,
+                    datacenter_id: datacenterId,
+                  })
+                  navigate(`/provisioning/new?${target.toString()}`)
+                }}
+              >
                 Deploy package <ArrowRight className="h-4 w-4" />
               </Button>
             </article>

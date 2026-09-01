@@ -62,7 +62,7 @@ describe('StorageStep accessible inventory', () => {
 
     renderStep()
 
-    expect(await screen.findByText('No accessible datastores are available in the selected cluster.')).toBeInTheDocument()
+    expect(await screen.findByText('No accessible datastores are available on the selected compute target.')).toBeInTheDocument()
     await waitFor(() => {
       const state = JSON.parse(screen.getByTestId('wizard-state').textContent ?? '{}') as WizardData
       expect(state.storage_mode).toBe('manual')

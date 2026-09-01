@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { TemplatesPage } from '@/features/templates/TemplatesPage'
@@ -64,9 +64,15 @@ function renderPage() {
     <QueryClientProvider client={createQueryClient()}>
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <TemplatesPage />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
+}
+
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="location">{location.pathname + location.search}</output>
 }
 
 function mockTargetInventory(loadPackages: () => Promise<TemplateOut[]>) {
@@ -152,5 +158,19 @@ describe('TemplatesPage datacenter-scoped package inventory', () => {
     expect(await screen.findByText('Package inventory could not be loaded')).toBeInTheDocument()
     expect(screen.getByText('Package inventory is temporarily unavailable.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Try again/i })).toBeEnabled()
+  })
+
+  it('opens the selected package in the SPA without reloading the authenticated session', async () => {
+    mockTargetInventory(() => Promise.resolve(PACKAGES))
+    renderPage()
+
+    await chooseProductionTarget()
+    const card = (await screen.findByRole('heading', { name: 'Windows Application Appliance' })).closest('article')
+    expect(card).not.toBeNull()
+    fireEvent.click(screen.getAllByRole('button', { name: /Deploy package/i })[0])
+
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/provisioning/new?template_id=pkg-windows-ovf&vcenter_id=vc-primary&datacenter_id=dc-production',
+    )
   })
 })

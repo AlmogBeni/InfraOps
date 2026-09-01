@@ -315,9 +315,9 @@ export function ReviewStep() {
           rows={[
             ['vCenter', nameOf(vcenters, data.vcenter_id)],
             ['Datacenter', nameOf(datacenters, data.datacenter_id)],
-            ['Cluster', nameOf(clusters, data.cluster_id)],
+            ['Compute target', nameOf(clusters, data.cluster_id)],
             ['Host', data.host_mode === 'auto' ? 'Automatic placement' : nameOf(hosts, data.host_id)],
-            ['Resource pool', data.resource_pool_id ? nameOf(resourcePools, data.resource_pool_id) : 'Cluster default'],
+            ['Resource pool', data.resource_pool_id ? nameOf(resourcePools, data.resource_pool_id) : 'Compute target default'],
           ]}
         />
 

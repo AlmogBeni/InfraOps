@@ -18,7 +18,8 @@ export function AdminLayout() {
 
   return (
     <div className="space-y-5">
-      <section className="flex flex-col gap-4 rounded-2xl border border-[#d8ddd7] bg-[#17201c] px-5 py-4 text-white shadow-[var(--ui-shadow)] lg:flex-row lg:items-center">
+      <section className="relative flex flex-col gap-4 overflow-hidden rounded-2xl border border-[#303a34] bg-[#17201c] px-5 py-4 text-white shadow-[0_18px_42px_rgba(23,32,28,0.14)] lg:flex-row lg:items-center">
+        <span className="dashboard-ambient-orb pointer-events-none absolute -right-10 -top-24 h-48 w-48 rounded-full bg-[#d8f06a]/10 blur-3xl" aria-hidden />
         <div className="flex shrink-0 items-center gap-3 lg:w-64">
           <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#d8f06a] text-[#17201c]">
             <Boxes className="h-4 w-4" aria-hidden />
@@ -34,8 +35,8 @@ export function AdminLayout() {
               key={section.to}
               to={section.to}
               className={({ isActive }) => cn(
-                'inline-flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-[11px] font-semibold transition-colors',
-                isActive ? 'bg-white text-[#17201c]' : 'text-white/55 hover:bg-white/10 hover:text-white',
+                'relative inline-flex h-9 shrink-0 items-center gap-2 rounded-xl px-3 text-[11px] font-semibold transition-[transform,background-color,color] duration-200 hover:-translate-y-0.5',
+                isActive ? 'bg-[#d8f06a] text-[#17201c]' : 'text-white/55 hover:bg-white/10 hover:text-white',
               )}
             >
               <section.icon className="h-3.5 w-3.5" aria-hidden />

@@ -238,6 +238,16 @@ class VsphereVMwareService(VMwareService):
     def _container_view(content, vimtype):
         return content.viewManager.CreateContainerView(content.rootFolder, [vimtype], True)
 
+    @staticmethod
+    def _entities_in_container(content, container, vimtypes) -> list:
+        """Return recursively discovered entities rooted at one inventory container."""
+        requested_types = list(vimtypes) if isinstance(vimtypes, list | tuple) else [vimtypes]
+        view = content.viewManager.CreateContainerView(container, requested_types, True)
+        try:
+            return list(view.view)
+        finally:
+            view.Destroy()
+
     @classmethod
     def _find_by_moref(cls, content, moref_id: str):
         """Resolve a managed object reference string like 'domain-c7'."""
@@ -308,14 +318,13 @@ class VsphereVMwareService(VMwareService):
             yield from VsphereVMwareService._walk_resource_pools(child)
 
     @staticmethod
-    def _cluster_belongs_to_datacenter(content, cluster, datacenter) -> bool:
-        view = content.viewManager.CreateContainerView(
-            datacenter.hostFolder, [vim.ClusterComputeResource], True
+    def _compute_belongs_to_datacenter(content, compute, datacenter) -> bool:
+        entities = VsphereVMwareService._entities_in_container(
+            content,
+            datacenter.hostFolder,
+            (vim.ComputeResource, vim.ClusterComputeResource),
         )
-        try:
-            return any(entry._moId == cluster._moId for entry in view.view)
-        finally:
-            view.Destroy()
+        return any(entry._moId == compute._moId for entry in entities)
 
     # ── Discovery ────────────────────────────────────────────────────────────
 
@@ -347,24 +356,43 @@ class VsphereVMwareService(VMwareService):
         def op(si):
             content = self._content(si)
             datacenter = self._find_by_moref(content, datacenter_id)
-            if datacenter is None:
+            if datacenter is None or not isinstance(datacenter, vim.Datacenter):
                 raise NotFoundError(f"Datacenter '{datacenter_id}' does not exist.")
             clusters = []
-            for entity in datacenter.hostFolder.childEntity:
-                if isinstance(entity, vim.ClusterComputeResource):
-                    clusters.append(
-                        ClusterOut(
-                            id=entity._moId,
-                            name=entity.name,
-                            datacenter_id=datacenter_id,
-                            drs_enabled=bool(entity.configurationEx.drsConfig.enabled),
-                            hosts_count=len(entity.host),
-                            total_cpu_cores=sum(h.hardware.cpuInfo.numCpuCores for h in entity.host),
-                            total_memory_gb=round(
-                                sum(h.hardware.memorySize for h in entity.host) / 1024**3, 1
-                            ),
-                        )
+            entities = self._entities_in_container(
+                content,
+                datacenter.hostFolder,
+                (vim.ComputeResource, vim.ClusterComputeResource),
+            )
+            seen_ids: set[str] = set()
+            for entity in entities:
+                if entity._moId in seen_ids:
+                    continue
+                seen_ids.add(entity._moId)
+                hosts = list(entity.host or [])
+                drs_config = getattr(
+                    getattr(entity, "configurationEx", None),
+                    "drsConfig",
+                    None,
+                )
+                clusters.append(
+                    ClusterOut(
+                        id=entity._moId,
+                        name=entity.name,
+                        datacenter_id=datacenter_id,
+                        drs_enabled=bool(getattr(drs_config, "enabled", False)),
+                        hosts_count=len(hosts),
+                        total_cpu_cores=sum(
+                            int(getattr(getattr(host.hardware, "cpuInfo", None), "numCpuCores", 0) or 0)
+                            for host in hosts
+                        ),
+                        total_memory_gb=round(
+                            sum(int(getattr(host.hardware, "memorySize", 0) or 0) for host in hosts)
+                            / 1024**3,
+                            1,
+                        ),
                     )
+                )
             return clusters
 
         return sorted(await self._with_session(target, op), key=lambda c: c.name)
@@ -373,8 +401,8 @@ class VsphereVMwareService(VMwareService):
         def op(si):
             content = self._content(si)
             cluster = self._find_by_moref(content, cluster_id)
-            if cluster is None:
-                raise NotFoundError(f"Cluster '{cluster_id}' does not exist.")
+            if cluster is None or not isinstance(cluster, vim.ComputeResource):
+                raise NotFoundError(f"Compute target '{cluster_id}' does not exist.")
             hosts = []
             for host in cluster.host:
                 # HostSystem exposes quick statistics through summary, not as
@@ -412,8 +440,8 @@ class VsphereVMwareService(VMwareService):
         def op(si):
             content = self._content(si)
             cluster = self._find_by_moref(content, cluster_id)
-            if cluster is None:
-                raise NotFoundError(f"Cluster '{cluster_id}' does not exist.")
+            if cluster is None or not isinstance(cluster, vim.ComputeResource):
+                raise NotFoundError(f"Compute target '{cluster_id}' does not exist.")
             pools = [ResourcePoolOut(id=cluster.resourcePool._moId, name="Resources", cluster_id=cluster_id)]
 
             def walk(pool):
@@ -430,8 +458,8 @@ class VsphereVMwareService(VMwareService):
         def op(si):
             content = self._content(si)
             cluster = self._find_by_moref(content, cluster_id)
-            if cluster is None:
-                raise NotFoundError(f"Cluster '{cluster_id}' does not exist.")
+            if cluster is None or not isinstance(cluster, vim.ComputeResource):
+                raise NotFoundError(f"Compute target '{cluster_id}' does not exist.")
             results = []
             for datastore in self._cluster_datastores(cluster).values():
                 summary = datastore.summary
@@ -459,8 +487,8 @@ class VsphereVMwareService(VMwareService):
         def op(si):
             content = self._content(si)
             cluster = self._find_by_moref(content, cluster_id)
-            if cluster is None:
-                raise NotFoundError(f"Cluster '{cluster_id}' does not exist.")
+            if cluster is None or not isinstance(cluster, vim.ComputeResource):
+                raise NotFoundError(f"Compute target '{cluster_id}' does not exist.")
             pods = []
             seen_pod_ids = {ds.parent._moId for ds in self._cluster_datastores(cluster).values()
                             if getattr(ds, "parent", None) is not None
@@ -656,23 +684,23 @@ class VsphereVMwareService(VMwareService):
         def resolve_pool(si):
             content = self._content(si)
             cluster = self._find_by_moref(content, spec.cluster_id)
-            if cluster is None or not isinstance(cluster, vim.ClusterComputeResource):
+            if cluster is None or not isinstance(cluster, vim.ComputeResource):
                 raise InfraOperationError(
-                    f"Cluster '{spec.cluster_id}' was not found.",
-                    reason="Cluster removed after validation.",
-                    recommended_action="Re-select the target cluster and retry.",
+                    f"Compute target '{spec.cluster_id}' was not found.",
+                    reason="Compute target removed after validation.",
+                    recommended_action="Re-select the compute target and retry.",
                     retryable=False,
                 )
             datacenter = self._find_by_moref(content, spec.datacenter_id)
             if (
                 datacenter is None
                 or not isinstance(datacenter, vim.Datacenter)
-                or not self._cluster_belongs_to_datacenter(content, cluster, datacenter)
+                or not self._compute_belongs_to_datacenter(content, cluster, datacenter)
             ):
                 raise InfraOperationError(
-                    "The selected cluster is outside the requested datacenter.",
+                    "The selected compute target is outside the requested datacenter.",
                     reason="The placement inventory changed after validation.",
-                    recommended_action="Refresh the datacenter and cluster selections.",
+                    recommended_action="Refresh the datacenter and compute target selections.",
                     retryable=False,
                 )
             if spec.network_id:
@@ -696,9 +724,9 @@ class VsphereVMwareService(VMwareService):
                 datastore = self._cluster_datastores(cluster).get(spec.datastore_id)
                 if datastore is None or not bool(datastore.summary.accessible):
                     raise InfraOperationError(
-                        "The selected datastore is unavailable to the target cluster.",
+                        "The selected datastore is unavailable to the compute target.",
                         reason="Datastore scope or accessibility changed after validation.",
-                        recommended_action="Select an accessible datastore from the target cluster.",
+                        recommended_action="Select an accessible datastore from the compute target.",
                         retryable=False,
                     )
             if spec.host_id:
@@ -706,7 +734,7 @@ class VsphereVMwareService(VMwareService):
                 if host is None or host not in cluster.host or not self._host_usable(host):
                     raise InfraOperationError(
                         f"Host '{spec.host_id}' is not available for provisioning.",
-                        reason="Host disconnected, in maintenance mode, or outside the selected cluster.",
+                        reason="Host disconnected, in maintenance mode, or outside the compute target.",
                         recommended_action="Select a different host or use automatic placement.",
                         retryable=False,
                     )
@@ -716,7 +744,7 @@ class VsphereVMwareService(VMwareService):
                 valid_pool_ids = {entry._moId for entry in self._walk_resource_pools(cluster.resourcePool)}
                 if candidate is None or candidate._moId not in valid_pool_ids:
                     raise InfraOperationError(
-                        f"Resource pool '{spec.resource_pool_id}' was not found in the cluster.",
+                        f"Resource pool '{spec.resource_pool_id}' was not found in the compute target.",
                         reason="Resource pool removed or moved after validation.",
                         recommended_action="Re-select the placement target and retry.",
                         retryable=False,
@@ -767,11 +795,11 @@ class VsphereVMwareService(VMwareService):
                 datacenter is None
                 or not isinstance(datacenter, vim.Datacenter)
                 or cluster is None
-                or not isinstance(cluster, vim.ClusterComputeResource)
-                or not self._cluster_belongs_to_datacenter(content, cluster, datacenter)
+                or not isinstance(cluster, vim.ComputeResource)
+                or not self._compute_belongs_to_datacenter(content, cluster, datacenter)
             ):
                 raise InfraOperationError(
-                    "The selected datacenter or cluster was not found.",
+                    "The selected datacenter or compute target was not found.",
                     reason="The placement inventory changed after validation.",
                     recommended_action="Re-open the wizard and select the infrastructure again.",
                     retryable=False,
@@ -782,8 +810,8 @@ class VsphereVMwareService(VMwareService):
                 candidate = self._find_by_moref(content, spec.host_id)
                 if candidate is None or candidate not in cluster.host or not self._host_usable(candidate):
                     raise InfraOperationError(
-                        f"Host '{spec.host_id}' is not available in the selected cluster.",
-                        reason="The host is disconnected, in maintenance mode, or belongs to another cluster.",
+                        f"Host '{spec.host_id}' is not available in the selected compute target.",
+                        reason="The host is disconnected, in maintenance mode, or belongs to another compute target.",
                         recommended_action="Select another host or use automatic placement.",
                         retryable=False,
                     )
@@ -797,7 +825,7 @@ class VsphereVMwareService(VMwareService):
                 }
                 if requested_pool is None or requested_pool._moId not in valid_pool_ids:
                     raise InfraOperationError(
-                        f"Resource pool '{spec.resource_pool_id}' was not found in the cluster.",
+                        f"Resource pool '{spec.resource_pool_id}' was not found in the compute target.",
                         reason="Resource pool removed or moved after validation.",
                         recommended_action="Re-select the placement target and retry.",
                         retryable=False,

@@ -92,7 +92,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
 
-  if (response.status === 401 && retryOn401 && accessToken) {
+  // The access token intentionally lives in memory. After a full page reload it
+  // is absent, but the HttpOnly refresh cookie can still restore the session.
+  if (response.status === 401 && retryOn401) {
     const refreshed = await attemptRefresh()
     if (refreshed) return request<T>(path, { ...options, retryOn401: false })
   }

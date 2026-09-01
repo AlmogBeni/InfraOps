@@ -72,11 +72,11 @@ export function Header() {
               to={link.to}
               end={link.end}
               className={({ isActive }) => cn(
-                'group inline-flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-xs font-semibold transition-colors',
-                isActive ? 'bg-white text-[#17201c]' : 'text-white/60 hover:bg-white/10 hover:text-white',
+                'group inline-flex h-9 shrink-0 items-center gap-2 rounded-xl px-3 text-xs font-semibold transition-[transform,background-color,color,box-shadow] duration-200 hover:-translate-y-0.5',
+                isActive ? 'bg-[#d8f06a] text-[#17201c] shadow-[0_8px_22px_rgba(216,240,106,0.13)]' : 'text-white/60 hover:bg-white/10 hover:text-white',
               )}
             >
-              <link.icon className="h-3.5 w-3.5" aria-hidden />
+              <link.icon className="h-3.5 w-3.5 transition-transform duration-200 group-hover:scale-110" aria-hidden />
               {link.label}
             </NavLink>
           ))}
@@ -87,7 +87,7 @@ export function Header() {
             <summary
               className={cn(
                 'flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-semibold transition-colors sm:px-3 [&::-webkit-details-marker]:hidden',
-                adminActive ? 'bg-white text-[#17201c]' : 'text-white/60 hover:bg-white/10 hover:text-white',
+                adminActive ? 'bg-[#d8f06a] text-[#17201c]' : 'text-white/60 hover:bg-white/10 hover:text-white',
               )}
             >
               <Settings className="h-3.5 w-3.5" aria-hidden />

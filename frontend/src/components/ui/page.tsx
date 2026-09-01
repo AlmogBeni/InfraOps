@@ -18,7 +18,7 @@ export function PageHeader({
   className?: string
 }) {
   return (
-    <header className={cn('pb-1', className)}>
+    <header className={cn('animate-panel-reveal pb-1', className)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="console-kicker">{eyebrow}</p>
@@ -42,7 +42,7 @@ export function PanelHeader({
   actions?: ReactNode
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e2e6e1] bg-[#f8f9f6] px-5 py-4">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#dce4dd] bg-[linear-gradient(135deg,#fbfcf9_0%,#eef5ef_100%)] px-5 py-4">
       <div>
         <h3 className="text-sm font-semibold tracking-[-0.01em] text-[#202923]">{title}</h3>
         {description && <p className="mt-1 text-xs leading-5 text-[#6b756f]">{description}</p>}
@@ -56,7 +56,7 @@ export function ConsolePanel({ className, children }: { className?: string; chil
   return (
     <section
       className={cn(
-        'animate-panel-reveal overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]',
+        'animate-panel-reveal overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)] transition-[border-color,box-shadow] duration-300 hover:border-[#c5d0c7] hover:shadow-[0_2px_4px_rgba(23,32,28,0.04),0_18px_42px_rgba(23,79,64,0.08)]',
         className,
       )}
     >

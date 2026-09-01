@@ -12,9 +12,11 @@ import {
 import { cn } from '@/lib/utils'
 
 const baseControl =
-  'w-full rounded-lg border border-[#cfd5cf] bg-white px-3 py-2 text-sm text-[#202923] ' +
-  'shadow-sm outline-none transition-[border,box-shadow] duration-150 placeholder:text-[#9aa39d] ' +
-  'focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:border-[#dde2dd] disabled:bg-[#eef1ed] disabled:text-[#7b857f]'
+  'w-full rounded-xl border border-[#cbd4cc] bg-gradient-to-b from-white to-[#fbfcf9] px-3 py-2 text-sm text-[#202923] ' +
+  'shadow-[0_1px_2px_rgba(23,32,28,0.04),inset_0_1px_0_rgba(255,255,255,0.9)] outline-none ' +
+  'transition-[border-color,box-shadow,background-color] duration-200 placeholder:text-[#98a19b] ' +
+  'hover:border-[#aebbb1] focus:border-brand-500 focus:bg-white focus:ring-4 focus:ring-brand-100/70 ' +
+  'disabled:cursor-not-allowed disabled:border-[#dce2dc] disabled:bg-[#eef1ed] disabled:text-[#7b857f]'
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   function Input({ className, ...props }, ref) {
@@ -50,8 +52,8 @@ interface FormRowProps {
 
 export function FormRow({ label, htmlFor, hint, error, required, children, className }: FormRowProps) {
   return (
-    <div className={cn('mb-4', className)}>
-      <label className="field-label" htmlFor={htmlFor}>
+    <div className={cn('group/field mb-4', className)}>
+      <label className="field-label transition-colors duration-200 group-focus-within/field:text-brand-700" htmlFor={htmlFor}>
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
       </label>
@@ -74,15 +76,15 @@ export function Checkbox({ label, className, id, ...props }: CheckboxProps) {
   const generatedId = useId()
   const inputId = id ?? generatedId
   return (
-    <div className={cn('flex items-start gap-2', className)}>
+    <div className={cn('group/check flex items-start gap-2.5', className)}>
       <input
         id={inputId}
         type="checkbox"
-        className="mt-0.5 h-4 w-4 rounded border-slate-300 bg-white text-brand-600 focus:ring-2 focus:ring-brand-200"
+        className="mt-0.5 h-4 w-4 rounded border-[#b8c4ba] bg-white text-brand-600 transition-shadow focus:ring-4 focus:ring-brand-100"
         {...props}
       />
       {label && (
-        <label htmlFor={inputId} className="cursor-pointer text-sm leading-5 text-[#3f4a43]">
+        <label htmlFor={inputId} className="cursor-pointer text-sm leading-5 text-[#3f4a43] transition-colors group-hover/check:text-brand-800">
           {label}
         </label>
       )}
@@ -120,8 +122,8 @@ export function RadioGroup<T extends string>({
           <label
             key={option.value}
             className={cn(
-              'flex min-h-20 cursor-pointer items-start gap-3 rounded-xl border border-[#d8ddd7] bg-white px-4 py-3 transition-[border,background-color,box-shadow] hover:bg-[#f8f9f6]',
-              checked ? 'border-brand-600 bg-brand-50/60 ring-1 ring-brand-500 shadow-sm' : '',
+              'group/radio flex min-h-20 cursor-pointer items-start gap-3 rounded-2xl border border-[#d8ddd7] bg-gradient-to-br from-white to-[#fafbf8] px-4 py-3.5 transition-[transform,border-color,background-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-[#aebbb1] hover:shadow-[0_10px_24px_rgba(23,79,64,0.08)]',
+              checked ? 'border-brand-600 bg-brand-50/70 ring-1 ring-brand-500 shadow-[0_10px_24px_rgba(23,79,64,0.1)]' : '',
               option.disabled && 'cursor-not-allowed opacity-50',
             )}
           >
@@ -132,12 +134,12 @@ export function RadioGroup<T extends string>({
               checked={checked}
               disabled={option.disabled}
               onChange={() => onChange(option.value)}
-              className="mt-0.5 h-4 w-4 border-slate-300 bg-white text-brand-600 focus:ring-2 focus:ring-brand-200"
+              className="mt-0.5 h-4 w-4 border-[#b8c4ba] bg-white text-brand-600 focus:ring-4 focus:ring-brand-100"
             />
             <span>
-              <span className="block text-sm font-medium text-slate-800">{option.label}</span>
+              <span className="block text-sm font-semibold text-[#253029] transition-colors group-hover/radio:text-brand-800">{option.label}</span>
               {option.description && (
-                <span className="mt-0.5 block text-xs text-slate-500">{option.description}</span>
+                <span className="mt-1 block text-xs leading-5 text-[#758079]">{option.description}</span>
               )}
             </span>
           </label>

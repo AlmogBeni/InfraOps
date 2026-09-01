@@ -130,7 +130,7 @@ export function LocationStep() {
         <div className="console-group-header">
           <div>
             <p className="console-group-title">Infrastructure hierarchy</p>
-            <p className="console-group-description">Choose in order: connection, datacenter, cluster, then optional placement controls.</p>
+            <p className="console-group-description">Choose in order: connection, datacenter, compute target, then optional placement controls.</p>
           </div>
           <Building2 className="h-5 w-5 text-brand-700" aria-hidden />
         </div>
@@ -172,7 +172,7 @@ export function LocationStep() {
             {datacenters.isError && <Button type="button" size="sm" variant="ghost" onClick={() => void datacenters.refetch()}>Retry datacenters</Button>}
           </FormRow>
 
-          <FormRow label="Compute cluster" htmlFor="cluster" required error={wizard.errors.cluster_id}>
+          <FormRow label="Compute target" htmlFor="cluster" required error={wizard.errors.cluster_id}>
             <Select
               id="cluster"
               value={data.cluster_id}
@@ -189,16 +189,16 @@ export function LocationStep() {
                 {!data.datacenter_id
                   ? 'Select a datacenter first'
                   : clusters.isLoading
-                    ? 'Loading clusters…'
+                    ? 'Loading compute targets…'
                     : clusters.isError
-                      ? 'Clusters could not be loaded'
+                      ? 'Compute targets could not be loaded'
                       : (clusters.data ?? []).length === 0
-                        ? 'No clusters available'
-                        : 'Select a cluster'}
+                        ? 'No compute targets available'
+                        : 'Select a compute target'}
               </option>
               {(clusters.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </Select>
-            {clusters.isError && <Button type="button" size="sm" variant="ghost" onClick={() => void clusters.refetch()}>Retry clusters</Button>}
+            {clusters.isError && <Button type="button" size="sm" variant="ghost" onClick={() => void clusters.refetch()}>Retry compute targets</Button>}
           </FormRow>
 
           <FormRow
@@ -206,7 +206,7 @@ export function LocationStep() {
             htmlFor="host"
             required={data.host_mode === 'manual'}
             error={wizard.errors.host_id}
-            hint={selectedCluster?.drs_enabled ? 'Leave automatic to let DRS select a host.' : data.cluster_id ? 'This cluster requires an explicit host.' : undefined}
+            hint={selectedCluster?.drs_enabled ? 'Leave automatic to let DRS select a host.' : data.cluster_id ? 'This compute target requires an explicit host.' : undefined}
           >
             <Select
               id="host"
@@ -216,7 +216,7 @@ export function LocationStep() {
             >
               <option value="">
                 {!data.cluster_id
-                  ? 'Select a cluster first'
+                  ? 'Select a compute target first'
                   : hosts.isLoading
                     ? 'Loading hosts…'
                     : hosts.isError
@@ -235,14 +235,14 @@ export function LocationStep() {
             </Select>
           </FormRow>
 
-          <FormRow label="Resource pool" htmlFor="resource-pool" hint="Optional. The cluster root pool is used by default." className="md:col-span-2">
+          <FormRow label="Resource pool" htmlFor="resource-pool" hint="Optional. The compute target's root pool is used by default." className="md:col-span-2">
             <Select
               id="resource-pool"
               value={data.resource_pool_id ?? ''}
               disabled={!data.cluster_id || pools.isLoading || pools.isError}
               onChange={(event) => wizard.update({ resource_pool_id: event.target.value || null })}
             >
-              <option value="">Cluster default</option>
+              <option value="">Compute target default</option>
               {(pools.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </Select>
           </FormRow>
@@ -250,25 +250,25 @@ export function LocationStep() {
       </div>
 
       {data.datacenter_id && !clusters.isLoading && !clusters.isError && (clusters.data ?? []).length === 0 && (
-        <Alert tone="warning" title="No compute clusters in this datacenter">Choose another datacenter or ask an administrator to make a cluster available.</Alert>
+        <Alert tone="warning" title="No compute targets in this datacenter">No clusters or standalone ESXi hosts are visible to the configured vCenter account.</Alert>
       )}
 
       {data.cluster_id && hosts.isError && (
         <Alert tone="danger" title="Hosts could not be loaded">
-          The selected cluster's host inventory is unavailable. <Button type="button" size="sm" variant="secondary" onClick={() => void hosts.refetch()}>Try again</Button>
+          The selected compute target's host inventory is unavailable. <Button type="button" size="sm" variant="secondary" onClick={() => void hosts.refetch()}>Try again</Button>
         </Alert>
       )}
 
       {noAvailableHosts && (
         <Alert tone="warning" title="No hosts are available for provisioning">
-          The selected cluster has no eligible hosts. Choose another cluster or{' '}
+          The selected compute target has no eligible hosts. Choose another compute target or{' '}
           <Button type="button" size="sm" variant="secondary" onClick={() => void hosts.refetch()}>check again</Button>
         </Alert>
       )}
 
       {data.cluster_id && pools.isError && (
         <Alert tone="warning" title="Resource pools could not be loaded">
-          Automatic cluster placement remains available. <Button type="button" size="sm" variant="secondary" onClick={() => void pools.refetch()}>Try again</Button>
+          Default resource-pool placement remains available. <Button type="button" size="sm" variant="secondary" onClick={() => void pools.refetch()}>Try again</Button>
         </Alert>
       )}
 
@@ -282,12 +282,12 @@ export function LocationStep() {
           <div className="rounded-2xl border border-[#d8ddd7] bg-white p-4">
             <Cpu className="h-4 w-4 text-brand-700" />
             <p className="mt-3 text-2xl font-semibold tracking-tight">{selectedCluster.total_cpu_cores}</p>
-            <p className="mt-1 text-xs text-[#68736d]">CPU cores available to the cluster</p>
+            <p className="mt-1 text-xs text-[#68736d]">CPU cores in the compute target</p>
           </div>
           <div className="rounded-2xl border border-[#d8ddd7] bg-white p-4">
             <MemoryStick className="h-4 w-4 text-brand-700" />
             <p className="mt-3 text-2xl font-semibold tracking-tight">{selectedCluster.total_memory_gb.toFixed(0)} GB</p>
-            <p className="mt-1 text-xs text-[#68736d]">Total cluster memory</p>
+            <p className="mt-1 text-xs text-[#68736d]">Total compute-target memory</p>
           </div>
         </div>
       )}

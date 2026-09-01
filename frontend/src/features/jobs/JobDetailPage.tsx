@@ -186,7 +186,7 @@ function useRequestLabels(request: ProvisioningRequest, persistedDatacenterName?
     vcenter: resolveName(vcenters.data, vcenterId, vcenters.isLoading, 'No vCenter selected'),
     datacenter: persistedDatacenterName
       ?? resolveName(datacenters.data, datacenterId, datacenters.isLoading, 'No datacenter selected'),
-    cluster: resolveName(clusters.data, clusterId, clusters.isLoading, 'No cluster selected'),
+    cluster: resolveName(clusters.data, clusterId, clusters.isLoading, 'No compute target selected'),
     host: resolveName(hosts.data, request.compute.host_id, hosts.isLoading, 'Automatic host selection'),
     resourcePool: resolveName(
       resourcePools.data,
@@ -289,7 +289,7 @@ function RequestSnapshot({
         <SnapshotSection icon={Server} title="Location" summary={`${labels.datacenter} · ${labels.vcenter}`}>
           <DetailLine label="vCenter" value={labels.vcenter} />
           <DetailLine label="Datacenter" value={labels.datacenter} />
-          <DetailLine label="Cluster" value={labels.cluster} />
+          <DetailLine label="Compute target" value={labels.cluster} />
           <DetailLine label="Host placement" value={labels.host} />
           <DetailLine label="Resource pool" value={labels.resourcePool} />
         </SnapshotSection>

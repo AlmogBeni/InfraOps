@@ -315,7 +315,7 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
     )
     cluster = clusters.get(r.compute.cluster_id)
     if cluster is None:
-        problems.append(f"cluster '{r.compute.cluster_id}' missing")
+        problems.append(f"compute target '{r.compute.cluster_id}' missing")
 
     datastores = {}
     if cluster is not None:

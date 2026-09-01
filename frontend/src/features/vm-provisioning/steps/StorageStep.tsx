@@ -72,7 +72,7 @@ export function StorageStep({ embedded = false }: { embedded?: boolean }) {
       )}
 
       {datastores.isLoading && data.storage_mode === 'auto' && (
-        <LoadingState title="Loading cluster storage" description="Checking accessible datastores and capacity for automatic placement." />
+        <LoadingState title="Loading compute-target storage" description="Checking accessible datastores and capacity for automatic placement." />
       )}
 
       <div className="console-group">
@@ -122,7 +122,7 @@ export function StorageStep({ embedded = false }: { embedded?: boolean }) {
             <LoadingState title="Loading datastores" description="Checking accessible storage targets and current free capacity." />
           ) : !datastores.isError && data.cluster_id && accessibleItems.length === 0 ? (
             <EmptyState
-              title="No accessible datastores are available in the selected cluster."
+              title="No accessible datastores are available on the selected compute target."
               description={items.length > 0 ? 'Storage was discovered, but every datastore is currently inaccessible.' : undefined}
               action={<Button type="button" size="sm" variant="secondary" onClick={() => void datastores.refetch()}>Retry</Button>}
             />
@@ -136,7 +136,7 @@ export function StorageStep({ embedded = false }: { embedded?: boolean }) {
                     onChange={(event) => wizard.update({ datastore_id: event.target.value || null })}
                     disabled={!data.cluster_id || datastores.isError || accessibleItems.length === 0}
                   >
-                    <option value="">{!data.cluster_id ? 'Select a cluster first' : 'Select datastore'}</option>
+                    <option value="">{!data.cluster_id ? 'Select a compute target first' : 'Select datastore'}</option>
                     {accessibleItems.map((entry) => (
                       <option key={entry.id} value={entry.id}>
                         {entry.name} · {entry.free_gb.toFixed(0)} GB free · {entry.type}

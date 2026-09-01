@@ -162,10 +162,10 @@ function MetricCard({
   }
 
   return (
-    <div className="rounded-2xl border border-[#d8ddd7] bg-white p-5 shadow-[var(--ui-shadow)]">
+    <div className="dashboard-metric-card group rounded-2xl border border-[#d8ddd7] bg-white p-5 shadow-[var(--ui-shadow)]">
       <div className="flex items-start justify-between gap-4">
         <dt className="text-xs font-semibold text-[#68736d]">{label}</dt>
-        <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-xl', iconClasses[accent])}>
+        <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-transform duration-300 group-hover:-rotate-3 group-hover:scale-110', iconClasses[accent])}>
           <Icon className="h-4 w-4" aria-hidden />
         </span>
       </div>
@@ -186,7 +186,7 @@ function ServiceStatus({ component }: { component: HealthComponent }) {
       <div className="flex items-start gap-3">
         <span className="relative mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[#dfe4de] bg-[#f7f8f5]">
           <Icon className="h-4 w-4 text-[#58635c]" aria-hidden />
-          <span className={cn('absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white', meta.dot)} aria-hidden />
+          <span className={cn('absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white', meta.dot, state === 'operational' && 'dashboard-live-dot')} aria-hidden />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -253,7 +253,7 @@ function RecentDeployments({ jobs, canProvision }: { jobs: JobOut[]; canProvisio
                 <span className="block truncate text-xs font-medium text-[#465149]">{jobActivity(job)}</span>
                 {job.status === 'RUNNING' && (
                   <span className="mt-2 block h-1.5 w-full max-w-32 overflow-hidden rounded-full bg-[#e3e7e2]" aria-hidden>
-                    <span className="block h-full rounded-full bg-[#e56b3f]" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
+                    <span className="dashboard-progress-fill block h-full rounded-full transition-[width] duration-700 ease-out" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
                   </span>
                 )}
               </td>
@@ -377,7 +377,7 @@ export function DashboardPage() {
         meta={(
           <>
             <span className="inline-flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" aria-hidden /> Live refresh every 30 seconds
+              <span className="dashboard-live-dot h-2 w-2 rounded-full bg-emerald-500" aria-hidden /> Live refresh every 30 seconds
             </span>
             <span role="status" aria-live="polite">
               {dashboard.isFetching ? 'Synchronizing the latest status…' : 'Latest status is in view'}
@@ -388,9 +388,9 @@ export function DashboardPage() {
 
       <section
         aria-labelledby="estate-readiness-title"
-        className="relative overflow-hidden rounded-3xl border border-[#303934] bg-[#202823] text-white shadow-[0_20px_48px_rgba(23,32,28,0.16)]"
+        className="dashboard-command-surface relative overflow-hidden rounded-3xl border border-[#303934] bg-[#202823] text-white shadow-[0_20px_48px_rgba(23,32,28,0.16)]"
       >
-        <div className="pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-[#d8f06a]/10 blur-3xl" aria-hidden />
+        <div className="dashboard-ambient-orb pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-[#d8f06a]/10 blur-3xl" aria-hidden />
         <div className="relative grid lg:grid-cols-[minmax(0,1.55fr)_repeat(3,minmax(150px,0.55fr))]">
           <div className="border-b border-white/10 p-6 sm:p-7 lg:border-b-0 lg:border-r">
             <div className="flex items-start gap-4">
@@ -442,7 +442,7 @@ export function DashboardPage() {
             Review all deployments <ArrowRight className="h-3.5 w-3.5" aria-hidden />
           </Link>
         </div>
-        <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <dl className="dashboard-metrics grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             label="Virtual machines delivered"
             value={deliveredLabel}

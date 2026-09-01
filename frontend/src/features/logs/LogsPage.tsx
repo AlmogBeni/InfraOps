@@ -98,10 +98,10 @@ function LogRow({ event }: { event: LogEventOut }) {
   const Icon = meta.icon
   const hasDetails = Object.keys(event.details).length > 0 || Boolean(event.datacenter_name || event.job_id)
   return (
-    <article className="border-b border-[#e6e9e5] last:border-b-0">
+    <article className="group/log border-b border-[#e6e9e5] last:border-b-0">
       <button
         type="button"
-        className="grid w-full gap-3 px-5 py-4 text-left transition-colors hover:bg-[#f8f9f6] md:grid-cols-[160px_105px_150px_minmax(0,1fr)_180px_24px] md:items-center"
+        className="grid w-full gap-3 px-5 py-4 text-left transition-[background-color,padding] duration-200 hover:bg-[#f2f7f2] md:grid-cols-[160px_105px_150px_minmax(0,1fr)_180px_24px] md:items-center"
         onClick={() => hasDetails && setExpanded((value) => !value)}
         disabled={!hasDetails}
         aria-expanded={hasDetails ? expanded : undefined}
@@ -114,7 +114,7 @@ function LogRow({ event }: { event: LogEventOut }) {
         {hasDetails && (expanded ? <ChevronDown className="h-4 w-4 text-[#87908a]" /> : <ChevronRight className="h-4 w-4 text-[#87908a]" />)}
       </button>
       {expanded && (
-        <div className="border-t border-[#e6e9e5] bg-[#f8f9f6] px-5 py-4 md:pl-[296px]">
+        <div className="animate-panel-reveal border-t border-[#dfe6df] bg-[radial-gradient(circle_at_100%_0%,rgba(216,240,106,0.1),transparent_42%),#f8faf7] px-5 py-4 md:pl-[296px]">
           <div className="mb-4 flex flex-wrap gap-4 text-xs text-[#68736d]">
             {event.datacenter_name && <span><strong className="text-[#3c4740]">Datacenter:</strong> {event.datacenter_name}</span>}
             {event.job_id && <Link className="font-semibold text-brand-700 hover:underline" to={`/jobs/${event.job_id}`}>Open related deployment</Link>}
@@ -159,7 +159,7 @@ export function LogsPage() {
         meta={<span>{logs.data?.total ?? 0} log events · refreshes every 30 seconds</span>}
       />
 
-      <form className="rounded-2xl border border-[#d8ddd7] bg-white p-4 shadow-[var(--ui-shadow)]" onSubmit={applyFilters}>
+      <form className="animate-panel-reveal rounded-2xl border border-[#d4ddd5] bg-[radial-gradient(circle_at_100%_0%,rgba(216,240,106,0.12),transparent_34%),linear-gradient(135deg,#ffffff_0%,#f6faf6_100%)] p-4 shadow-[var(--ui-shadow)]" onSubmit={applyFilters}>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(240px,1.3fr)_150px_170px_180px_170px_170px_auto] xl:items-end">
           <div className="relative">
             <label className="field-label" htmlFor="log-search">Search messages</label>
@@ -204,7 +204,7 @@ export function LogsPage() {
         <EmptyState title="No log events match these filters" description="Clear the filters or wait for a deployment to produce activity." />
       ) : (
         <section className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]" aria-label="Log events">
-          <div className="hidden grid-cols-[160px_105px_150px_minmax(0,1fr)_180px_24px] gap-3 border-b border-[#dfe4de] bg-[#f7f8f5] px-5 py-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[#727c76] md:grid">
+          <div className="hidden grid-cols-[160px_105px_150px_minmax(0,1fr)_180px_24px] gap-3 border-b border-[#d9e2da] bg-[linear-gradient(135deg,#f8faf6_0%,#eef5ef_100%)] px-5 py-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[#647068] md:grid">
             <span>Timestamp</span><span>Severity</span><span>Source</span><span>Message</span><span>Resource</span><span />
           </div>
           {logs.data.items.map((event) => <LogRow key={event.id} event={event} />)}

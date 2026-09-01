@@ -238,10 +238,10 @@ class PreflightValidator:
             clusters = {c.id: c for c in await self._vmware.get_clusters(target, dc.id)}
             cluster = clusters.get(request.compute.cluster_id)
             if cluster is None:
-                add("cluster", "Cluster exists", CheckStatus.FAIL,
-                    f"Cluster '{request.compute.cluster_id}' was not found in {dc.name}.")
+                add("cluster", "Compute target exists", CheckStatus.FAIL,
+                    f"Compute target '{request.compute.cluster_id}' was not found in {dc.name}.")
                 return
-            add("cluster", "Cluster available", CheckStatus.PASS,
+            add("cluster", "Compute target available", CheckStatus.PASS,
                 f"{cluster.name} ({cluster.hosts_count} host(s), DRS {'on' if cluster.drs_enabled else 'off'})")
 
             hosts = {h.id: h for h in await self._vmware.get_hosts(target, cluster.id)}
@@ -249,7 +249,7 @@ class PreflightValidator:
                 host = hosts.get(request.compute.host_id)
                 if host is None:
                     add("host", "Host availability", CheckStatus.FAIL,
-                        "The manually selected host was not found in the cluster.")
+                        "The manually selected host was not found in the compute target.")
                 elif not host.available_for_provisioning:
                     add("host", "Host availability", CheckStatus.FAIL,
                         f"Host '{host.name}' is not available "

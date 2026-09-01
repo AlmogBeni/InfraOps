@@ -83,10 +83,10 @@ function WizardShell() {
 
   return (
     <div className="mx-auto max-w-[1320px] space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-4">
+      <header className="animate-panel-reveal flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-700 text-white"><Server className="h-4 w-4" /></span>
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#17201c] text-[#d8f06a] shadow-[0_10px_24px_rgba(23,32,28,0.16)]"><Server className="h-4 w-4" /></span>
             <p className="console-kicker">Virtual machine deployment</p>
           </div>
           <h1 className="mt-3 text-3xl font-semibold tracking-[-0.035em] text-[#17201c]">Create a virtual machine</h1>
@@ -112,7 +112,7 @@ function WizardShell() {
       </div>
 
       <form
-        className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-[#fafbf8] shadow-[var(--ui-shadow)]"
+        className="overflow-hidden rounded-3xl border border-[#ccd6cd] bg-[radial-gradient(circle_at_100%_0%,rgba(216,240,106,0.12),transparent_32%),#fafbf8] shadow-[0_2px_4px_rgba(23,32,28,0.04),0_20px_52px_rgba(23,79,64,0.09)]"
         onSubmit={(event) => {
           event.preventDefault()
           if (!isReview) wizard.next()
@@ -134,7 +134,7 @@ function WizardShell() {
           {submitError && <div className="mt-6"><Alert tone="danger" title="Deployment is not ready">{submitError}</Alert></div>}
         </div>
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-[#d8ddd7] bg-white px-5 py-4 sm:px-7">
+        <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-[#d8e1d9] bg-[linear-gradient(135deg,#ffffff_0%,#f0f6f0_100%)] px-5 py-4 sm:px-7">
           <Button type="button" variant="secondary" onClick={wizard.back} disabled={wizard.currentIndex === 0}>
             <ArrowLeft className="h-4 w-4" /> Back
           </Button>
