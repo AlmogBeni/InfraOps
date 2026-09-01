@@ -1,11 +1,11 @@
-"""Administration schemas: vCenters, sites, credentials, settings, roles."""
+"""Administration schemas: vCenters, credentials, settings, and roles."""
 
 from __future__ import annotations
 
 import datetime as dt
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, UUID4, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 HOSTNAME_PATTERN = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-\.]{0,251}[a-zA-Z0-9])?)$"
@@ -57,25 +57,6 @@ class VCenterConnectionAdminOut(BaseModel):
     connection_state: str
     last_connection_error: str | None = None
     last_checked_at: dt.datetime | None = None
-
-
-class SiteCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=2, max_length=150)
-    vcenter_id: UUID4
-    description: str = Field(default="", max_length=1000)
-    datacenter_moref: str | None = Field(default=None, max_length=120)
-    enabled: bool = True
-
-
-class SiteUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str | None = Field(default=None, min_length=2, max_length=150)
-    description: str | None = Field(default=None, max_length=1000)
-    datacenter_moref: str | None = Field(default=None, max_length=120)
-    enabled: bool | None = None
 
 
 class SecretReferenceCreate(BaseModel):

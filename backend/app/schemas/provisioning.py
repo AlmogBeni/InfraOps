@@ -2,7 +2,7 @@
 
 These schemas are the single source of truth for request validation — the
 frontend mirrors them with Zod, but the backend never trusts the frontend.
-All identifiers referencing platform records (vCenters, sites, packages,
+All identifiers referencing platform records (vCenters, packages,
 applications) are UUIDs; VMware objects are addressed by stable internal
 managed-object references (strings).
 """
@@ -72,8 +72,16 @@ class VmSpec(BaseModel):
 class ComputeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_legacy_site_id(cls, value: object) -> object:
+        """Accept drafts created before site-based placement was removed."""
+        if isinstance(value, dict) and "site_id" in value:
+            value = dict(value)
+            value.pop("site_id", None)
+        return value
+
     vcenter_id: UUID4
-    site_id: UUID4
     datacenter_id: str = Field(min_length=1, max_length=120)
     cluster_id: str = Field(min_length=1, max_length=120)
     host_id: str | None = Field(default=None, max_length=120)

@@ -64,6 +64,14 @@ class TestVmSpec:
         with pytest.raises(ValidationError, match="template_id must be null"):
             ProvisioningRequest.model_validate(payload)
 
+    def test_legacy_site_id_is_ignored(self):
+        payload = make_request().model_dump(mode="json")
+        payload["compute"]["site_id"] = "22222222-2222-4222-8222-222222222222"
+
+        rebuilt = ProvisioningRequest.model_validate(payload)
+
+        assert "site_id" not in rebuilt.compute.model_dump()
+
 
 class TestHardwareSpec:
     def test_secure_boot_requires_efi(self):

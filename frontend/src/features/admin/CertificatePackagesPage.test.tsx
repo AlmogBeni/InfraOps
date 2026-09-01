@@ -42,7 +42,7 @@ describe('CertificatePackagesPage file upload', () => {
     fireEvent.change(fileInput!, { target: { files: [new File([secondBody], 'replacement-root.crt')] } })
     expect(await screen.findByText('replacement-root.crt')).toBeInTheDocument()
     expect(screen.queryByText('first-root.pem')).not.toBeInTheDocument()
-    await screen.findByText('Valid PEM certificate file; ready to register.')
+    await screen.findByText('Certificate loaded; ready for server validation.')
 
     fireEvent.click(screen.getByRole('button', { name: /^Register$/i }))
     await waitFor(() => expect(register).toHaveBeenCalledWith(expect.objectContaining({

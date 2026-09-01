@@ -21,7 +21,6 @@ import type {
   ResourcePoolOut,
   RoleOut,
   SecretReferenceOut,
-  SiteOut,
   TemplateOut,
   TokenResponse,
   UserOut,
@@ -153,7 +152,6 @@ export const api = {
 
   // Infrastructure discovery
   vcenters: () => request<VCenterSummary[]>('/infrastructure/vcenters'),
-  sites: () => request<SiteOut[]>('/infrastructure/sites'),
   datacenters: (vcenterId: string) =>
     request<DatacenterOut[]>(`/infrastructure/vcenters/${vcenterId}/datacenters`),
   clusters: (vcenterId: string, datacenterId: string) =>
@@ -236,12 +234,6 @@ export const api = {
         { method: 'POST' },
       ),
 
-    sites: () => request<Array<Record<string, unknown>>>('/admin/sites'),
-    createSite: (body: Record<string, unknown>) =>
-      request<Record<string, unknown>>('/admin/sites', { method: 'POST', body }),
-    updateSite: (id: string, body: Record<string, unknown>) =>
-      request<Record<string, unknown>>(`/admin/sites/${id}`, { method: 'PUT', body }),
-    deleteSite: (id: string) => request<void>(`/admin/sites/${id}`, { method: 'DELETE' }),
 
     packages: () => request<CertificatePackageOut[]>('/admin/certificate-packages'),
     createPackage: (body: Record<string, unknown>) =>

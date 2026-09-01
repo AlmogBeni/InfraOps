@@ -24,7 +24,6 @@ describe('InfrastructureStep cluster-to-host flow', () => {
     Object.assign(draft, {
       source_type: 'blank',
       vcenter_id: 'vc-1',
-      site_id: 'site-1',
       datacenter_id: 'dc-1',
       cluster_id: 'cluster-a',
       host_mode: 'manual',
@@ -34,9 +33,6 @@ describe('InfrastructureStep cluster-to-host flow', () => {
 
     vi.spyOn(api, 'vcenters').mockResolvedValue([
       { id: 'vc-1', name: 'vCenter', host: 'vc.local', port: 443, enabled: true, connection_state: 'connected', last_checked_at: null },
-    ])
-    vi.spyOn(api, 'sites').mockResolvedValue([
-      { id: 'site-1', name: 'Primary', description: '', vcenter_id: 'vc-1', enabled: true },
     ])
     vi.spyOn(api, 'datacenters').mockResolvedValue([{ id: 'dc-1', name: 'DC1', vcenter_id: 'vc-1' }])
     vi.spyOn(api, 'clusters').mockResolvedValue([
@@ -108,7 +104,7 @@ describe('InfrastructureStep cluster-to-host flow', () => {
 
     renderStep()
     const template = await screen.findByRole('radio', { name: /Windows Server 2025 Base/i })
-    expect(template).toHaveTextContent('4 CPU')
+    expect(template).toHaveTextContent('4 vCPU')
     expect(template).toHaveTextContent('16 GB RAM')
     expect(api.templates).toHaveBeenCalledWith('vc-1', 'dc-1')
 

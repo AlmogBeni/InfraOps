@@ -6,7 +6,7 @@ audited background job.
 ## Steps
 
 1. **Source** — choose a blank virtual machine or a deployment from a live vCenter template.
-2. **Infrastructure** — vCenter, site, datacenter, cluster and dependent host placement.
+2. **Infrastructure** — vCenter, datacenter, cluster and dependent host placement.
    Templates are selected here after the datacenter is known. Changing an upstream target
    clears all stale downstream selections.
 3. **Compute** — name, description, vCPU, RAM, virtual disks, firmware and Secure Boot.
@@ -39,9 +39,10 @@ Tools must be installed before guest networking, certificates or applications ca
 ## Certificate registration
 
 Administrators can retain the existing pasted-PEM method or choose a local public X.509
-certificate file. Supported uploads are PEM-encoded `.pem`, `.crt` and `.cer` files up to
-100 KB. Private-key and PKCS#12 files are rejected. The authenticated registration API
-parses the certificate and computes its fingerprint and validity dates server-side.
+certificate file. `.crt` and `.cer` uploads may use PEM or binary DER encoding; `.pem` is
+also supported. Files may be up to 100 KB. Private-key and PKCS#12 files are rejected. The
+authenticated registration API parses the normalized certificate and computes its fingerprint
+and validity dates server-side.
 
 ## Execution sequence
 

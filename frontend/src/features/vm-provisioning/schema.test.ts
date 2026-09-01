@@ -11,7 +11,6 @@ function validData(): WizardData {
   const data = initialWizardData()
   data.source_type = 'template'
   data.vcenter_id = '11111111-1111-4111-8111-111111111111'
-  data.site_id = '22222222-2222-4222-8222-222222222222'
   data.datacenter_id = 'datacenter-21'
   data.cluster_id = 'domain-c7'
   data.vm_name = 'SERVER-PROD-042'
@@ -138,7 +137,9 @@ describe('buildRequest', () => {
     const data = validData()
     data.host_mode = 'manual'
     data.host_id = 'host-11'
-    expect(buildRequest(data).compute.host_id).toBe('host-11')
+    const payload = buildRequest(data)
+    expect(payload.compute.host_id).toBe('host-11')
+    expect(payload.compute).not.toHaveProperty('site_id')
 
     data.host_mode = 'auto'
     expect(buildRequest(data).compute.host_id).toBeNull()

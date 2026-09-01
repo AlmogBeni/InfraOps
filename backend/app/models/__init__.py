@@ -10,7 +10,7 @@ from app.models.applications import (
 )
 from app.models.audit import AuditEvent
 from app.models.certificates import Certificate, CertificatePackage, CertificateStore, CertificateType
-from app.models.infrastructure import Site, VCenterConnection
+from app.models.infrastructure import VCenterConnection
 from app.models.jobs import (
     TERMINAL_JOB_STATUSES,
     JobStatus,
@@ -41,7 +41,6 @@ __all__ = [
     "ProvisioningJobStep",
     "Role",
     "SecretReference",
-    "Site",
     "StepStatus",
     "TERMINAL_JOB_STATUSES",
     "User",

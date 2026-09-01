@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import get_logger
 from app.models.applications import Application
 from app.models.certificates import CertificatePackage
-from app.models.infrastructure import Site, VCenterConnection
+from app.models.infrastructure import VCenterConnection
 from app.schemas.provisioning import (
     CheckStatus,
     IpMode,
@@ -92,19 +92,6 @@ class PreflightValidator:
                     add("vcenter", "vCenter connection", CheckStatus.FAIL, result.detail)
         except Exception as exc:  # noqa: BLE001
             add("vcenter", "vCenter connection", CheckStatus.FAIL, f"{type(exc).__name__}: {exc}")
-
-        # ── Site mapping ─────────────────────────────────────────────────────
-        try:
-            site = await self._db.get(Site, request.compute.site_id)
-            if site is None:
-                add("site", "Site exists", CheckStatus.FAIL, "The selected site no longer exists.")
-            elif target is not None and str(site.vcenter_id) != target.id:
-                add("site", "Site belongs to vCenter", CheckStatus.FAIL,
-                    "The selected site is mapped to a different vCenter.")
-            else:
-                add("site", "Site exists", CheckStatus.PASS, site.name)
-        except Exception as exc:  # noqa: BLE001
-            add("site", "Site exists", CheckStatus.FAIL, str(exc))
 
         # ── Infrastructure discovery ─────────────────────────────────────────
         if target is not None:

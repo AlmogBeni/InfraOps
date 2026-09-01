@@ -175,8 +175,8 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
-      <CircleDashed aria-hidden className="h-8 w-8 text-slate-300" />
+    <div className="flex flex-col items-center justify-center gap-1.5 px-5 py-7 text-center">
+      <CircleDashed aria-hidden className="h-6 w-6 text-slate-300" />
       <p className="text-sm font-medium text-slate-700">{title}</p>
       {description && <p className="max-w-md text-xs text-slate-500">{description}</p>}
       {action}

@@ -113,7 +113,7 @@ export function CertificatePackagesPage() {
         friendly_name: current.friendly_name || file.name.replace(/\.[^.]+$/, ''),
         pem_body: pemBody,
       }))
-      setFileValidation({ valid: true, message: 'Valid PEM certificate file; ready to register.' })
+      setFileValidation({ valid: true, message: 'Certificate loaded; ready for server validation.' })
     } catch (error) {
       if (generation !== fileReadGenerationRef.current) return
       setCertForm((current) => ({ ...current, pem_body: '' }))
@@ -137,7 +137,7 @@ export function CertificatePackagesPage() {
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">
           Packages group certificates that operators select during provisioning. Fingerprints and validity
-          dates are computed server-side from the PEM body.
+          dates are computed server-side from the public X.509 certificate.
         </p>
         <Button onClick={() => setPackageDialogOpen(true)}>
           <Plus className="h-4 w-4" /> Add package
@@ -284,7 +284,7 @@ export function CertificatePackagesPage() {
         <FormRow
           label="Certificate file"
           htmlFor="cert-file"
-          hint="Public X.509 certificate only; PEM-encoded .pem, .crt or .cer, maximum 100 KB."
+          hint="Public X.509 only; .crt and .cer may use PEM or DER encoding. .pem is also supported. Maximum 100 KB."
           error={fileValidation?.valid === false ? fileValidation.message : undefined}
         >
           <input
@@ -292,7 +292,7 @@ export function CertificatePackagesPage() {
             id="cert-file"
             type="file"
             className="sr-only"
-            accept=".pem,.crt,.cer,application/x-pem-file,application/pkix-cert"
+            accept=".crt,.cer,.pem,application/pkix-cert,application/x-x509-ca-cert,application/x-pem-file"
             onChange={(event) => void selectCertificateFile(event.target.files?.[0])}
           />
           {!certFile ? (

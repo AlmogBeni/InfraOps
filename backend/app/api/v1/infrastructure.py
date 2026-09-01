@@ -8,9 +8,8 @@ from fastapi import APIRouter, Query
 from sqlalchemy import select
 
 from app.api.deps import DbSession
-from app.auth.permissions import Permission
 from app.core.errors import NotFoundError
-from app.models.infrastructure import Site, VCenterConnection
+from app.models.infrastructure import VCenterConnection
 from app.schemas.infrastructure import (
     ClusterOut,
     DatacenterOut,
@@ -19,12 +18,11 @@ from app.schemas.infrastructure import (
     HostOut,
     NetworkOut,
     ResourcePoolOut,
-    SiteOut,
     TemplateOut,
     VCenterSummary,
 )
-from app.services.vmware.factory import get_vmware_service
 from app.services.vmware.base import VCenterTarget
+from app.services.vmware.factory import get_vmware_service
 
 router = APIRouter(prefix="/infrastructure", tags=["infrastructure"])
 
@@ -53,18 +51,6 @@ async def list_vcenters(db: DbSession) -> list[VCenterSummary]:
             last_checked_at=row.last_checked_at,
         )
         for row in result.scalars().all()
-    ]
-
-
-@router.get("/sites", response_model=list[SiteOut])
-async def list_sites(db: DbSession) -> list[SiteOut]:
-    result = await db.execute(select(Site).order_by(Site.name))
-    return [
-        SiteOut(
-            id=str(site.id), name=site.name, description=site.description,
-            vcenter_id=str(site.vcenter_id), enabled=site.enabled,
-        )
-        for site in result.scalars().all()
     ]
 
 

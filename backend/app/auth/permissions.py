@@ -18,7 +18,6 @@ class Permission(str, Enum):
     JOBS_CANCEL = "jobs.cancel"
     AUDIT_READ = "audit.read"
     ADMIN_VCENTERS = "admin.vcenters"
-    ADMIN_SITES = "admin.sites"
     ADMIN_CERTIFICATES = "admin.certificates"
     ADMIN_APPLICATIONS = "admin.applications"
     ADMIN_CREDENTIALS = "admin.credentials"

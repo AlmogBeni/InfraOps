@@ -95,7 +95,7 @@ Production startup rejects mock mode; tests explicitly opt into the in-memory ad
 
 ## Database
 
-Tables: users, roles, user_roles, vcenters, sites, certificate_packages, certificates,
+Tables: users, roles, user_roles, vcenters, certificate_packages, certificates,
 applications, application_dependencies, provisioning_jobs, provisioning_job_steps,
 vm_provisioning_requests, audit_events (+ append-only trigger), platform_settings,
 secret_references. Migrations via Alembic (`backend/migrations`).

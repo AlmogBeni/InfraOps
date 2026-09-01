@@ -6,11 +6,21 @@ import {
 } from '@/features/admin/certificate-file'
 
 describe('certificate file validation', () => {
-  it('accepts a supported non-empty public certificate file', async () => {
+  it('accepts a PEM-encoded CRT certificate file', async () => {
     const body = '-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----'
-    const file = new File([body], 'corporate-root.pem', { type: 'application/x-pem-file' })
+    const file = new File([body], 'corporate-root.crt', { type: 'application/x-pem-file' })
     expect(validateCertificateFile(file).valid).toBe(true)
     expect(await readPublicCertificateFile(file)).toBe(body)
+  })
+
+  it('normalizes a DER-encoded CRT file to PEM for server validation', async () => {
+    const file = new File([new Uint8Array([0x30, 0x03, 0x02, 0x01, 0x01])], 'corporate-root.crt', {
+      type: 'application/pkix-cert',
+    })
+
+    await expect(readPublicCertificateFile(file)).resolves.toBe(
+      '-----BEGIN CERTIFICATE-----\nMAMCAQE=\n-----END CERTIFICATE-----',
+    )
   })
 
   it('rejects unsupported formats and empty files', () => {
@@ -28,5 +38,10 @@ describe('certificate file validation', () => {
       '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----',
     ], 'server.pem')
     await expect(readPublicCertificateFile(disguised)).rejects.toThrow(/Private-key/i)
+  })
+
+  it('rejects unrecognized CRT content before registration', async () => {
+    const file = new File(['not a certificate'], 'broken.crt')
+    await expect(readPublicCertificateFile(file)).rejects.toThrow(/not a recognized PEM or DER/i)
   })
 })

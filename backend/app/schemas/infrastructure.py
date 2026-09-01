@@ -19,16 +19,6 @@ class VCenterSummary(BaseModel):
     last_checked_at: dt.datetime | None = None
 
 
-class SiteOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    name: str
-    description: str
-    vcenter_id: str
-    enabled: bool
-
-
 class DatacenterOut(BaseModel):
     id: str  # vSphere managed object reference
     name: str

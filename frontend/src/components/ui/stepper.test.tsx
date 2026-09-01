@@ -17,11 +17,11 @@ describe('Stepper', () => {
     const current = screen.getByText('Compute')
     expect(current).toHaveClass('font-semibold')
 
-    const upcoming = screen.getByText('Review & Provision')
+    const upcoming = screen.getByText('Review & Provision').closest('button')
     expect(upcoming).toBeDisabled()
 
     // Completed step label is clickable to navigate back.
-    const completed = screen.getByText('Infrastructure')
+    const completed = screen.getByText('Infrastructure').closest('button')
     expect(completed).not.toBeDisabled()
   })
 
@@ -41,9 +41,8 @@ describe('Stepper', () => {
   it('flags error state on the current step', () => {
     render(<Stepper steps={STEPS} currentIndex={1} errorKeys={['two']} />)
     const navigation = screen.getByRole('navigation')
-    const errorIndicator = Array.from(navigation.querySelectorAll('button')).find(
-      (button) => button.textContent === '!',
-    )
-    expect(errorIndicator).toBeDefined()
+    const errorStep = screen.getByText('Compute').closest('button')
+    expect(errorStep).toHaveTextContent('!')
+    expect(navigation).toContainElement(errorStep)
   })
 })

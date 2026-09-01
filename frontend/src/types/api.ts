@@ -44,14 +44,6 @@ export interface VCenterSummary {
   last_checked_at: string | null
 }
 
-export interface SiteOut {
-  id: string
-  name: string
-  description: string
-  vcenter_id: string
-  enabled: boolean
-}
-
 export interface DatacenterOut {
   id: string
   name: string
@@ -153,7 +145,6 @@ export interface ProvisioningRequest {
   vm: { name: string; description: string }
   compute: {
     vcenter_id: string
-    site_id: string
     datacenter_id: string
     cluster_id: string
     host_id: string | null

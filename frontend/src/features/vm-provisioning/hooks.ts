@@ -8,10 +8,6 @@ export function useVcenters(enabled = true) {
   return useQuery({ queryKey: ['vcenters'], queryFn: () => api.vcenters(), enabled })
 }
 
-export function useSites(enabled = true) {
-  return useQuery({ queryKey: ['sites'], queryFn: () => api.sites(), enabled })
-}
-
 export function useDatacenters(vcenterId: string) {
   return useQuery({
     queryKey: ['datacenters', vcenterId],

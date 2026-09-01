@@ -47,7 +47,6 @@ def make_request(**overrides) -> ProvisioningRequest:
         vm=VmSpec(name="SERVER-PROD-042", description="Test VM"),
         compute=ComputeSpec(
             vcenter_id=uuid.UUID("11111111-1111-4111-8111-111111111111"),
-            site_id=uuid.uuid4(),
             datacenter_id="datacenter-21",
             cluster_id="domain-c7",
             host_id="host-11",

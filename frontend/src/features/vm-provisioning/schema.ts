@@ -28,7 +28,6 @@ export interface WizardData {
   source_type: VmSourceType | null
   template_id: string
   vcenter_id: string
-  site_id: string
   datacenter_id: string
   cluster_id: string
   host_mode: 'auto' | 'manual'
@@ -64,7 +63,6 @@ export function initialWizardData(): WizardData {
     source_type: null,
     template_id: '',
     vcenter_id: '',
-    site_id: '',
     datacenter_id: '',
     cluster_id: '',
     host_mode: 'auto',
@@ -130,7 +128,6 @@ export const stepSchemas = {
     .object({
       source_type: z.enum(['blank', 'template']),
       vcenter_id: z.string().min(1, 'Select a vCenter.'),
-      site_id: z.string().min(1, 'Select a site.'),
       datacenter_id: z.string().min(1, 'Select a datacenter.'),
       cluster_id: z.string().min(1, 'Cluster is required.'),
       host_mode: z.enum(['auto', 'manual']),
@@ -216,7 +213,6 @@ export function validateStep(step: StepKey, data: WizardData): Record<string, st
     infrastructure: {
       source_type: data.source_type,
       vcenter_id: data.vcenter_id,
-      site_id: data.site_id,
       datacenter_id: data.datacenter_id,
       cluster_id: data.cluster_id,
       host_mode: data.host_mode,
@@ -266,7 +262,6 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
     vm: { name: data.vm_name, description: data.description },
     compute: {
       vcenter_id: data.vcenter_id,
-      site_id: data.site_id,
       datacenter_id: data.datacenter_id,
       cluster_id: data.cluster_id,
       host_id: data.host_mode === 'manual' ? data.host_id : null,

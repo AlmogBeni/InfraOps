@@ -141,7 +141,7 @@ against test doubles.
 ## Production data
 
 The database starts empty except for the three RBAC role definitions and the one-time
-administrator. Configure vCenter connections, site mappings, public certificate packages,
+administrator. Configure vCenter connections, public certificate packages,
 approved applications, credential references, and platform policy through the administrator
 screens. The `0002_remove_dev_seed_data` migration removes records created by older
 versions of the automatic demo seed. See [`docs/production-deployment.md`](docs/production-deployment.md).
