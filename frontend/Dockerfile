@@ -8,8 +8,8 @@ ARG VITE_ENVIRONMENT_LABEL=DEV
 ENV VITE_API_BASE=$VITE_API_BASE
 ENV VITE_ENVIRONMENT_LABEL=$VITE_ENVIRONMENT_LABEL
 
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 COPY . .
 RUN npm run build
