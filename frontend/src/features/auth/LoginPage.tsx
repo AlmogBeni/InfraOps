@@ -1,4 +1,4 @@
-import { LockKeyhole, ServerCog, ShieldCheck, Workflow } from 'lucide-react'
+import { Boxes, KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -31,101 +31,69 @@ export function LoginPage() {
   }
 
   return (
-    <main className="layout-shell grid min-h-screen lg:grid-cols-[minmax(420px,1.15fr)_minmax(420px,0.85fr)]">
-      <section className="hidden min-h-screen flex-col justify-between border-r border-slate-800 p-12 lg:flex xl:p-16">
-        <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-md border border-brand-400/40 bg-brand-700/25 text-brand-100 shadow-[0_10px_22px_rgba(42,116,255,0.35)]">
-            <ServerCog className="h-5 w-5" aria-hidden />
-          </span>
-          <div>
-            <p className="text-sm font-bold tracking-[0.12em] text-white">INFRAOPS</p>
-            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-300">Virtualization control plane</p>
+    <main className="relative min-h-screen overflow-hidden bg-[#151a19] px-5 py-8 text-white sm:px-8">
+      <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(216,240,106,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(216,240,106,0.06)_1px,transparent_1px)] [background-size:48px_48px]" />
+      <div className="absolute -left-40 top-32 h-96 w-96 rounded-full bg-brand-500/20 blur-[100px]" />
+      <div className="absolute -right-40 bottom-0 h-96 w-96 rounded-full bg-accent-500/15 blur-[110px]" />
+
+      <div className="relative mx-auto flex min-h-[calc(100vh-4rem)] max-w-6xl flex-col">
+        <header className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d8f06a] text-[#18201c]"><Boxes className="h-5 w-5" /></span>
+            <div><p className="text-sm font-bold tracking-[-0.02em]">InfraOps</p><p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/40">Virtual estate</p></div>
           </div>
-        </div>
+          <span className="hidden items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 sm:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Secure control plane</span>
+        </header>
 
-        <div className="max-w-2xl">
-          <p className="console-kicker text-brand-200">Infrastructure operations</p>
-          <h1 className="mt-3 text-4xl font-semibold leading-tight tracking-tight text-white xl:text-5xl">
-            Provision with control.<br />Operate with evidence.
-          </h1>
-          <p className="mt-5 max-w-xl text-sm leading-6 text-slate-300">
-            A focused administration surface for vSphere inventory, repeatable VM deployment,
-            guest configuration, and audited operational execution.
-          </p>
-
-          <div className="mt-10 grid max-w-xl gap-px overflow-hidden rounded-xl border border-slate-800 bg-slate-900/30 sm:grid-cols-3">
-            {[
-              [Workflow, 'Controlled workflows', 'Validated placement and ordered execution'],
-              [ShieldCheck, 'Policy aligned', 'RBAC, preflight checks, and audit evidence'],
-              [LockKeyhole, 'Secret safe', 'References only; credentials stay out of jobs'],
-            ].map(([Icon, title, description]) => {
-              const ItemIcon = Icon as typeof Workflow
-              return (
-                <div key={String(title)} className="bg-[#0b1727] p-4">
-                  <ItemIcon className="h-4 w-4 text-brand-500" aria-hidden />
-                  <p className="mt-3 text-xs font-semibold text-slate-100">{String(title)}</p>
-                  <p className="mt-1 text-[11px] leading-4 text-slate-500">{String(description)}</p>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-
-        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Authorized infrastructure personnel only</p>
-      </section>
-
-      <section className="flex min-h-screen items-center justify-center bg-transparent px-5 py-10">
-        <div className="w-full max-w-md">
-          <div className="mb-6 flex items-center gap-3 lg:hidden">
-            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand-700 text-white shadow-[0_8px_20px_rgba(36,86,191,0.35)]">
-              <ServerCog className="h-5 w-5" aria-hidden />
-            </span>
-            <p className="text-sm font-bold tracking-[0.1em] text-slate-950">INFRAOPS</p>
-          </div>
-
-          <div className="mb-6">
-            <p className="console-kicker">Secure operator access</p>
-            <h2 className="mt-1.5 text-2xl font-semibold tracking-tight text-slate-950">Sign in to the control plane</h2>
-            <p className="mt-2 text-xs leading-5 text-slate-600">Use your assigned infrastructure operations account.</p>
-          </div>
-
-          <form onSubmit={handleSubmit} className="shell-card p-6">
-            {error && (
-              <div className="mb-4">
-                <Alert tone="danger" title="Authentication failed">{error}</Alert>
-              </div>
-            )}
-
-            <FormRow label="Username" htmlFor="login-username" required>
-              <Input
-                id="login-username"
-                autoComplete="username"
-                autoFocus
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                required
-              />
-            </FormRow>
-
-            <FormRow label="Password" htmlFor="login-password" required>
-              <Input
-                id="login-password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                required
-              />
-            </FormRow>
-
-            <Button type="submit" className="mt-1 w-full" loading={submitting}>Authenticate</Button>
-            <div className="mt-5 flex items-start gap-2 border-t border-slate-200 pt-4 text-[11px] leading-4 text-slate-500">
-              <LockKeyhole className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
-              Sessions are role-scoped and all infrastructure mutations are audited.
+        <div className="my-auto grid items-center gap-12 py-16 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <section className="max-w-2xl">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#d8f06a]">Infrastructure operations workspace</p>
+            <h1 className="mt-5 text-4xl font-semibold leading-[1.08] tracking-[-0.045em] sm:text-5xl lg:text-6xl">
+              Your virtual estate,<br /><span className="text-white/45">clear and controlled.</span>
+            </h1>
+            <p className="mt-6 max-w-xl text-sm leading-6 text-white/55">
+              Create datacenter-aware virtual machines, follow deployments in real time, and keep every operational change understandable and auditable.
+            </p>
+            <div className="mt-10 grid gap-3 sm:grid-cols-3">
+              {[
+                [ShieldCheck, 'Validated', 'Live inventory and policy checks'],
+                [LockKeyhole, 'Audited', 'Immutable operator activity'],
+                [KeyRound, 'Role scoped', 'Least-privilege access'],
+              ].map(([Icon, title, text]) => {
+                const ItemIcon = Icon as typeof ShieldCheck
+                return (
+                  <div key={String(title)} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                    <ItemIcon className="h-4 w-4 text-[#d8f06a]" />
+                    <p className="mt-3 text-xs font-semibold">{String(title)}</p>
+                    <p className="mt-1 text-[11px] leading-4 text-white/40">{String(text)}</p>
+                  </div>
+                )
+              })}
             </div>
-          </form>
+          </section>
+
+          <section className="rounded-3xl border border-white/15 bg-white p-7 text-[#17201c] shadow-[0_32px_100px_rgba(0,0,0,0.35)] sm:p-8">
+            <div className="mb-7">
+              <p className="console-kicker">Operator access</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.035em]">Sign in to InfraOps</h2>
+              <p className="mt-2 text-xs leading-5 text-[#68736d]">Use the account assigned by your infrastructure administrator.</p>
+            </div>
+            <form onSubmit={handleSubmit}>
+              {error && <div className="mb-5"><Alert tone="danger" title="Authentication failed">{error}</Alert></div>}
+              <FormRow label="Username" htmlFor="login-username" required>
+                <Input id="login-username" autoComplete="username" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} required />
+              </FormRow>
+              <FormRow label="Password" htmlFor="login-password" required>
+                <Input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+              </FormRow>
+              <Button type="submit" className="mt-2 w-full" loading={submitting}>Sign in securely</Button>
+              <p className="mt-5 border-t border-[#e2e6e1] pt-4 text-center text-[10px] uppercase tracking-[0.12em] text-[#87908a]">Authorized infrastructure personnel only</p>
+            </form>
+          </section>
         </div>
-      </section>
+
+        <footer className="flex flex-wrap items-center justify-between gap-2 text-[10px] uppercase tracking-[0.12em] text-white/30"><span>InfraOps virtualization control plane</span><span>Protected session · audited activity</span></footer>
+      </div>
     </main>
   )
 }

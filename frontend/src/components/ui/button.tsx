@@ -2,8 +2,8 @@ import { forwardRef, type ButtonHTMLAttributes } from 'react'
 
 import { cn } from '@/lib/utils'
 
-export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
-export type ButtonSize = 'sm' | 'md'
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'ghost-inverse'
+export type ButtonSize = 'sm' | 'md' | 'icon'
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant
@@ -13,18 +13,21 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary:
-    'border border-transparent bg-gradient-to-r from-brand-600 to-brand-700 text-white shadow-[0_10px_24px_rgba(33,87,184,0.25)] transition-[transform,box-shadow,background-color] active:translate-y-[0.5px] hover:-translate-y-[1px] hover:from-brand-700 hover:to-brand-800 hover:shadow-[0_14px_30px_rgba(33,87,184,0.3)]',
+    'border border-[#153f34] bg-[#174f40] text-white shadow-[0_8px_20px_rgba(23,79,64,0.18)] hover:border-[#0f342a] hover:bg-[#123f34]',
   secondary:
-    'border border-[#d6def0] bg-white/85 text-slate-800 hover:border-brand-200 hover:bg-[#f5f8ff] active:translate-y-[0.5px]',
+    'border border-[#cfd5cf] bg-white text-[#27302c] shadow-sm hover:border-[#aeb9b1] hover:bg-[#f7f8f4]',
   danger:
-    'border border-transparent bg-gradient-to-r from-red-600 to-red-700 text-white shadow-[0_10px_24px_rgba(220,38,38,0.28)] transition-[transform,box-shadow,background-color] active:translate-y-[0.5px] hover:-translate-y-[1px] hover:from-red-700 hover:to-red-800 hover:shadow-[0_14px_30px_rgba(220,38,38,0.33)]',
+    'border border-[#a23824] bg-[#b8442e] text-white shadow-sm hover:bg-[#963923]',
   ghost:
-    'border border-transparent text-slate-600 hover:border-[#d6def0] hover:bg-[#f7faff] hover:text-slate-950 active:translate-y-[0.5px]',
+    'border border-transparent text-[#65706a] hover:bg-[#e9ede7] hover:text-[#1b2420]',
+  'ghost-inverse':
+    'border border-transparent text-white/60 hover:bg-white/10 hover:text-white',
 }
 
 const sizeClasses: Record<ButtonSize, string> = {
   sm: 'h-8 px-3 text-xs',
-  md: 'h-9 px-4 text-sm',
+  md: 'h-10 px-4 text-sm',
+  icon: 'h-9 w-9 p-0 text-sm',
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
@@ -36,8 +39,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       disabled={disabled || loading}
       className={cn(
-        'inline-flex items-center justify-center gap-1.5 rounded-md border font-semibold transition-all duration-150',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white',
+        'inline-flex items-center justify-center gap-1.5 rounded-lg border font-semibold transition-colors duration-150',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2b7a65] focus-visible:ring-offset-2 focus-visible:ring-offset-white',
         'disabled:pointer-events-none disabled:opacity-50',
         variantClasses[variant],
         sizeClasses[size],

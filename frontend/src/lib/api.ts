@@ -11,9 +11,11 @@ import type {
   DatastoreOut,
   HostOut,
   IpConflictReport,
+  IsoImageOut,
   JobDetailOut,
   JobListResponse,
   JobOut,
+  LogListResponse,
   NetworkOut,
   PlatformSettingsOut,
   PreflightReport,
@@ -27,6 +29,7 @@ import type {
   VCenterConnectionAdminOut,
   VCenterSummary,
 } from '@/types/api'
+import { toApiDateTime } from '@/lib/utils'
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '/api/v1'
 
@@ -170,15 +173,20 @@ export const api = {
     request<DatastoreClusterOut[]>(
       `/infrastructure/clusters/${clusterId}/datastore-clusters?vcenter_id=${vcenterId}`,
     ),
-  networks: (vcenterId: string, datacenterId?: string | null) =>
+  networks: (vcenterId: string, datacenterId: string) =>
     request<NetworkOut[]>(
-      `/infrastructure/networks?vcenter_id=${vcenterId}` +
-        (datacenterId ? `&datacenter_id=${datacenterId}` : ''),
+      `/infrastructure/networks?vcenter_id=${encodeURIComponent(vcenterId)}` +
+        `&datacenter_id=${encodeURIComponent(datacenterId)}`,
     ),
-  templates: (vcenterId: string, datacenterId?: string | null) =>
+  templates: (vcenterId: string, datacenterId: string) =>
     request<TemplateOut[]>(
-      `/infrastructure/templates?vcenter_id=${vcenterId}` +
-        (datacenterId ? `&datacenter_id=${datacenterId}` : ''),
+      `/infrastructure/templates?vcenter_id=${encodeURIComponent(vcenterId)}` +
+        `&datacenter_id=${encodeURIComponent(datacenterId)}`,
+    ),
+  isos: (vcenterId: string, datacenterId: string) =>
+    request<IsoImageOut[]>(
+      `/infrastructure/isos?vcenter_id=${encodeURIComponent(vcenterId)}` +
+        `&datacenter_id=${encodeURIComponent(datacenterId)}`,
     ),
 
   // Provisioning
@@ -270,14 +278,56 @@ export const api = {
     roles: () => request<RoleOut[]>('/admin/roles'),
   },
 
-  audit: (params: { page?: number; action?: string; username?: string; job_id?: string }) => {
+  audit: (params: {
+    page?: number
+    page_size?: number
+    action?: string
+    username?: string
+    job_id?: string
+    resource_type?: string
+    result?: string
+    datacenter?: string
+    search?: string
+    since?: string
+    until?: string
+  }) => {
     const query = new URLSearchParams()
     if (params.page) query.set('page', String(params.page))
+    if (params.page_size) query.set('page_size', String(params.page_size))
     if (params.action) query.set('action', params.action)
     if (params.username) query.set('username', params.username)
     if (params.job_id) query.set('job_id', params.job_id)
+    if (params.resource_type) query.set('resource_type', params.resource_type)
+    if (params.result) query.set('result', params.result)
+    if (params.datacenter) query.set('datacenter', params.datacenter)
+    if (params.search) query.set('search', params.search)
+    const since = toApiDateTime(params.since)
+    const until = toApiDateTime(params.until)
+    if (since) query.set('since', since)
+    if (until) query.set('until', until)
     const suffix = query.toString() ? `?${query.toString()}` : ''
     return request<AuditListResponse>(`/audit${suffix}`)
+  },
+
+  logs: (params: {
+    page?: number
+    page_size?: number
+    severity?: string
+    component?: string
+    datacenter?: string
+    search?: string
+    since?: string
+    until?: string
+  }) => {
+    const query = new URLSearchParams()
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        const normalized = key === 'since' || key === 'until' ? toApiDateTime(String(value)) : String(value)
+        if (normalized) query.set(key, normalized)
+      }
+    })
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return request<LogListResponse>(`/logs${suffix}`)
   },
 
   dashboard: () => request<DashboardResponse>('/stats/dashboard'),

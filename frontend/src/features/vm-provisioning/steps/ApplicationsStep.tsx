@@ -1,23 +1,33 @@
 import { Boxes } from 'lucide-react'
+import { useEffect } from 'react'
 
 import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { Checkbox } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useApplications } from '@/features/vm-provisioning/hooks'
 
-export function ApplicationsStep() {
+export function ApplicationsStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
   const data = wizard.data
   const applications = useApplications()
 
+  useEffect(() => {
+    if (!applications.isSuccess || data.application_ids.length === 0) return
+    const available = new Set(applications.data.map((application) => application.id))
+    const validSelections = data.application_ids.filter((id) => available.has(id))
+    if (validSelections.length !== data.application_ids.length) {
+      wizard.update({ application_ids: validSelections })
+    }
+  }, [applications.data, applications.isSuccess, data.application_ids, wizard.update])
+
   if (data.source_type === 'blank') {
     return (
       <section aria-label="Application selection" className="space-y-5">
-        <header>
+        {!embedded && <header>
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest software</p>
           <h2>Application deployment</h2>
           <p>Application installation requires a running guest with VMware Tools.</p>
-        </header>
+        </header>}
         <Alert tone="info" title="Not applicable to a blank VM">
           No applications will be submitted with this request. Install an OS before running guest automation.
         </Alert>
@@ -34,7 +44,7 @@ export function ApplicationsStep() {
 
   return (
     <section aria-label="Application selection" className="space-y-5">
-      <header>
+      {!embedded && <header>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest software</p>
@@ -43,7 +53,7 @@ export function ApplicationsStep() {
           </div>
           <Badge tone="neutral">{data.application_ids.length} selected</Badge>
         </div>
-      </header>
+      </header>}
 
       <div className="console-group">
         <div className="console-group-header">

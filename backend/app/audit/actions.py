@@ -46,3 +46,12 @@ class AuditAction:
     CREDENTIAL_DELETED = "CREDENTIAL_DELETED"
 
     SETTINGS_UPDATED = "SETTINGS_UPDATED"
+
+
+_ACRONYMS = {"Ip": "IP", "Vm": "VM", "Vcenter": "vCenter"}
+
+
+def audit_action_label(action: str) -> str:
+    """Translate a canonical action identifier into a stable display label."""
+    words = action.replace(".", "_").split("_")
+    return " ".join(_ACRONYMS.get(word.title(), word.title()) for word in words if word)

@@ -14,7 +14,6 @@ import uuid
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Enum as SaEnum,
     Float,
     ForeignKey,
     Integer,
@@ -22,6 +21,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+)
+from sqlalchemy import (
+    Enum as SaEnum,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -73,6 +75,8 @@ class ProvisioningJob(Base):
         SaEnum(JobStatus, name="job_status"), nullable=False, default=JobStatus.QUEUED, index=True
     )
     vm_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    datacenter_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    datacenter_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -91,13 +95,13 @@ class ProvisioningJob(Base):
     created_at: Mapped[dt.datetime] = created_at_column()
     updated_at: Mapped[dt.datetime] = updated_at_column()
 
-    steps: Mapped[list["ProvisioningJobStep"]] = relationship(
+    steps: Mapped[list[ProvisioningJobStep]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan",
         order_by="ProvisioningJobStep.sequence",
         lazy="selectin",
     )
-    request: Mapped["VmProvisioningRequest | None"] = relationship(
+    request: Mapped[VmProvisioningRequest | None] = relationship(
         back_populates="job", cascade="all, delete-orphan", uselist=False
     )
 

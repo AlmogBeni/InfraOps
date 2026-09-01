@@ -49,6 +49,7 @@ async def submit_provisioning(
 
     job = await repo.create_job(
         vm_name=request.vm.name,
+        datacenter_id=request.compute.datacenter_id,
         requested_by_user_id=user.id if user else None,
         idempotency_key=idempotency_key,
         request_payload=request.model_dump(mode="json"),
@@ -59,6 +60,7 @@ async def submit_provisioning(
         resource_type="provisioning_job",
         resource_name=request.vm.name,
         job_id=job.id,
+        datacenter_id=request.compute.datacenter_id,
         result="queued",
         source_ip=source_ip,
         details={

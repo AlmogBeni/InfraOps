@@ -11,17 +11,17 @@ from app.api.deps import DbSession, require
 from app.auth.permissions import Permission
 from app.models.infrastructure import VCenterConnection
 from app.models.jobs import JobStatus, JobType, ProvisioningJob
-from app.secrets.service import get_secrets_service
 from app.schemas.common import HealthComponent
 from app.schemas.dashboard import DashboardResponse, DashboardStats
 from app.schemas.jobs import JobOut
+from app.secrets.service import get_secrets_service
 
 router = APIRouter(tags=["dashboard"])
 
 
 @router.get("/stats/dashboard", response_model=DashboardResponse)
 async def dashboard(db: DbSession, user=require(Permission.JOBS_READ)) -> DashboardResponse:
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     async def scalar(query) -> float:
@@ -118,7 +118,9 @@ async def dashboard(db: DbSession, user=require(Permission.JOBS_READ)) -> Dashbo
         recent_jobs=[
             JobOut(
                 id=str(job.id), job_type=job.job_type, status=job.status,
-                vm_name=job.vm_name, requested_by_username=usernames.get(job.requested_by_user_id),
+                vm_name=job.vm_name, datacenter_id=job.datacenter_id,
+                datacenter_name=job.datacenter_name,
+                requested_by_username=usernames.get(job.requested_by_user_id),
                 current_stage=job.current_stage, progress=job.progress,
                 error_summary=job.error_summary, cancel_requested=job.cancel_requested,
                 queued_at=job.queued_at, started_at=job.started_at,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from app.api.v1.provisioning import _normalized_request_payload
 from app.schemas.provisioning import (
     FirmwareType,
     HardwareSpec,
@@ -39,6 +40,17 @@ class TestVmSpec:
         rebuilt = ProvisioningRequest.model_validate(payload)
         assert rebuilt.source_type == VmSourceType.TEMPLATE
 
+    def test_legacy_job_payload_is_normalized_for_current_readers(self):
+        payload = make_request().model_dump(mode="json")
+        payload.pop("source_type")
+        payload["guest"].pop("iso_id")
+
+        normalized = _normalized_request_payload(payload)
+
+        assert normalized is not None
+        assert normalized["source_type"] == "template"
+        assert normalized["guest"]["iso_id"] is None
+
     def test_template_source_requires_template(self):
         payload = make_request().model_dump(mode="json")
         payload["guest"]["template_id"] = None
@@ -50,6 +62,7 @@ class TestVmSpec:
         payload["source_type"] = "blank"
         payload["guest"] = {
             "template_id": None,
+            "iso_id": None,
             "hostname": None,
             "timezone": None,
             "domain_join": None,
@@ -57,6 +70,26 @@ class TestVmSpec:
         rebuilt = ProvisioningRequest.model_validate(payload)
         assert rebuilt.source_type == VmSourceType.BLANK
         assert rebuilt.guest.template_id is None
+        assert rebuilt.guest.iso_id is None
+
+    def test_blank_source_accepts_selected_iso(self):
+        payload = make_request().model_dump(mode="json")
+        payload["source_type"] = "blank"
+        payload["guest"] = {
+            "template_id": None,
+            "iso_id": "iso-corp-windows-2025",
+            "hostname": None,
+            "timezone": None,
+            "domain_join": None,
+        }
+        rebuilt = ProvisioningRequest.model_validate(payload)
+        assert rebuilt.guest.iso_id == "iso-corp-windows-2025"
+
+    def test_template_source_rejects_iso(self):
+        payload = make_request().model_dump(mode="json")
+        payload["guest"]["iso_id"] = "iso-corp-windows-2025"
+        with pytest.raises(ValidationError, match="iso_id must be null"):
+            ProvisioningRequest.model_validate(payload)
 
     def test_blank_source_rejects_stale_template(self):
         payload = make_request().model_dump(mode="json")

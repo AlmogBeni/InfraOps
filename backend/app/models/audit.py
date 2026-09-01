@@ -30,6 +30,8 @@ class AuditEvent(Base):
     resource_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
     resource_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    datacenter_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    datacenter_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     result: Mapped[str | None] = mapped_column(String(30), nullable=True)
     source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
@@ -44,6 +46,8 @@ class AuditEvent(Base):
             "resource_type": self.resource_type,
             "resource_name": self.resource_name,
             "job_id": str(self.job_id) if self.job_id else None,
+            "datacenter_id": self.datacenter_id,
+            "datacenter_name": self.datacenter_name,
             "result": self.result,
             "source_ip": self.source_ip,
             "details": self.details,

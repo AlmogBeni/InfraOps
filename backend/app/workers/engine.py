@@ -17,6 +17,7 @@ from app.core.logging import bind_logging_context, configure_logging, get_logger
 from app.core.metrics import jobs_total
 from app.db.session import session_factory
 from app.models.jobs import JobStatus, StepStatus
+from app.models.user import User
 from app.repositories.jobs import JobRepository
 from app.secrets.service import get_secrets_service
 from app.services.applications.installer import ApplicationInstaller
@@ -61,7 +62,7 @@ class JobEngine:
                 await asyncio.wait_for(
                     self._stopping.wait(), timeout=self._poll_interval
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
         await self.drain()
 
@@ -107,6 +108,11 @@ class JobEngine:
                     return
 
                 guest_ops = get_guest_operations()
+                requester = (
+                    await db.get(User, job.requested_by_user_id)
+                    if job.requested_by_user_id
+                    else None
+                )
                 ctx = JobRunContext(
                     db=db,
                     job=job,
@@ -118,6 +124,7 @@ class JobEngine:
                     app_installer=ApplicationInstaller(guest_ops),
                     secrets=get_secrets_service(),
                     publisher=self._publisher,
+                    actor_username=requester.username if requester else None,
                 )
 
                 jobs_total.inc(status="STARTED")
@@ -126,6 +133,9 @@ class JobEngine:
                     resource_type="virtual_machine",
                     resource_name=request.vm.name,
                     job_id=job_id,
+                    username=requester.username if requester else None,
+                    datacenter_id=request.compute.datacenter_id,
+                    datacenter_name=job.datacenter_name,
                     result="running",
                 )
                 await db.commit()
@@ -138,7 +148,7 @@ class JobEngine:
                     await self._fail_before_pipeline(db, job, RuntimeError("Pipeline crashed unexpectedly"))
 
     async def _fail_before_pipeline(self, db, job, exc: Exception) -> None:
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
         human = str(exc) or type(exc).__name__
         job.status = JobStatus.FAILED
         job.error_summary = human[:500]
@@ -150,11 +160,23 @@ class JobEngine:
             if step.status in (StepStatus.PENDING, StepStatus.RUNNING):
                 step.status = StepStatus.CANCELLED
         jobs_total.inc(status=JobStatus.FAILED.value)
+        requester = (
+            await db.get(User, job.requested_by_user_id)
+            if job.requested_by_user_id
+            else None
+        )
+        payload = job.request.payload if job.request else {}
+        compute = payload.get("compute", {}) if isinstance(payload, dict) else {}
+        if not isinstance(compute, dict):
+            compute = {}
         await AuditRecorder(db).record(
             AuditAction.JOB_FAILED,
             resource_type="virtual_machine",
             resource_name=job.vm_name,
             job_id=job.id,
+            username=requester.username if requester else None,
+            datacenter_id=compute.get("datacenter_id"),
+            datacenter_name=job.datacenter_name,
             result="failure",
             detail_text=human,
         )

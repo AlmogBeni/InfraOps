@@ -1,67 +1,27 @@
-"""Focused tests for real-vSphere template inventory scoping."""
+"""Focused tests for real-vSphere OVF/OVA Content Library discovery."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from types import SimpleNamespace
 
+import httpx
 import pytest
 
-from app.services.vmware.base import VCenterTarget
+from app.core.errors import InfraOperationError
+from app.schemas.infrastructure import TemplateOut
+from app.services.vmware.base import CloneSpec, VCenterTarget
+from app.services.vmware.content_library import (
+    ContentLibraryClient,
+    library_item_id,
+    package_type,
+)
 from app.services.vmware.vsphere import VsphereVMwareService
 
 
-class _View:
-    def __init__(self, entities: list[object]) -> None:
-        self.view = entities
-        self.destroyed = False
-
-    def Destroy(self) -> None:  # noqa: N802 - pyVmomi API spelling
-        self.destroyed = True
-
-
-def _inventory_vm(name: str, moref: str, datacenter: object, *, template: bool) -> object:
-    vm_folder = datacenter.vmFolder
-    nested_folder = SimpleNamespace(parent=vm_folder)
-    return SimpleNamespace(
-        _moId=moref,
-        name=name,
-        parent=nested_folder,
-        config=SimpleNamespace(
-            template=template,
-            guestFullName="Microsoft Windows Server 2022 (64-bit)",
-            modifyDate=None,
-            annotation="Golden image",
-            hardware=SimpleNamespace(numCPU=4, memoryMB=8192, device=[]),
-        ),
-        summary=None,
-    )
-
-
-@pytest.mark.asyncio
-async def test_templates_are_discovered_across_datacenters(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO)
-    first_dc = SimpleNamespace(_moId="datacenter-21", name="Production")
-    first_dc.vmFolder = SimpleNamespace(parent=first_dc)
-    second_dc = SimpleNamespace(_moId="datacenter-22", name="Lab")
-    second_dc.vmFolder = SimpleNamespace(parent=second_dc)
-    first_template = _inventory_vm("WS2022-GOLD", "vm-101", first_dc, template=True)
-    second_template = _inventory_vm("LAB-TEMPLATE", "vm-102", second_dc, template=True)
-    ordinary_vm = _inventory_vm("RUNNING-VM", "vm-103", first_dc, template=False)
-    view = _View([first_template, second_template, ordinary_vm])
-    content = SimpleNamespace(
-        rootFolder=object(),
-        viewManager=SimpleNamespace(CreateContainerView=lambda *_: view),
-    )
-
-    service = object.__new__(VsphereVMwareService)
-    service._content = lambda _: content
-    async def invoke(_, fn, *, operation="session-call"):
-        assert operation == "list-templates"
-        return fn(object())
-
-    service._with_session = invoke
-    target = VCenterTarget(
+@pytest.fixture
+def target() -> VCenterTarget:
+    return VCenterTarget(
         id="11111111-1111-4111-8111-111111111111",
         name="vCenter",
         host="vcenter.example.test",
@@ -71,21 +31,133 @@ async def test_templates_are_discovered_across_datacenters(caplog: pytest.LogCap
         verify_ssl=True,
     )
 
-    templates = await service.get_templates(target, first_dc._moId)
 
-    assert {template.id for template in templates} == {"vm-101", "vm-102"}
-    assert {template.datacenter_id for template in templates} == {first_dc._moId, second_dc._moId}
-    assert {template.datacenter_name for template in templates} == {"Production", "Lab"}
-    assert view.destroyed is True
-    assert "visible_classic_templates=2" in caplog.text
-    assert "returned_templates=2" in caplog.text
+def test_package_type_uses_actual_package_files() -> None:
+    assert package_type(["appliance.ovf", "disk-1.vmdk"]) == "OVF"
+    assert package_type(["appliance.ova"]) == "OVA"
+    assert package_type([]) == "OVF"
+
+
+def test_public_library_item_ids_are_opaque_and_validated() -> None:
+    assert library_item_id("library-item:9b6d") == "9b6d"
+    with pytest.raises(ValueError):
+        library_item_id("vm-101")
+
+
+@pytest.mark.asyncio
+async def test_content_library_discovery_returns_only_real_ovf_items(target) -> None:
+    responses = {
+        "/content/library": ["library-1"],
+        "/content/library/library-1": {"name": "Production Appliances"},
+        "/content/library/item?library_id=library-1": ["item-ovf", "item-iso"],
+        "/content/library/item/item-ovf": {
+            "name": "Payroll Appliance",
+            "type": "ovf",
+            "description": "Signed payroll service appliance",
+            "size": 2048,
+            "last_modified_time": "2026-08-31T12:30:00Z",
+        },
+        "/content/library/item/item-ovf/file": [
+            {"name": "payroll.ova", "size": 2048},
+        ],
+        "/content/library/item/item-iso": {
+            "name": "Installer ISO",
+            "type": "iso",
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.raw_path.decode()
+        return httpx.Response(200, json=responses[key])
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://vcenter.example.test",
+    )
+
+    @contextlib.asynccontextmanager
+    async def fake_client(_target):
+        async with http:
+            yield http
+
+    client = object.__new__(ContentLibraryClient)
+    client._client = fake_client
+    templates = await client.list_ovf_packages(target, "datacenter-21")
+
+    assert templates == [
+        TemplateOut(
+            id="library-item:item-ovf",
+            name="Payroll Appliance",
+            type="OVA",
+            description="Signed payroll service appliance",
+            datacenter_id=None,
+            datacenter_name=None,
+            storage_name=None,
+            location="Content Library / Production Appliances / Payroll Appliance",
+            size_bytes=2048,
+            last_modified="2026-08-31T12:30:00Z",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_vsphere_template_discovery_delegates_to_content_library(
+    target, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    expected = TemplateOut(
+        id="library-item:item-1",
+        name="Application Appliance",
+        type="OVF",
+        description="",
+    )
+
+    class FakeContentLibrary:
+        async def list_ovf_packages(self, called_target, datacenter_id):
+            assert called_target is target
+            assert datacenter_id == "datacenter-21"
+            return [expected]
+
+    service = object.__new__(VsphereVMwareService)
+    service._content_library = FakeContentLibrary()
+    templates = await service.get_templates(target, "datacenter-21")
+
+    assert templates == [expected]
+    assert "returned_templates=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_real_deployment_rejects_classic_vm_template_ids(target) -> None:
+    class FakeContentLibrary:
+        @staticmethod
+        def is_library_item(value: str) -> bool:
+            return value.startswith("library-item:")
+
+    service = object.__new__(VsphereVMwareService)
+    service._content_library = FakeContentLibrary()
+
+    with pytest.raises(InfraOperationError, match="not an OVF/OVA"):
+        await service.clone_from_template(
+            target,
+            CloneSpec(
+                template_id="vm-101",
+                vm_name="SERVER-101",
+                datacenter_id="datacenter-21",
+            ),
+        )
 
 
 def test_datacenter_resolution_handles_nested_vm_folders() -> None:
-    datacenter = SimpleNamespace(name="Production")
-    vm_folder = SimpleNamespace(parent=datacenter)
+    class Entity:
+        pass
+
+    datacenter = Entity()
+    vm_folder = Entity()
+    vm_folder.parent = datacenter
     datacenter.vmFolder = vm_folder
-    nested = SimpleNamespace(parent=vm_folder)
-    vm = SimpleNamespace(parent=nested)
+    nested = Entity()
+    nested.parent = vm_folder
+    vm = Entity()
+    vm.parent = nested
 
     assert VsphereVMwareService._owning_datacenter(vm) is datacenter

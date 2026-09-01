@@ -12,7 +12,6 @@ import json
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.audit.actions import AuditAction
 from app.core.logging import get_logger, redact
 from app.models.audit import AuditEvent
 from app.models.user import User
@@ -35,6 +34,8 @@ class AuditRecorder:
         resource_type: str | None = None,
         resource_name: str | None = None,
         job_id=None,
+        datacenter_id: str | None = None,
+        datacenter_name: str | None = None,
         result: str | None = None,
         source_ip: str | None = None,
         details: dict | None = None,
@@ -50,6 +51,8 @@ class AuditRecorder:
             resource_type=resource_type,
             resource_name=(resource_name[:255] if resource_name else None),
             job_id=job_id,
+            datacenter_id=datacenter_id,
+            datacenter_name=datacenter_name,
             result=result,
             source_ip=source_ip,
             details=safe_details,
@@ -59,12 +62,13 @@ class AuditRecorder:
         await self.session.flush()
 
         log.info(
-            "audit action=%s user=%s resource=%s/%s job=%s result=%s details=%s",
+            "audit action=%s user=%s resource=%s/%s job=%s datacenter=%s result=%s details=%s",
             action,
             event.username,
             resource_type,
             resource_name,
             str(job_id) if job_id else "-",
+            datacenter_name or datacenter_id or "-",
             result or "-",
             serialized,
         )

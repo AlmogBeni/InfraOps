@@ -12,6 +12,7 @@ from app.schemas.infrastructure import (
     DatastoreClusterOut,
     DatastoreOut,
     HostOut,
+    IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
     TemplateOut,
@@ -40,6 +41,7 @@ class VCenterTarget:
 class CloneSpec:
     template_id: str
     vm_name: str
+    datacenter_id: str
     description: str = ""
     cluster_id: str = ""
     host_id: str | None = None
@@ -68,6 +70,7 @@ class BlankVmSpec:
     disks: tuple[DiskSpec, ...] = ()
     firmware: FirmwareType = FirmwareType.EFI
     secure_boot: bool = False
+    iso_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -113,10 +116,13 @@ class VMwareService(ABC):
     async def get_datastore_clusters(self, target: VCenterTarget, cluster_id: str) -> list[DatastoreClusterOut]: ...
 
     @abstractmethod
-    async def get_networks(self, target: VCenterTarget, datacenter_id: str | None = None) -> list[NetworkOut]: ...
+    async def get_networks(self, target: VCenterTarget, datacenter_id: str) -> list[NetworkOut]: ...
 
     @abstractmethod
     async def get_templates(self, target: VCenterTarget, datacenter_id: str | None = None) -> list[TemplateOut]: ...
+
+    @abstractmethod
+    async def get_isos(self, target: VCenterTarget, datacenter_id: str) -> list[IsoImageOut]: ...
 
     # ── Inventory queries ────────────────────────────────────────────────────
 
@@ -157,7 +163,12 @@ class VMwareService(ABC):
 
     @abstractmethod
     async def attach_network(
-        self, target: VCenterTarget, vm_id: str, network_id: str, adapter_type: AdapterType
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        network_id: str,
+        adapter_type: AdapterType,
+        datacenter_id: str,
     ) -> None: ...
 
     @abstractmethod

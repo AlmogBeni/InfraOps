@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input, Select, Textarea } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
@@ -23,6 +23,7 @@ export function CertificatePackagesPage() {
     pem_body: '',
   })
   const [formError, setFormError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [certFile, setCertFile] = useState<File | null>(null)
   const [fileValidation, setFileValidation] = useState<{ valid: boolean; message: string } | null>(null)
   const [fileReading, setFileReading] = useState(false)
@@ -73,13 +74,23 @@ export function CertificatePackagesPage() {
 
   const removeCertificate = useMutation({
     mutationFn: (id: string) => api.admin.deleteCertificate(id),
-    onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      setActionError(null)
+      invalidate()
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'The certificate could not be deleted.'),
   })
 
   const toggleCertificate = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.admin.updateCertificate(id, { enabled }),
-    onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      setActionError(null)
+      invalidate()
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'The certificate status could not be changed.'),
   })
 
   function closeCertificateDialog() {
@@ -143,10 +154,10 @@ export function CertificatePackagesPage() {
         meta={<span>{packages.data?.length ?? 0} package(s) configured</span>}
       />
 
+      {actionError && <Alert tone="danger" title="Certificate action could not be completed">{actionError}</Alert>}
+
       {packages.isLoading ? (
-        <div className="flex h-40 items-center justify-center">
-          <Spinner />
-        </div>
+        <LoadingState title="Loading certificate packages" description="Retrieving governed trust chains and validity information." />
       ) : packages.isError ? (
         <Alert tone="danger" title="Certificate catalog unavailable">
           Certificate packages could not be loaded.{' '}
@@ -162,7 +173,7 @@ export function CertificatePackagesPage() {
         <div className="space-y-4">
           {(packages.data ?? []).map((package_) => (
             <div key={package_.id} className="shell-card overflow-hidden">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#d6def0] bg-gradient-to-r from-[#f8faff] to-[#eef3ff] px-4 py-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#dfe4de] bg-[#f7f8f5] px-5 py-3">
                 <div>
                   <p className="text-sm font-semibold text-slate-800">
                     {package_.name}{' '}
@@ -228,7 +239,7 @@ export function CertificatePackagesPage() {
                   </tbody>
                 </Table>
               ) : (
-                <p className="px-4 py-3 text-xs text-slate-400">No certificates registered in this package.</p>
+                <p className="px-5 py-4 text-xs text-[#7b857f]">No certificates are registered in this package.</p>
               )}
             </div>
           ))}

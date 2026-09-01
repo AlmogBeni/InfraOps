@@ -1,7 +1,8 @@
 import { Database, Layers3 } from 'lucide-react'
+import { useEffect, useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { FormRow, RadioGroup, Select } from '@/components/ui/form-controls'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { useWizard } from '@/features/vm-provisioning/context'
@@ -13,31 +14,65 @@ function usageTone(percent: number): 'success' | 'warning' | 'danger' {
   return 'success'
 }
 
-export function StorageStep() {
+export function StorageStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
+  const updateWizard = wizard.update
   const data = wizard.data
   const datastores = useDatastores(data.vcenter_id, data.cluster_id)
   const datastoreClusters = useDatastoreClusters(data.vcenter_id, data.cluster_id)
   const items = datastores.data ?? []
+  const accessibleItems = useMemo(
+    () => (datastores.data ?? []).filter((entry) => entry.accessible),
+    [datastores.data],
+  )
+  const noAccessibleDatastores = Boolean(
+    data.cluster_id && datastores.isSuccess && accessibleItems.length === 0,
+  )
+
+  useEffect(() => {
+    if (!datastores.isSuccess) return
+
+    const accessibleIds = new Set(accessibleItems.map((entry) => entry.id))
+    const staleDatastore = Boolean(data.datastore_id && !accessibleIds.has(data.datastore_id))
+    const blockAutomaticPlacement = accessibleIds.size === 0 && data.storage_mode === 'auto'
+    let disksChanged = false
+    const disks = data.disks.map((disk) => {
+      if (!disk.datastore_id || accessibleIds.has(disk.datastore_id)) return disk
+      disksChanged = true
+      return { ...disk, datastore_id: null }
+    })
+
+    if (staleDatastore || disksChanged || blockAutomaticPlacement) {
+      updateWizard({
+        ...(staleDatastore ? { datastore_id: null } : {}),
+        ...(disksChanged ? { disks } : {}),
+        ...(blockAutomaticPlacement ? { storage_mode: 'manual' } : {}),
+      })
+    }
+  }, [accessibleItems, data.datastore_id, data.disks, data.storage_mode, datastores.isSuccess, updateWizard])
 
   return (
     <section aria-label="Storage selection" className="space-y-5">
-      <header>
+      {!embedded && <header>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Storage placement</p>
             <h2>Datastore selection</h2>
             <p>Choose automatic capacity-aware placement or pin all requested disks to a datastore.</p>
           </div>
-          <Badge tone="neutral">{items.length} datastore(s)</Badge>
+          <Badge tone="neutral">{accessibleItems.length} accessible datastore(s)</Badge>
         </div>
-      </header>
+      </header>}
 
       {datastores.isError && (
         <Alert tone="danger" title="Datastore retrieval failed">
           <span>{datastores.error instanceof Error ? datastores.error.message : 'Datastores could not be loaded.'}</span>{' '}
           <Button type="button" size="sm" variant="secondary" onClick={() => void datastores.refetch()}>Retry</Button>
         </Alert>
+      )}
+
+      {datastores.isLoading && data.storage_mode === 'auto' && (
+        <LoadingState title="Loading cluster storage" description="Checking accessible datastores and capacity for automatic placement." />
       )}
 
       <div className="console-group">
@@ -60,11 +95,13 @@ export function StorageStep() {
                   value: 'auto',
                   label: 'Automatic placement',
                   description: 'Use the accessible datastore with the most available capacity.',
+                  disabled: noAccessibleDatastores,
                 },
                 {
                   value: 'manual',
                   label: 'Specific datastore',
                   description: 'Pin the requested disks to an explicitly selected datastore.',
+                  disabled: noAccessibleDatastores,
                 },
               ]}
             />
@@ -72,7 +109,7 @@ export function StorageStep() {
         </div>
       </div>
 
-      {data.storage_mode === 'manual' && (
+      {(data.storage_mode === 'manual' || noAccessibleDatastores) && (
         <div className="console-group">
           <div className="console-group-header">
             <div>
@@ -82,12 +119,11 @@ export function StorageStep() {
           </div>
 
           {datastores.isLoading ? (
-            <div className="flex h-24 items-center justify-center gap-2 text-xs text-slate-500">
-              <Spinner /> Loading datastores…
-            </div>
-          ) : !datastores.isError && data.cluster_id && items.length === 0 ? (
+            <LoadingState title="Loading datastores" description="Checking accessible storage targets and current free capacity." />
+          ) : !datastores.isError && data.cluster_id && accessibleItems.length === 0 ? (
             <EmptyState
-              title="No datastores are available in the selected cluster."
+              title="No accessible datastores are available in the selected cluster."
+              description={items.length > 0 ? 'Storage was discovered, but every datastore is currently inaccessible.' : undefined}
               action={<Button type="button" size="sm" variant="secondary" onClick={() => void datastores.refetch()}>Retry</Button>}
             />
           ) : (
@@ -98,10 +134,10 @@ export function StorageStep() {
                     id="datastore"
                     value={data.datastore_id ?? ''}
                     onChange={(event) => wizard.update({ datastore_id: event.target.value || null })}
-                    disabled={!data.cluster_id || datastores.isError || items.length === 0}
+                    disabled={!data.cluster_id || datastores.isError || accessibleItems.length === 0}
                   >
                     <option value="">{!data.cluster_id ? 'Select a cluster first' : 'Select datastore'}</option>
-                    {items.filter((entry) => entry.accessible).map((entry) => (
+                    {accessibleItems.map((entry) => (
                       <option key={entry.id} value={entry.id}>
                         {entry.name} · {entry.free_gb.toFixed(0)} GB free · {entry.type}
                       </option>

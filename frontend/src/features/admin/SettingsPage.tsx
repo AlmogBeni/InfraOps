@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Alert, Badge, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { FormRow, Input, Textarea } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
@@ -39,9 +39,7 @@ export function SettingsPage() {
   })
 
   if (settings.isLoading) {
-    return (
-      <div className="flex h-40 items-center justify-center"><Spinner /></div>
-    )
+    return <LoadingState title="Loading platform policy" description="Retrieving provisioning controls and execution defaults." />
   }
   if (settings.isError) {
     return (
@@ -51,7 +49,7 @@ export function SettingsPage() {
       </Alert>
     )
   }
-  if (!draft) return <div className="flex h-40 items-center justify-center"><Spinner /></div>
+  if (!draft) return <LoadingState title="Preparing platform policy" description="Building an editable settings workspace." />
   const isDirty = JSON.stringify(draft) !== JSON.stringify(settings.data)
 
   return (
@@ -159,19 +157,32 @@ export function SettingsPage() {
       <Card>
         <CardHeader><CardTitle>Roles</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <Table className="border-0">
-            <thead>
-              <tr><Th>Role</Th><Th>Description</Th></tr>
-            </thead>
-            <tbody>
-              {(roles.data ?? []).map((role) => (
-                <Tr key={role.id}>
-                  <Td className="font-medium text-slate-800">{role.name}</Td>
-                  <Td className="text-slate-600">{role.description}</Td>
-                </Tr>
-              ))}
-            </tbody>
-          </Table>
+          {roles.isLoading ? (
+            <LoadingState title="Loading roles" description="Retrieving the platform's access roles." />
+          ) : roles.isError ? (
+            <div className="p-4">
+              <Alert tone="danger" title="Roles could not be loaded">
+                The role catalog is unavailable.{' '}
+                <Button size="sm" variant="secondary" onClick={() => void roles.refetch()}>Retry</Button>
+              </Alert>
+            </div>
+          ) : (roles.data ?? []).length === 0 ? (
+            <EmptyState title="No roles are configured" description="No platform access roles were returned." />
+          ) : (
+            <Table className="border-0">
+              <thead>
+                <tr><Th>Role</Th><Th>Description</Th></tr>
+              </thead>
+              <tbody>
+                {(roles.data ?? []).map((role) => (
+                  <Tr key={role.id}>
+                    <Td className="font-medium text-slate-800">{role.name}</Td>
+                    <Td className="text-slate-600">{role.description}</Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatDuration, humanizeStageKey, maskToPrefix, prefixToMask } from '@/lib/utils'
+import { formatDuration, humanizeStageKey, maskToPrefix, prefixToMask, toApiDateTime } from '@/lib/utils'
 
 describe('subnet helpers', () => {
   it.each([
@@ -35,5 +35,18 @@ describe('humanizeStageKey', () => {
   it('prettifies stage keys', () => {
     expect(humanizeStageKey('wait_for_tools')).toBe('Wait For Tools')
     expect(humanizeStageKey(null)).toBe('—')
+  })
+})
+
+describe('toApiDateTime', () => {
+  it('converts a browser-local date/time to an unambiguous UTC instant', () => {
+    const localValue = '2026-09-01T12:30'
+    expect(toApiDateTime(localValue)).toBe(new Date(localValue).toISOString())
+    expect(toApiDateTime(localValue)).toMatch(/Z$/)
+  })
+
+  it('omits empty or invalid date filters', () => {
+    expect(toApiDateTime('')).toBe('')
+    expect(toApiDateTime('not-a-date')).toBe('')
   })
 })

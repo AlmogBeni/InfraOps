@@ -8,7 +8,7 @@ import { useWizard } from '@/features/vm-provisioning/context'
 const CPU_CHOICES = [1, 2, 4, 6, 8, 12, 16, 24, 32, 48, 64]
 const MEMORY_GB_CHOICES = [2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256]
 
-export function HardwareStep() {
+export function HardwareStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
   const data = wizard.data
   const totalDisk = data.disks.reduce((total, disk) => total + disk.size_gb, 0)
@@ -21,7 +21,7 @@ export function HardwareStep() {
 
   return (
     <section aria-label="Compute configuration" className="space-y-5">
-      <header>
+      {!embedded && <header>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Virtual hardware</p>
@@ -30,7 +30,7 @@ export function HardwareStep() {
           </div>
           <Badge tone="neutral">{data.cpu} vCPU · {data.memory_gb} GB · {totalDisk} GB</Badge>
         </div>
-      </header>
+      </header>}
 
       <div className="console-group">
         <div className="console-group-header">

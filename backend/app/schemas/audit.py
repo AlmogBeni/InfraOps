@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AuditEventOut(BaseModel):
@@ -15,12 +15,16 @@ class AuditEventOut(BaseModel):
     user_id: str | None = None
     username: str | None = None
     action: str
+    action_label: str
     resource_type: str | None = None
     resource_name: str | None = None
     job_id: str | None = None
+    datacenter_id: str | None = None
+    datacenter_name: str | None = None
     result: str | None = None
     source_ip: str | None = None
-    details: dict = {}
+    details: dict = Field(default_factory=dict)
+    detail_text: str | None = None
 
 
 class AuditListResponse(BaseModel):

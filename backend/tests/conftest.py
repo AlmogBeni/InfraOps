@@ -59,7 +59,10 @@ def make_request(**overrides) -> ProvisioningRequest:
             secure_boot=True,
             disks=[DiskSpec(size_gb=100, provisioning=DiskProvisioning.THIN)],
         ),
-        guest=GuestSpec(template_id="vm-62", hostname="SERVER-PROD-042"),
+        guest=GuestSpec(
+            template_id="ova-corp-windows-2025",
+            hostname="SERVER-PROD-042",
+        ),
         network=NetworkSpec(
             network_id="dvportgroup-51",
             adapter_type=AdapterType.VMXNET3,

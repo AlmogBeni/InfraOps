@@ -4,17 +4,19 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { FormRow, Input, Select } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
+import { humanizeIdentifier } from '@/lib/utils'
 
 export function CredentialsPage() {
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ name: '', provider: 'env', description: '' })
   const [formError, setFormError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const credentials = useQuery({ queryKey: ['admin-credentials'], queryFn: () => api.admin.credentials() })
 
@@ -30,7 +32,12 @@ export function CredentialsPage() {
 
   const remove = useMutation({
     mutationFn: (id: string) => api.admin.deleteCredential(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['admin-credentials'] }),
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      setActionError(null)
+      void queryClient.invalidateQueries({ queryKey: ['admin-credentials'] })
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'The credential reference could not be deleted.'),
   })
 
   return (
@@ -43,8 +50,10 @@ export function CredentialsPage() {
         meta={<span>{credentials.data?.length ?? 0} registered reference(s)</span>}
       />
 
+      {actionError && <Alert tone="danger" title="Credential action could not be completed">{actionError}</Alert>}
+
       {credentials.isLoading ? (
-        <div className="flex h-40 items-center justify-center"><Spinner /></div>
+        <LoadingState title="Loading credential references" description="Retrieving the safe names registered with external secret providers." />
       ) : credentials.isError ? (
         <Alert tone="danger" title="Secret reference registry unavailable">
           Credential references could not be loaded.{' '}
@@ -71,7 +80,7 @@ export function CredentialsPage() {
             {(credentials.data ?? []).map((credential) => (
               <Tr key={credential.id}>
                 <Td className="font-mono text-xs font-medium text-slate-800">{credential.name}</Td>
-                <Td><Badge tone="info">{credential.provider}</Badge></Td>
+                <Td><Badge tone="info">{humanizeIdentifier(credential.provider)}</Badge></Td>
                 <Td className="text-slate-600">{credential.description}</Td>
                 <Td className="font-mono text-[11px] text-slate-400">
                   SECRETS_{credential.name.replaceAll(/[^\w]/g, '_').toUpperCase()}_USERNAME / _PASSWORD

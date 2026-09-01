@@ -18,8 +18,8 @@ import datetime as dt
 import json
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from typing import Awaitable, Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -275,11 +275,11 @@ async def stage_validate_request(ctx: JobRunContext) -> StageOutcome:
         output=(
             f"Request validated.\n"
             f"Source: {r.source_type.value}\n"
-            f"VM: {r.vm.name}\nCluster: {r.compute.cluster_id}\n"
+            f"VM: {r.vm.name}\nInfrastructure placement supplied.\n"
             f"CPU/Memory: {r.hardware.cpu} vCPU / {r.hardware.memory_mb} MB\n"
             f"Disks: {len(r.hardware.disks)}\nMode: {r.network.mode.value}"
         ),
-        artifacts={"validated_at": dt.datetime.now(dt.timezone.utc).isoformat()},
+        artifacts={"validated_at": dt.datetime.now(dt.UTC).isoformat()},
     )
 
 
@@ -303,6 +303,12 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
     dc = datacenters.get(r.compute.datacenter_id)
     if dc is None:
         problems.append(f"datacenter '{r.compute.datacenter_id}' missing")
+    else:
+        # Persist the human-readable inventory name once vCenter has confirmed
+        # it. Logs and audit responses join this stable job context rather than
+        # presenting a raw managed-object reference as the primary label.
+        ctx.job.datacenter_id = dc.id
+        ctx.job.datacenter_name = dc.name
     clusters = (
         {c.id: c for c in await ctx.vmware.get_clusters(ctx.target, r.compute.datacenter_id)}
         if dc else {}
@@ -311,6 +317,7 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
     if cluster is None:
         problems.append(f"cluster '{r.compute.cluster_id}' missing")
 
+    datastores = {}
     if cluster is not None:
         hosts = {h.id: h for h in await ctx.vmware.get_hosts(ctx.target, cluster.id)}
         if r.compute.host_id:
@@ -338,16 +345,35 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
             if best < required_gb:
                 problems.append(f"no datastore with >= {required_gb} GB free (best {best:.0f} GB)")
 
-    networks = {n.id for n in await ctx.vmware.get_networks(ctx.target, r.compute.datacenter_id)}
-    if r.network.network_id not in networks:
+    networks = {
+        network.id: network
+        for network in (
+            await ctx.vmware.get_networks(ctx.target, r.compute.datacenter_id)
+            if dc is not None
+            else []
+        )
+    }
+    network = networks.get(r.network.network_id)
+    if network is None:
         problems.append(f"network '{r.network.network_id}' missing")
 
     if r.source_type == VmSourceType.TEMPLATE:
         templates = {
-            t.id: t for t in await ctx.vmware.get_templates(ctx.target, None)
+            t.id: t
+            for t in await ctx.vmware.get_templates(ctx.target, r.compute.datacenter_id)
         }
         if r.guest.template_id not in templates:
             problems.append(f"template '{r.guest.template_id}' missing")
+    elif r.guest.iso_id:
+        isos = {
+            image.id: image
+            for image in await ctx.vmware.get_isos(ctx.target, r.compute.datacenter_id)
+        }
+        image = isos.get(r.guest.iso_id)
+        if image is None:
+            problems.append("selected ISO missing from the datacenter")
+        elif image.datastore_id not in datastores:
+            problems.append("selected ISO datastore unavailable to the cluster")
 
     if problems:
         raise InfraOperationError(
@@ -359,7 +385,11 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
         )
     source_detail = " and template" if r.source_type == VmSourceType.TEMPLATE else ""
     return StageOutcome(
-        output=f"Datacenter, cluster, placement, storage, network{source_detail} verified."
+        output=f"Datacenter, cluster, placement, storage, network{source_detail} verified.",
+        artifacts={
+            "datacenter_name": dc.name if dc is not None else None,
+            "network_name": network.name if network is not None else None,
+        },
     )
 
 
@@ -382,6 +412,7 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
         spec = CloneSpec(
             template_id=r.guest.template_id or "",
             vm_name=r.vm.name,
+            datacenter_id=r.compute.datacenter_id,
             description=r.vm.description,
             cluster_id=r.compute.cluster_id,
             host_id=r.compute.host_id,
@@ -396,7 +427,7 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
             secure_boot=r.hardware.secure_boot,
         )
         vm_ref = await ctx.vmware.clone_from_template(ctx.target, spec)
-        output = f"Cloned '{vm_ref.name}' from template {r.guest.template_id}."
+        output = f"Deployed '{vm_ref.name}' from the selected OVF/OVA package."
     else:
         blank_spec = BlankVmSpec(
             vm_name=r.vm.name,
@@ -411,19 +442,25 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
             disks=tuple(r.hardware.disks),
             firmware=r.hardware.firmware,
             secure_boot=r.hardware.secure_boot,
+            iso_id=r.guest.iso_id,
         )
         vm_ref = await ctx.vmware.create_blank_vm(ctx.target, blank_spec)
-        output = f"Created blank virtual machine '{vm_ref.name}' in powered-off state."
+        media = " with the selected ISO mounted" if r.guest.iso_id else " without installation media"
+        output = f"Created blank virtual machine '{vm_ref.name}'{media} in powered-off state."
     ctx.vm_ref = vm_ref
     await record_audit(ctx.db).record(
         AuditAction.VM_CREATED,
         resource_type="virtual_machine",
         resource_name=vm_ref.name,
         job_id=ctx.job_id,
+        username=ctx.actor_username,
+        datacenter_id=r.compute.datacenter_id,
+        datacenter_name=ctx.job.datacenter_name,
         result="success",
         details={
             "source_type": r.source_type.value,
             "template_id": r.guest.template_id,
+            "iso_id": r.guest.iso_id,
             "vm_id": vm_ref.id,
         },
     )
@@ -451,8 +488,14 @@ async def stage_configure_hardware(ctx: JobRunContext) -> StageOutcome:
 async def stage_attach_network_adapter(ctx: JobRunContext) -> StageOutcome:
     vm_id = _require_vm_id(ctx)
     net = ctx.request.network
-    await ctx.vmware.attach_network(ctx.target, vm_id, net.network_id, net.adapter_type)
-    return StageOutcome(output=f"Adapter {net.adapter_type.value} connected to {net.network_id}.")
+    await ctx.vmware.attach_network(
+        ctx.target,
+        vm_id,
+        net.network_id,
+        net.adapter_type,
+        ctx.request.compute.datacenter_id,
+    )
+    return StageOutcome(output=f"{net.adapter_type.value} network adapter connected.")
 
 
 async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
@@ -572,7 +615,12 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
         elif net.ipv4.dns_servers:
             checks.append("DNS servers configured; name-resolution probe skipped (no domain supplied)")
     else:
-        probe = "'$ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '169.254*' -and $_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1).IPAddress; if ($ip) { \"DHCP-IP:$ip\" } else { exit 1 }"
+        probe = (
+            "'$ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { "
+            "$_.IPAddress -notlike '169.254*' -and $_.IPAddress -ne '127.0.0.1' "
+            '} | Select-Object -First 1).IPAddress; if ($ip) { "DHCP-IP:$ip" } '
+            "else { exit 1 }"
+        )
         result = await ctx.guest_ops.run_program(
             ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
             f"-NoProfile -NonInteractive -Command {probe}", 180,
@@ -692,9 +740,9 @@ async def stage_wait_guest_ready(ctx: JobRunContext) -> StageOutcome:
         return StageOutcome(status="SKIPPED", output="Guest was not restarted — availability confirmed earlier.")
 
     credentials = await ctx.resolve_guest_credentials()
-    deadline = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=600)
+    deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=600)
     attempts = 0
-    while dt.datetime.now(dt.timezone.utc) < deadline:
+    while dt.datetime.now(dt.UTC) < deadline:
         attempts += 1
         probe = await ctx.guest_ops.run_program(
             ctx.target, ctx.vm_name, credentials, CMD_PATH, "/c exit 0", 60,
@@ -730,6 +778,9 @@ async def _deploy_certificate_group(
             resource_type="certificate",
             resource_name=record.friendly_name,
             job_id=ctx.job_id,
+            username=ctx.actor_username,
+            datacenter_id=ctx.request.compute.datacenter_id,
+            datacenter_name=ctx.job.datacenter_name,
             result="success",
             details={"store": f"LocalMachine\\{record.store}", "thumbprint": record.thumbprint},
         )
@@ -836,6 +887,9 @@ async def stage_install_applications(ctx: JobRunContext) -> StageOutcome:
                 resource_type="application",
                 resource_name=outcome.name,
                 job_id=ctx.job_id,
+                username=ctx.actor_username,
+                datacenter_id=ctx.request.compute.datacenter_id,
+                datacenter_name=ctx.job.datacenter_name,
                 result="success",
             )
         if outcome.status in ("FAILED",):
@@ -925,7 +979,14 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     net_step = ctx.steps_by_key.get("configure_guest_network")
     net_artifacts = net_step.artifacts if net_step else {}
     if ctx.request.source_type == VmSourceType.BLANK:
-        add("Network", "Virtual adapter attached", True, ctx.request.network.network_id)
+        inventory_step = ctx.steps_by_key.get("validate_infrastructure")
+        inventory_artifacts = inventory_step.artifacts if inventory_step else {}
+        add(
+            "Network",
+            "Virtual adapter attached",
+            True,
+            str(inventory_artifacts.get("network_name") or ""),
+        )
     elif ctx.request.network.mode == IpMode.STATIC and ctx.request.network.ipv4 is not None:
         expected = ctx.request.network.ipv4.address
         observed = info.ip_addresses if info else []
@@ -971,7 +1032,7 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
             "summary": {
                 "vm_name": ctx.vm_name,
                 "ip_address": (info.ip_addresses[0] if info and info.ip_addresses else None),
-                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "finished_at": dt.datetime.now(dt.UTC).isoformat(),
             },
         },
     )
@@ -1007,5 +1068,5 @@ STAGE_HANDLERS: dict[str, StageHandler] = {
         stage_install_applications,
         stage_validate_applications,
         stage_final_validation,
-    ))
+    ), strict=False)
 }

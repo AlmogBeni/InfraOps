@@ -17,8 +17,9 @@ export function formatDuration(seconds: number | null | undefined): string {
 }
 
 export function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
+  if (!iso) return 'Not available'
   const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return 'Not available'
   return date.toLocaleString(undefined, {
     year: 'numeric',
     month: 'short',
@@ -30,12 +31,13 @@ export function formatDateTime(iso: string | null | undefined): string {
 }
 
 export function formatTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleTimeString()
+  if (!iso) return 'Not available'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleTimeString()
 }
 
 export function formatGb(value: number | null | undefined): string {
-  if (value == null) return '—'
+  if (value == null) return 'Not available'
   if (value >= 1024) return `${(value / 1024).toFixed(1)} TB`
   return `${value.toFixed(0)} GB`
 }
@@ -56,8 +58,70 @@ export function prefixToMask(prefix: number): string {
 
 export function humanizeStageKey(key: string | null | undefined): string {
   if (!key) return '—'
-  return key
-    .split('_')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+  return humanizeIdentifier(key)
+}
+
+/** Convert a datetime-local control value from the operator's timezone to UTC. */
+export function toApiDateTime(value: string | null | undefined): string {
+  if (!value) return ''
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
+}
+
+export function humanizeIdentifier(value: string | null | undefined): string {
+  if (!value) return 'Not available'
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[._\-\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(' ')
+}
+
+export function formatBytes(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return 'Size not available'
+  if (value < 1024) return `${value} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unit = -1
+  do {
+    size /= 1024
+    unit += 1
+  } while (size >= 1024 && unit < units.length - 1)
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`
+}
+
+export function displayValue(
+  value: unknown,
+  fallback = 'Not available',
+): string {
+  if (value === null || value === undefined || value === '') return fallback
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed || ['undefined', 'null', '[object Object]'].includes(trimmed)) return fallback
+    return trimmed
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : fallback
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (Array.isArray(value)) return value.length ? value.map((item) => displayValue(item)).join(', ') : fallback
+  return fallback
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  VM_CREATED: 'VM created',
+  JOB_SUBMITTED: 'Deployment submitted',
+  JOB_COMPLETED: 'Deployment completed',
+  JOB_FAILED: 'Deployment failed',
+  JOB_CANCELLED: 'Deployment cancelled',
+  JOB_RETRIED: 'Deployment retried',
+  DRY_RUN_PERFORMED: 'Configuration validated',
+  IP_CONFLICT_CHECK_PERFORMED: 'IP address checked',
+  LOGIN_SUCCEEDED: 'Signed in',
+  LOGIN_FAILED: 'Sign-in failed',
+  LOGOUT: 'Signed out',
+}
+
+export function formatAction(value: string | null | undefined): string {
+  if (!value) return 'Activity recorded'
+  return ACTION_LABELS[value] ?? humanizeIdentifier(value)
 }

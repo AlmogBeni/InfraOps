@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -47,6 +47,7 @@ class JobRepository:
         self,
         *,
         vm_name: str,
+        datacenter_id: str,
         requested_by_user_id: uuid.UUID | None,
         idempotency_key: str | None,
         request_payload: dict,
@@ -55,9 +56,10 @@ class JobRepository:
             job_type=JobType.VM_PROVISIONING,
             status=JobStatus.QUEUED,
             vm_name=vm_name,
+            datacenter_id=datacenter_id,
             requested_by_user_id=requested_by_user_id,
             idempotency_key=idempotency_key,
-            queued_at=dt.datetime.now(dt.timezone.utc),
+            queued_at=dt.datetime.now(dt.UTC),
         )
         self.session.add(job)
         await self.session.flush()
@@ -73,7 +75,7 @@ class JobRepository:
 
     async def claim_due_jobs(self, limit: int) -> list[ProvisioningJob]:
         """Atomically claim queued jobs (SKIP LOCKED — safe for N workers)."""
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
         result = await self.session.execute(
             select(ProvisioningJob)
             .where(ProvisioningJob.status == JobStatus.QUEUED, ProvisioningJob.queued_at <= now)
@@ -172,7 +174,7 @@ class JobRepository:
         Succeeded stages are intentionally left untouched — retries resume the
         pipeline and never repeat destructive work that already completed.
         """
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
         reset: list[str] = []
         for step in job.steps:
             should_reset = step.status in (StepStatus.FAILED, StepStatus.CANCELLED) and (
@@ -196,7 +198,7 @@ class JobRepository:
         job.cancel_requested = True
         if job.status == JobStatus.QUEUED:
             job.status = JobStatus.CANCELLED
-            job.finished_at = dt.datetime.now(dt.timezone.utc)
+            job.finished_at = dt.datetime.now(dt.UTC)
             for step in job.steps:
                 if step.status == StepStatus.PENDING:
                     step.status = StepStatus.CANCELLED

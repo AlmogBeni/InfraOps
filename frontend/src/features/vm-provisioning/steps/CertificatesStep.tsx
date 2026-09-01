@@ -1,25 +1,35 @@
 import { ShieldCheck } from 'lucide-react'
+import { useEffect } from 'react'
 
 import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { Checkbox } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useCertificatePackages } from '@/features/vm-provisioning/hooks'
 
-export function CertificatesStep() {
+export function CertificatesStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
   const data = wizard.data
   const packages = useCertificatePackages()
 
+  useEffect(() => {
+    if (!packages.isSuccess || data.certificate_package_ids.length === 0) return
+    const available = new Set(packages.data.map((package_) => package_.id))
+    const validSelections = data.certificate_package_ids.filter((id) => available.has(id))
+    if (validSelections.length !== data.certificate_package_ids.length) {
+      wizard.update({ certificate_package_ids: validSelections })
+    }
+  }, [data.certificate_package_ids, packages.data, packages.isSuccess, wizard.update])
+
   if (data.source_type === 'blank') {
     return (
       <section aria-label="Certificate selection" className="space-y-5">
-        <header>
+        {!embedded && <header>
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest security</p>
           <h2>Certificate deployment</h2>
           <p>Certificate installation requires a running guest with VMware Tools.</p>
-        </header>
+        </header>}
         <Alert tone="info" title="Not applicable to a blank VM">
-          No certificate package IDs or certificate material will be included in this request.
+          No certificate packages or certificate material will be included in this request.
         </Alert>
       </section>
     )
@@ -34,7 +44,7 @@ export function CertificatesStep() {
 
   return (
     <section aria-label="Certificate selection" className="space-y-5">
-      <header>
+      {!embedded && <header>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest security</p>
@@ -43,7 +53,7 @@ export function CertificatesStep() {
           </div>
           <Badge tone="neutral">{data.certificate_package_ids.length} selected</Badge>
         </div>
-      </header>
+      </header>}
 
       <div className="console-group">
         <div className="console-group-header">

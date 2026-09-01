@@ -4,11 +4,12 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input, Select, Textarea } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
+import { humanizeIdentifier } from '@/lib/utils'
 import type { ApplicationOut, DetectionMethod } from '@/types/api'
 
 interface AppForm {
@@ -108,6 +109,7 @@ export function ApplicationCatalogPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<AppForm>(EMPTY_FORM)
   const [formError, setFormError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const applications = useQuery({ queryKey: ['admin-applications'], queryFn: () => api.admin.applications() })
 
@@ -145,13 +147,23 @@ export function ApplicationCatalogPage() {
 
   const remove = useMutation({
     mutationFn: (id: string) => api.admin.deleteApplication(id),
-    onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      setActionError(null)
+      invalidate()
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'The application could not be deleted.'),
   })
 
   const toggleEnabled = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.admin.updateApplication(id, { enabled }),
-    onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      setActionError(null)
+      invalidate()
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'The application status could not be changed.'),
   })
 
   return (
@@ -164,8 +176,10 @@ export function ApplicationCatalogPage() {
         meta={<span>{applications.data?.length ?? 0} catalog entry(s)</span>}
       />
 
+      {actionError && <Alert tone="danger" title="Application action could not be completed">{actionError}</Alert>}
+
       {applications.isLoading ? (
-        <div className="flex h-40 items-center justify-center"><Spinner /></div>
+        <LoadingState title="Loading application catalog" description="Retrieving approved installers and detection policies." />
       ) : applications.isError ? (
         <Alert tone="danger" title="Application catalog unavailable">
           Approved applications could not be loaded.{' '}
@@ -202,7 +216,7 @@ export function ApplicationCatalogPage() {
                   <Badge tone="info">{app.installer_type}</Badge>{' '}
                   <span className="font-mono text-[11px] text-slate-500">{app.installer_path}</span>
                 </Td>
-                <Td className="text-xs text-slate-500">{app.detection_method}</Td>
+                <Td className="text-xs text-slate-500">{humanizeIdentifier(app.detection_method)}</Td>
                 <Td>{app.timeout_seconds}s</Td>
                 <Td>
                   <Checkbox label="" checked={app.enabled} aria-label={`Toggle ${app.name}`}

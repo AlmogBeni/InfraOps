@@ -16,15 +16,15 @@ const OPTIONS: Array<{
     value: 'blank',
     title: 'Blank virtual machine',
     description:
-      'Create a new virtual machine and configure its operating system, CPU, memory, storage and networking manually.',
-    detail: 'Empty disks · powered off · OS installation required',
+      'Create an empty virtual machine, optionally mount a datacenter ISO, and configure compute, storage, and networking.',
+    detail: 'Optional ISO · installation-ready hardware · powered off',
     icon: Box,
   },
   {
     value: 'template',
-    title: 'Deploy from template',
-    description: 'Deploy a virtual machine using an existing infrastructure template.',
-    detail: 'Guest customization · certificates · application deployment',
+    title: 'Deploy an OVF / OVA package',
+    description: 'Deploy a packaged virtual appliance from the selected vCenter Content Library into your target datacenter.',
+    detail: 'OVF or OVA only · repeatable appliance deployment',
     icon: Layers3,
   },
 ]
@@ -37,9 +37,9 @@ export function SourceStep() {
       <header>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Creation method</p>
-            <h2>Choose the VM source</h2>
-            <p>Select the provider operation InfraOps should execute.</p>
+            <p className="console-kicker">Step 1 · Deployment type</p>
+            <h2>How should this VM be created?</h2>
+            <p>Start from a deployable OVF/OVA package or build a blank machine for an operating-system installation.</p>
           </div>
           <Badge tone="neutral">Required</Badge>
         </div>
@@ -105,9 +105,8 @@ export function SourceStep() {
       )}
 
       {wizard.data.source_type === 'blank' && (
-        <Alert tone="warning" title="Operating system installation is outside this workflow">
-          The VM is created with empty virtual disks and remains powered off. Install an OS and VMware Tools
-          before using guest networking, certificate deployment, or application automation.
+        <Alert tone="info" title="Installation media comes next">
+          After choosing a datacenter, you can mount one of its ISO images or continue without an ISO.
         </Alert>
       )}
     </section>

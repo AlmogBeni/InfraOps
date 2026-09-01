@@ -36,6 +36,8 @@ class JobOut(BaseModel):
     job_type: JobType
     status: JobStatus
     vm_name: str
+    datacenter_id: str | None = None
+    datacenter_name: str | None = None
     requested_by_username: str | None = None
     current_stage: str | None = None
     progress: int

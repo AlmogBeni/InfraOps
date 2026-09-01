@@ -28,6 +28,7 @@ from app.schemas.infrastructure import (
     DatastoreClusterOut,
     DatastoreOut,
     HostOut,
+    IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
     TemplateOut,
@@ -42,6 +43,8 @@ from app.services.vmware.base import (
     VmRef,
     VMwareService,
 )
+from app.services.vmware.content_library import ContentLibraryClient
+from app.services.vmware.inventory_refs import decode_iso_id, encode_iso_id
 
 log = get_logger(__name__)
 
@@ -81,7 +84,7 @@ def _wrap(operation: str, exc: Exception, *, retryable: bool = True) -> InfraOpe
             technical_detail=str(exc),
             retryable=False,
         )
-    if HAS_PYVMOMI and isinstance(exc, (vim.fault.InvalidLogin,)):
+    if HAS_PYVMOMI and isinstance(exc, vim.fault.InvalidLogin):
         return InfraOperationError(
             "vCenter rejected the service account credentials.",
             reason="Authentication failed (InvalidLogin).",
@@ -137,6 +140,7 @@ class VsphereVMwareService(VMwareService):
         _require_pyvmomi()
         self._secrets = secrets
         self._cache = _ConnectionCache()
+        self._content_library = ContentLibraryClient(secrets)
 
     # ── Connection handling ──────────────────────────────────────────────────
 
@@ -296,6 +300,23 @@ class VsphereVMwareService(VMwareService):
                     datastores[datastore._moId] = datastore
         return datastores
 
+    @staticmethod
+    def _walk_resource_pools(root):
+        """Yield a cluster's root resource pool and all descendants."""
+        yield root
+        for child in getattr(root, "resourcePool", []) or []:
+            yield from VsphereVMwareService._walk_resource_pools(child)
+
+    @staticmethod
+    def _cluster_belongs_to_datacenter(content, cluster, datacenter) -> bool:
+        view = content.viewManager.CreateContainerView(
+            datacenter.hostFolder, [vim.ClusterComputeResource], True
+        )
+        try:
+            return any(entry._moId == cluster._moId for entry in view.view)
+        finally:
+            view.Destroy()
+
     # ── Discovery ────────────────────────────────────────────────────────────
 
     async def test_connection(self, target: VCenterTarget) -> ConnectionTestResult:
@@ -451,17 +472,27 @@ class VsphereVMwareService(VMwareService):
                 capacity = float(pod.summary.capacity or 0) / 1024**3
                 free = float(pod.summary.freeSpace or 0) / 1024**3
                 pods.append(
-                    DatastoreClusterOut(id=pod._moId, name=pod.name, capacity_gb=round(capacity, 1), free_gb=round(free, 1))
+                    DatastoreClusterOut(
+                        id=pod._moId,
+                        name=pod.name,
+                        capacity_gb=round(capacity, 1),
+                        free_gb=round(free, 1),
+                    )
                 )
             return pods
 
         return await self._with_session(target, op)
 
-    async def get_networks(self, target: VCenterTarget, datacenter_id: str | None = None) -> list[NetworkOut]:
+    async def get_networks(self, target: VCenterTarget, datacenter_id: str) -> list[NetworkOut]:
         def op(si):
             content = self._content(si)
+            datacenter = self._find_by_moref(content, datacenter_id)
+            if datacenter is None or not isinstance(datacenter, vim.Datacenter):
+                raise NotFoundError(f"Datacenter '{datacenter_id}' does not exist.")
             networks = []
-            view = self._container_view(content, vim.Network)
+            view = content.viewManager.CreateContainerView(
+                datacenter.networkFolder, [vim.Network], True
+            )
             try:
                 entities = list(view.view)
             finally:
@@ -478,82 +509,76 @@ class VsphereVMwareService(VMwareService):
         return sorted(await self._with_session(target, op), key=lambda n: n.name)
 
     async def get_templates(self, target: VCenterTarget, datacenter_id: str | None = None) -> list[TemplateOut]:
-        def op(si):
-            content = self._content(si)
-            templates = []
-            stats = {
-                "visible_vms": 0,
-                "visible_templates": 0,
-            }
-            # Query from the inventory root and resolve the owning datacenter
-            # from each VM's folder ancestry. This avoids vCenter-version and
-            # folder-layout differences in datacenter-scoped container views.
-            view = content.viewManager.CreateContainerView(
-                content.rootFolder, [vim.VirtualMachine], True
-            )
-            try:
-                for vm in view.view:
-                    stats["visible_vms"] += 1
-                    config = getattr(vm, "config", None)
-                    summary_config = getattr(getattr(vm, "summary", None), "config", None)
-                    is_template = bool(
-                        getattr(config, "template", False)
-                        or getattr(summary_config, "template", False)
-                    )
-                    if not is_template:
-                        continue
-                    stats["visible_templates"] += 1
-
-                    owner = self._owning_datacenter(vm)
-                    owner_id = getattr(owner, "_moId", None)
-                    owner_name = getattr(owner, "name", None)
-                    guest = (
-                        getattr(config, "guestFullName", None)
-                        or getattr(summary_config, "guestFullName", None)
-                        or ""
-                    )
-                    family = "windows" if "windows" in guest.lower() else (
-                        "linux" if any(k in guest.lower() for k in ("linux", "rhel", "ubuntu", "debian")) else "other"
-                    )
-                    hardware = getattr(config, "hardware", None)
-                    disks = [
-                        device for device in (getattr(hardware, "device", None) or [])
-                        if isinstance(device, vim.vm.device.VirtualDisk)
-                    ]
-                    templates.append(
-                        TemplateOut(
-                            id=vm._moId,
-                            name=vm.name,
-                            os_family=family,
-                            os_version=guest,
-                            last_modified=getattr(config, "modifyDate", None),
-                            description=getattr(config, "annotation", None) or "",
-                            datacenter_id=owner_id,
-                            datacenter_name=owner_name,
-                            cpu=getattr(hardware, "numCPU", None),
-                            memory_mb=getattr(hardware, "memoryMB", None),
-                            disk_size_gb=round(sum(disk.capacityInKB for disk in disks) / 1024**2, 1),
-                        )
-                    )
-            finally:
-                view.Destroy()
-            return templates, stats
-
-        templates, stats = await self._with_session(
-            target, op, operation="list-templates"
-        )
+        templates = await self._content_library.list_ovf_packages(target, datacenter_id)
         log_method = log.warning if not templates else log.info
         log_method(
-            "vCenter template inventory complete vcenter_id=%s host=%s datacenter_id=%s "
-            "visible_vms=%s visible_classic_templates=%s returned_templates=%s",
+            "vCenter OVF/OVA inventory complete vcenter_id=%s host=%s datacenter_id=%s "
+            "returned_templates=%s",
             target.id,
             target.host,
             datacenter_id or "all",
-            stats["visible_vms"],
-            stats["visible_templates"],
             len(templates),
         )
-        return sorted(templates, key=lambda template: template.name)
+        return templates
+
+    async def get_isos(self, target: VCenterTarget, datacenter_id: str) -> list[IsoImageOut]:
+        def op(si):
+            content = self._content(si)
+            datacenter = self._find_by_moref(content, datacenter_id)
+            if datacenter is None or not isinstance(datacenter, vim.Datacenter):
+                raise NotFoundError(f"Datacenter '{datacenter_id}' does not exist.")
+
+            view = content.viewManager.CreateContainerView(
+                datacenter.datastoreFolder, [vim.Datastore], True
+            )
+            try:
+                datastores = list(view.view)
+            finally:
+                view.Destroy()
+
+            results: list[IsoImageOut] = []
+            for datastore in datastores:
+                if not bool(getattr(datastore.summary, "accessible", False)):
+                    continue
+                search_spec = vim.HostDatastoreBrowser.SearchSpec()
+                search_spec.matchPattern = ["*.iso", "*.ISO"]
+                details = vim.HostDatastoreBrowser.FileInfo.Details()
+                details.fileSize = True
+                details.modification = True
+                search_spec.details = details
+                task = datastore.browser.SearchDatastoreSubFolders_Task(
+                    datastorePath=f"[{datastore.name}]",
+                    searchSpec=search_spec,
+                )
+                self._wait_for_task(task)
+                for folder in task.info.result or []:
+                    folder_path = str(folder.folderPath or f"[{datastore.name}]")
+                    for entry in folder.file or []:
+                        relative_path = str(entry.path or "")
+                        if not relative_path.lower().endswith(".iso"):
+                            continue
+                        separator = "" if folder_path.endswith(("/", " ")) else " "
+                        full_path = f"{folder_path}{separator}{relative_path}"
+                        name = relative_path.rstrip("/").rsplit("/", 1)[-1]
+                        results.append(
+                            IsoImageOut(
+                                id=encode_iso_id(datastore._moId, full_path),
+                                name=name,
+                                datacenter_id=datacenter_id,
+                                datacenter_name=datacenter.name,
+                                datastore_id=datastore._moId,
+                                datastore_name=datastore.name,
+                                path=full_path,
+                                size_bytes=getattr(entry, "fileSize", None),
+                                last_modified=getattr(entry, "modification", None),
+                            )
+                        )
+            return results
+
+        return sorted(
+            await self._with_session(target, op, operation="list-isos"),
+            key=lambda image: (image.datastore_name.casefold(), image.name.casefold()),
+        )
 
     # ── Inventory queries ────────────────────────────────────────────────────
 
@@ -620,34 +645,62 @@ class VsphereVMwareService(VMwareService):
     # ── Lifecycle operations ─────────────────────────────────────────────────
 
     async def clone_from_template(self, target: VCenterTarget, spec: CloneSpec) -> VmRef:
-        def op(si):
-            content = self._content(si)
-            template = self._find_by_moref(content, spec.template_id)
-            if template is None:
-                raise InfraOperationError(
-                    f"Template '{spec.template_id}' was not found on {target.host}.",
-                    reason="Template removed or renamed after validation.",
-                    recommended_action="Re-open the wizard and select an available template.",
-                    retryable=False,
-                )
-            if self._find_vm_by_name(content, spec.vm_name) is not None:
-                raise InfraOperationError(
-                    f"A virtual machine named '{spec.vm_name}' already exists.",
-                    reason="Duplicate VM name in the vCenter inventory.",
-                    recommended_action="Choose a different VM name and resubmit the request.",
-                    retryable=False,
-                )
+        if not self._content_library.is_library_item(spec.template_id):
+            raise InfraOperationError(
+                "The selected source is not an OVF/OVA Content Library package.",
+                reason="Classic VM templates are not accepted by this deployment workflow.",
+                recommended_action="Refresh the package inventory and select an OVF or OVA item.",
+                retryable=False,
+            )
 
+        def resolve_pool(si):
+            content = self._content(si)
             cluster = self._find_by_moref(content, spec.cluster_id)
-            if cluster is None:
+            if cluster is None or not isinstance(cluster, vim.ClusterComputeResource):
                 raise InfraOperationError(
                     f"Cluster '{spec.cluster_id}' was not found.",
                     reason="Cluster removed after validation.",
                     recommended_action="Re-select the target cluster and retry.",
                     retryable=False,
                 )
-
-            # Placement: explicit host > resource pool > cluster default.
+            datacenter = self._find_by_moref(content, spec.datacenter_id)
+            if (
+                datacenter is None
+                or not isinstance(datacenter, vim.Datacenter)
+                or not self._cluster_belongs_to_datacenter(content, cluster, datacenter)
+            ):
+                raise InfraOperationError(
+                    "The selected cluster is outside the requested datacenter.",
+                    reason="The placement inventory changed after validation.",
+                    recommended_action="Refresh the datacenter and cluster selections.",
+                    retryable=False,
+                )
+            if spec.network_id:
+                network_view = content.viewManager.CreateContainerView(
+                    datacenter.networkFolder, [vim.Network], True
+                )
+                try:
+                    network_in_datacenter = any(
+                        entry._moId == spec.network_id for entry in network_view.view
+                    )
+                finally:
+                    network_view.Destroy()
+                if not network_in_datacenter:
+                    raise InfraOperationError(
+                        "The selected network is outside the target datacenter.",
+                        reason="Network scope changed after validation.",
+                        recommended_action="Select a network from the target datacenter.",
+                        retryable=False,
+                    )
+            if spec.datastore_id:
+                datastore = self._cluster_datastores(cluster).get(spec.datastore_id)
+                if datastore is None or not bool(datastore.summary.accessible):
+                    raise InfraOperationError(
+                        "The selected datastore is unavailable to the target cluster.",
+                        reason="Datastore scope or accessibility changed after validation.",
+                        recommended_action="Select an accessible datastore from the target cluster.",
+                        retryable=False,
+                    )
             if spec.host_id:
                 host = self._find_by_moref(content, spec.host_id)
                 if host is None or host not in cluster.host or not self._host_usable(host):
@@ -657,67 +710,47 @@ class VsphereVMwareService(VMwareService):
                         recommended_action="Select a different host or use automatic placement.",
                         retryable=False,
                     )
-                pool = host.parent.resourcePool
-                if spec.resource_pool_id:
-                    pool = self._find_by_moref(content, spec.resource_pool_id) or pool
-            else:
-                pool = cluster.resourcePool
-                if spec.resource_pool_id:
-                    pool = self._find_by_moref(content, spec.resource_pool_id) or pool
-                host = None
-
-            datastore = None
-            if spec.datastore_id:
-                datastore = self._find_by_moref(content, spec.datastore_id)
-
-            relocation = vim.VirtualMachineRelocateSpec()
-            relocation.pool = pool
-            if host is not None:
-                relocation.host = host
-            if datastore is not None:
-                relocation.datastore = datastore
-
-            config = vim.VirtualMachineConfigSpec()
-            config.numCPUs = spec.cpu
-            config.memoryMB = spec.memory_mb
-            config.annotation = spec.description
-            if spec.firmware == FirmwareType.EFI:
-                config.firmware = "efi"
-                if spec.secure_boot:
-                    config.bootOptions = vim.vm.BootOptions(efiSecureBootEnabled=True)
-
-            clone_spec = vim.VirtualMachineCloneSpec()
-            clone_spec.location = relocation
-            clone_spec.config = config
-            clone_spec.powerOn = False
-            clone_spec.template = False
-
-            # Clone beside the source template. This also works for templates
-            # stored in nested VM folders; walking via parent.parent.vmFolder
-            # only worked for templates directly under the datacenter VM folder.
-            vm_folder = template.parent
-            try:
-                task = template.Clone(folder=vm_folder, name=spec.vm_name, spec=clone_spec)
-                self._wait_for_task(task)
-            except InfraOperationError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise _wrap("clone_vm", exc) from exc
-
-            created = self._find_vm_by_name(content, spec.vm_name)
-            if created is None:
+            pool = cluster.resourcePool
+            if spec.resource_pool_id:
+                candidate = self._find_by_moref(content, spec.resource_pool_id)
+                valid_pool_ids = {entry._moId for entry in self._walk_resource_pools(cluster.resourcePool)}
+                if candidate is None or candidate._moId not in valid_pool_ids:
+                    raise InfraOperationError(
+                        f"Resource pool '{spec.resource_pool_id}' was not found in the cluster.",
+                        reason="Resource pool removed or moved after validation.",
+                        recommended_action="Re-select the placement target and retry.",
+                        retryable=False,
+                    )
+                pool = candidate
+            if self._find_vm_by_name(content, spec.vm_name) is not None:
                 raise InfraOperationError(
-                    f"Clone task completed but VM '{spec.vm_name}' was not found.",
-                    reason="Inventory inconsistency after clone.",
-                    recommended_action="Check recent tasks in vCenter and retry.",
-                    retryable=True,
+                    f"A virtual machine named '{spec.vm_name}' already exists.",
+                    reason="Duplicate VM name in the vCenter inventory.",
+                    recommended_action="Choose a different VM name and resubmit the request.",
+                    retryable=False,
                 )
-            return VmRef(id=created._moId, name=created.name)
+            return pool._moId
 
-        log.info("vSphere clone: template=%s name=%s cluster=%s", spec.template_id, spec.vm_name, spec.cluster_id)
-        return await self._with_session(target, op)
+        pool_id = await self._with_session(
+            target, resolve_pool, operation="resolve-ovf-placement"
+        )
+        return await self._content_library.deploy_ovf_package(
+            target, spec, resource_pool_id=pool_id
+        )
 
     async def create_blank_vm(self, target: VCenterTarget, spec: BlankVmSpec) -> VmRef:
+        iso_reference: tuple[str, str] | None = None
+        if spec.iso_id:
+            try:
+                iso_reference = decode_iso_id(spec.iso_id)
+            except ValueError as exc:
+                raise InfraOperationError(
+                    "The selected ISO identifier is invalid.",
+                    reason=str(exc),
+                    recommended_action="Refresh the ISO inventory and select the image again.",
+                    retryable=False,
+                ) from exc
+
         def op(si):
             content = self._content(si)
             if self._find_vm_by_name(content, spec.vm_name) is not None:
@@ -730,7 +763,13 @@ class VsphereVMwareService(VMwareService):
 
             datacenter = self._find_by_moref(content, spec.datacenter_id)
             cluster = self._find_by_moref(content, spec.cluster_id)
-            if datacenter is None or cluster is None:
+            if (
+                datacenter is None
+                or not isinstance(datacenter, vim.Datacenter)
+                or cluster is None
+                or not isinstance(cluster, vim.ClusterComputeResource)
+                or not self._cluster_belongs_to_datacenter(content, cluster, datacenter)
+            ):
                 raise InfraOperationError(
                     "The selected datacenter or cluster was not found.",
                     reason="The placement inventory changed after validation.",
@@ -753,8 +792,17 @@ class VsphereVMwareService(VMwareService):
             pool = cluster.resourcePool
             if spec.resource_pool_id:
                 requested_pool = self._find_by_moref(content, spec.resource_pool_id)
-                if requested_pool is not None:
-                    pool = requested_pool
+                valid_pool_ids = {
+                    entry._moId for entry in self._walk_resource_pools(cluster.resourcePool)
+                }
+                if requested_pool is None or requested_pool._moId not in valid_pool_ids:
+                    raise InfraOperationError(
+                        f"Resource pool '{spec.resource_pool_id}' was not found in the cluster.",
+                        reason="Resource pool removed or moved after validation.",
+                        recommended_action="Re-select the placement target and retry.",
+                        retryable=False,
+                    )
+                pool = requested_pool
 
             datastores = list(self._cluster_datastores(cluster).values())
             required_bytes = sum(disk.size_gb for disk in spec.disks) * 1024**3
@@ -772,6 +820,36 @@ class VsphereVMwareService(VMwareService):
                     retryable=False,
                 )
             datastore = max(candidates, key=lambda entry: entry.summary.freeSpace or 0)
+
+            iso_datastore = None
+            iso_path = None
+            if iso_reference is not None:
+                iso_datastore_id, iso_path = iso_reference
+                cluster_datastore_ids = {entry._moId for entry in datastores}
+                datastore_view = content.viewManager.CreateContainerView(
+                    datacenter.datastoreFolder, [vim.Datastore], True
+                )
+                try:
+                    iso_datastore = next(
+                        (entry for entry in datastore_view.view if entry._moId == iso_datastore_id),
+                        None,
+                    )
+                finally:
+                    datastore_view.Destroy()
+                expected_prefix = f"[{getattr(iso_datastore, 'name', '')}] "
+                if (
+                    iso_datastore is None
+                    or iso_datastore_id not in cluster_datastore_ids
+                    or not bool(getattr(iso_datastore.summary, "accessible", False))
+                    or not iso_path.startswith(expected_prefix)
+                    or not iso_path.lower().endswith(".iso")
+                ):
+                    raise InfraOperationError(
+                        "The selected ISO is not available in the selected datacenter.",
+                        reason="Its datastore is missing, inaccessible, or does not match the ISO path.",
+                        recommended_action="Refresh the ISO inventory and select another image.",
+                        retryable=False,
+                    )
 
             config = vim.vm.ConfigSpec()
             config.name = spec.vm_name
@@ -811,6 +889,33 @@ class VsphereVMwareService(VMwareService):
                 disk_spec.fileOperation = vim.vm.device.VirtualDeviceSpec.FileOperation.create
                 disk_spec.device = virtual_disk
                 device_changes.append(disk_spec)
+
+            if iso_datastore is not None and iso_path is not None:
+                sata = vim.vm.device.VirtualAHCIController()
+                sata.key = -200
+                sata.busNumber = 0
+                sata_spec = vim.vm.device.VirtualDeviceSpec()
+                sata_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                sata_spec.device = sata
+                device_changes.append(sata_spec)
+
+                backing = vim.vm.device.VirtualCdrom.IsoBackingInfo()
+                backing.fileName = iso_path
+                backing.datastore = iso_datastore
+                cdrom = vim.vm.device.VirtualCdrom()
+                cdrom.key = -201
+                cdrom.controllerKey = sata.key
+                cdrom.unitNumber = 0
+                cdrom.backing = backing
+                cdrom.connectable = vim.vm.device.VirtualDevice.ConnectInfo(
+                    startConnected=True,
+                    allowGuestControl=True,
+                    connected=True,
+                )
+                cdrom_spec = vim.vm.device.VirtualDeviceSpec()
+                cdrom_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                cdrom_spec.device = cdrom
+                device_changes.append(cdrom_spec)
             config.deviceChange = device_changes
 
             try:
@@ -911,12 +1016,42 @@ class VsphereVMwareService(VMwareService):
         await self._with_session(target, op)
 
     async def attach_network(
-        self, target: VCenterTarget, vm_id: str, network_id: str, adapter_type: AdapterType
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        network_id: str,
+        adapter_type: AdapterType,
+        datacenter_id: str,
     ) -> None:
         def op(si):
             content = self._content(si)
             vm = self._find_by_moref(content, vm_id)
-            network = self._find_by_moref(content, network_id)
+            network = None
+            datacenter = self._find_by_moref(content, datacenter_id)
+            if datacenter is None or not isinstance(datacenter, vim.Datacenter):
+                raise InfraOperationError(
+                    f"Datacenter '{datacenter_id}' was not found while attaching the network.",
+                    reason="The placement inventory changed after validation.",
+                    recommended_action="Refresh the infrastructure inventory and retry.",
+                    retryable=False,
+                )
+            vm_datacenter = self._owning_datacenter(vm) if vm is not None else None
+            if vm_datacenter is not None and vm_datacenter._moId != datacenter_id:
+                raise InfraOperationError(
+                    "The VM and selected network datacenter do not match.",
+                    reason="The VM is outside the requested datacenter boundary.",
+                    recommended_action="Select a network from the VM's datacenter.",
+                    retryable=False,
+                )
+            view = content.viewManager.CreateContainerView(
+                datacenter.networkFolder, [vim.Network], True
+            )
+            try:
+                network = next(
+                    (entry for entry in view.view if entry._moId == network_id), None
+                )
+            finally:
+                view.Destroy()
             if vm is None:
                 raise InfraOperationError(
                     f"VM '{vm_id}' was not found while attaching the network adapter.",
@@ -995,8 +1130,8 @@ class VsphereVMwareService(VMwareService):
 
     async def wait_for_tools(self, target: VCenterTarget, vm_id: str, timeout_seconds: float) -> None:
         async def poll() -> None:
-            deadline = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=timeout_seconds)
-            while dt.datetime.now(dt.timezone.utc) < deadline:
+            deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=timeout_seconds)
+            while dt.datetime.now(dt.UTC) < deadline:
                 info = await self.get_vm_info_by_id(target, vm_id)
                 if info is not None and info.tools_status in ("toolsOk", "toolsOld"):
                     return

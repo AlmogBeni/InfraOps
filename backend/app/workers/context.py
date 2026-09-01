@@ -12,10 +12,10 @@ from app.models.infrastructure import VCenterConnection
 from app.models.jobs import ProvisioningJob
 from app.schemas.provisioning import ProvisioningRequest
 from app.secrets.service import SecretsService
-from app.services.certificates.deployer import CertificateDeployer
 from app.services.applications.installer import ApplicationInstaller
+from app.services.certificates.deployer import CertificateDeployer
 from app.services.guest.base import GuestCredentials, GuestOperations
-from app.services.vmware.base import VMwareService, VmRef, VCenterTarget
+from app.services.vmware.base import VCenterTarget, VmRef, VMwareService
 from app.workers.events import JobEventPublisher
 
 
@@ -34,6 +34,7 @@ class JobRunContext:
     app_installer: ApplicationInstaller
     secrets: SecretsService
     publisher: JobEventPublisher
+    actor_username: str | None = None
     settings: Settings = field(default_factory=get_settings)
 
     # Populated during execution:

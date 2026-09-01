@@ -59,26 +59,35 @@ export function useDatastoreClusters(vcenterId: string, clusterId: string) {
 export function useNetworks(vcenterId: string, datacenterId: string | null) {
   return useQuery({
     queryKey: ['networks', vcenterId, datacenterId],
-    queryFn: () => api.networks(vcenterId, datacenterId ?? undefined),
-    enabled: Boolean(vcenterId),
+    queryFn: () => api.networks(vcenterId, datacenterId ?? ''),
+    enabled: Boolean(vcenterId && datacenterId),
   })
 }
 
 export function useTemplates(vcenterId: string, datacenterId: string | null, enabled = true) {
   return useQuery({
     queryKey: ['templates', vcenterId, datacenterId],
-    queryFn: () => api.templates(vcenterId, datacenterId ?? undefined),
-    enabled: Boolean(enabled && vcenterId),
+    queryFn: () => api.templates(vcenterId, datacenterId ?? ''),
+    enabled: Boolean(enabled && vcenterId && datacenterId),
   })
 }
 
-export function useCertificatePackages() {
+export function useIsos(vcenterId: string, datacenterId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['isos', vcenterId, datacenterId],
+    queryFn: () => api.isos(vcenterId, datacenterId ?? ''),
+    enabled: Boolean(enabled && vcenterId && datacenterId),
+  })
+}
+
+export function useCertificatePackages(enabled = true) {
   return useQuery({
     queryKey: ['certificate-packages'],
     queryFn: () => api.certificatePackages(true),
+    enabled,
   })
 }
 
-export function useApplications() {
-  return useQuery({ queryKey: ['applications'], queryFn: () => api.applications(true) })
+export function useApplications(enabled = true) {
+  return useQuery({ queryKey: ['applications'], queryFn: () => api.applications(true), enabled })
 }

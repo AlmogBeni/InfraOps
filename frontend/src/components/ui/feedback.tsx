@@ -26,17 +26,17 @@ export function Badge({
   className?: string
 }) {
   const tones: Record<string, string> = {
-    neutral: 'bg-slate-100/80 text-slate-700 ring-slate-200',
-    success: 'bg-emerald-100/80 text-emerald-800 ring-emerald-200',
-    warning: 'bg-amber-100/80 text-amber-800 ring-amber-200',
-    danger: 'bg-red-100/80 text-red-800 ring-red-200',
-    info: 'bg-brand-100 text-brand-800 ring-brand-200',
-    running: 'bg-cyan-100 text-cyan-700 ring-cyan-200',
+    neutral: 'bg-[#eef1ed] text-[#59635d] ring-[#d9dfd9]',
+    success: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
+    warning: 'bg-amber-50 text-amber-900 ring-amber-200',
+    danger: 'bg-red-50 text-red-800 ring-red-200',
+    info: 'bg-brand-50 text-brand-800 ring-brand-200',
+    running: 'bg-[#fff5ed] text-[#a34527] ring-[#f4c7aa]',
   }
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset',
+        'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ring-1 ring-inset',
         tones[tone],
         className,
       )}
@@ -121,12 +121,12 @@ export function Alert({
   const icons = { info: Info, warning: AlertTriangleIcon, danger: FailIcon, success: OkIcon }
   const Icon = icons[tone]
   return (
-    <div className={cn('rounded-md border px-3 py-2 text-sm', tones[tone])} role="alert">
+    <div className={cn('rounded-xl border px-4 py-3 text-sm', tones[tone])} role="alert">
       <div className="flex items-start gap-2">
         <Icon aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
         <div>
-          {title && <p className="font-semibold">{title}</p>}
-          <div className={title ? 'mt-0.5' : ''}>{children}</div>
+          {title && <p className="font-semibold tracking-[-0.01em]">{title}</p>}
+          <div className={cn('text-xs leading-5', title && 'mt-1')}>{children}</div>
         </div>
       </div>
     </div>
@@ -140,7 +140,7 @@ export function ProgressBar({ percent, label }: { percent: number; label?: strin
   return (
     <div>
       <div
-        className="h-2 w-full overflow-hidden rounded-sm bg-slate-200"
+        className="h-2 w-full overflow-hidden rounded-full bg-[#e3e7e2]"
         role="progressbar"
         aria-valuenow={clamped}
         aria-valuemin={0}
@@ -148,7 +148,7 @@ export function ProgressBar({ percent, label }: { percent: number; label?: strin
         aria-label={label ?? 'Progress'}
       >
         <div
-          className="h-full animate-[pulse_1.6s_ease-in-out_infinite] bg-gradient-to-r from-brand-500 to-brand-700 transition-[width] duration-300"
+          className="h-full bg-gradient-to-r from-brand-500 to-brand-700 transition-[width] duration-300"
           style={{ width: `${clamped}%` }}
         />
       </div>
@@ -175,13 +175,41 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-1.5 px-5 py-7 text-center">
-      <div className="rounded-full border border-[#d6def0] bg-[#f7faff] p-2">
-        <CircleDashed aria-hidden className="h-6 w-6 text-slate-400" />
+    <div className="flex min-h-56 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-[#cfd5cf] bg-white/60 px-6 py-10 text-center">
+      <div className="rounded-2xl border border-[#d8ddd7] bg-[#f5f7f3] p-3">
+        <CircleDashed aria-hidden className="h-6 w-6 text-[#7c8680]" />
       </div>
-      <p className="text-sm font-medium text-slate-700">{title}</p>
-      {description && <p className="max-w-md text-xs text-slate-500">{description}</p>}
-      {action}
+      <p className="mt-1 text-sm font-semibold text-[#2b342f]">{title}</p>
+      {description && <p className="max-w-md text-xs leading-5 text-[#6b756f]">{description}</p>}
+      {action && <div className="mt-2">{action}</div>}
+    </div>
+  )
+}
+
+export function LoadingState({
+  title,
+  description,
+  fullPage = false,
+}: {
+  title: string
+  description?: string
+  fullPage?: boolean
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center justify-center px-6 text-center',
+        fullPage ? 'min-h-screen' : 'min-h-48 rounded-2xl border border-[#d8ddd7] bg-white',
+      )}
+      role="status"
+    >
+      <div className="max-w-sm">
+        <span className="mx-auto grid h-11 w-11 place-items-center rounded-2xl bg-brand-50 text-brand-700">
+          <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+        </span>
+        <p className="mt-3 text-sm font-semibold text-[#202923]">{title}</p>
+        {description && <p className="mt-1 text-xs leading-5 text-[#6b756f]">{description}</p>}
+      </div>
     </div>
   )
 }

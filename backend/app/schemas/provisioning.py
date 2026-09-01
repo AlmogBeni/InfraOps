@@ -106,7 +106,7 @@ class HardwareSpec(BaseModel):
     disks: list[DiskSpec] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="after")
-    def _secure_boot_requires_efi(self) -> "HardwareSpec":
+    def _secure_boot_requires_efi(self) -> HardwareSpec:
         if self.secure_boot and self.firmware != FirmwareType.EFI:
             raise ValueError("secure_boot requires UEFI (EFI) firmware.")
         return self
@@ -124,6 +124,7 @@ class GuestSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     template_id: str | None = Field(default=None, min_length=1, max_length=120)
+    iso_id: str | None = Field(default=None, min_length=1, max_length=2048)
     hostname: str | None = Field(default=None, max_length=64, pattern=VM_NAME_PATTERN.pattern)
     timezone: str | None = Field(default=None, max_length=100)
     domain_join: DomainJoinSpec | None = None
@@ -142,7 +143,7 @@ class Ipv4Config(BaseModel):
     dns_servers: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
-    def _validate_addresses(self) -> "Ipv4Config":
+    def _validate_addresses(self) -> Ipv4Config:
         object.__setattr__(self, "address", _validate_ipv4(self.address, "IP address"))
         object.__setattr__(self, "gateway", _validate_ipv4(self.gateway, "Default gateway"))
 
@@ -186,7 +187,7 @@ class NetworkSpec(BaseModel):
     ipv4: Ipv4Config | None = None
 
     @model_validator(mode="after")
-    def _static_requires_ipv4(self) -> "NetworkSpec":
+    def _static_requires_ipv4(self) -> NetworkSpec:
         if self.mode == IpMode.STATIC and self.ipv4 is None:
             raise ValueError("ipv4 configuration is required when mode is STATIC.")
         return self
@@ -212,6 +213,8 @@ class ProvisioningRequest(BaseModel):
     def _validate_source(self) -> ProvisioningRequest:
         if self.source_type == VmSourceType.TEMPLATE and not self.guest.template_id:
             raise ValueError("guest.template_id is required when source_type is 'template'.")
+        if self.source_type == VmSourceType.TEMPLATE and self.guest.iso_id is not None:
+            raise ValueError("guest.iso_id must be null when source_type is 'template'.")
         if self.source_type == VmSourceType.BLANK:
             if self.guest.template_id is not None:
                 raise ValueError("guest.template_id must be null when source_type is 'blank'.")

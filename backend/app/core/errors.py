@@ -124,6 +124,26 @@ def register_exception_handlers(app: FastAPI) -> None:
             },
         )
 
+    @app.exception_handler(InfraOperationError)
+    async def _infrastructure_error_handler(
+        _: Request, exc: InfraOperationError
+    ) -> JSONResponse:
+        """Return actionable infrastructure failures without leaking technical detail."""
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "error": {
+                    "code": "infrastructure_operation_failed",
+                    "message": exc.human_message,
+                    "details": {
+                        "reason": exc.reason,
+                        "recommended_action": exc.recommended_action,
+                        "retryable": exc.retryable,
+                    },
+                }
+            },
+        )
+
     @app.exception_handler(Exception)
     async def _unhandled_handler(_: Request, exc: Exception) -> JSONResponse:
         log.exception("Unhandled exception: %s", exc)

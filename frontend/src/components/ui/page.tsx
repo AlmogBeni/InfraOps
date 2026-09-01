@@ -18,16 +18,16 @@ export function PageHeader({
   className?: string
 }) {
   return (
-    <header className={cn('border-b border-slate-200/90 pb-4', className)}>
+    <header className={cn('pb-1', className)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="console-kicker">{eyebrow}</p>
-          <h2 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">{title}</h2>
-          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">{description}</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-[-0.035em] text-[#17201c]">{title}</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#68736d]">{description}</p>
         </div>
         {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>
-      {meta && <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">{meta}</div>}
+      {meta && <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-[#758079]">{meta}</div>}
     </header>
   )
 }
@@ -42,10 +42,10 @@ export function PanelHeader({
   actions?: ReactNode
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#d6def0] bg-gradient-to-r from-[#f8faff] to-[#eef3ff] px-4 py-2.5">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e2e6e1] bg-[#f8f9f6] px-5 py-4">
       <div>
-        <h3 className="text-xs font-bold uppercase tracking-[0.08em] text-slate-700">{title}</h3>
-        {description && <p className="mt-0.5 text-xs text-slate-500">{description}</p>}
+        <h3 className="text-sm font-semibold tracking-[-0.01em] text-[#202923]">{title}</h3>
+        {description && <p className="mt-1 text-xs leading-5 text-[#6b756f]">{description}</p>}
       </div>
       {actions}
     </div>
@@ -56,7 +56,7 @@ export function ConsolePanel({ className, children }: { className?: string; chil
   return (
     <section
       className={cn(
-        'animate-panel-reveal overflow-hidden rounded-xl border border-[#d6def0] bg-white shadow-[0_12px_30px_rgba(15,23,42,0.08)]',
+        'animate-panel-reveal overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]',
         className,
       )}
     >
@@ -68,9 +68,9 @@ export function ConsolePanel({ className, children }: { className?: string; chil
 export function DataPoint({ label, value, detail }: { label: string; value: ReactNode; detail?: string }) {
   return (
     <div className="min-w-0 px-4 py-3">
-      <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500">{label}</p>
-      <p className="mt-1 truncate text-xl font-semibold tabular-nums tracking-tight text-slate-950">{value}</p>
-      {detail && <p className="mt-0.5 truncate text-[11px] text-slate-500">{detail}</p>}
+      <p className="text-[10px] font-bold uppercase tracking-[0.11em] text-[#7b857f]">{label}</p>
+      <p className="mt-2 truncate text-2xl font-semibold tabular-nums tracking-[-0.03em] text-[#17201c]">{value}</p>
+      {detail && <p className="mt-1 truncate text-[11px] text-[#758079]">{detail}</p>}
     </div>
   )
 }

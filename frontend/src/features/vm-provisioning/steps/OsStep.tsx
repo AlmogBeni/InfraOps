@@ -5,20 +5,20 @@ import { Checkbox, FormRow, Input, Select } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useTemplates } from '@/features/vm-provisioning/hooks'
 
-export function OsStep() {
+export function OsStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
   const data = wizard.data
-  const templates = useTemplates(data.vcenter_id, null, data.source_type === 'template')
+  const templates = useTemplates(data.vcenter_id, data.datacenter_id, data.source_type === 'template')
   const selectedTemplate = templates.data?.find((template) => template.id === data.template_id)
 
   if (data.source_type === 'blank') {
     return (
       <section aria-label="Operating system" className="space-y-5">
-        <header>
+        {!embedded && <header>
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest operating system</p>
           <h2>OS installation handoff</h2>
           <p>Blank VM creation does not install or customize a guest operating system.</p>
-        </header>
+        </header>}
         <div className="console-group">
           <div className="console-group-header">
             <div>
@@ -40,31 +40,28 @@ export function OsStep() {
 
   return (
     <section aria-label="Operating system configuration" className="space-y-5">
-      <header>
+      {!embedded && <header>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest operating system</p>
             <h2>Guest customization</h2>
             <p>The OS is inherited from the selected template. Configure only supported guest overrides.</p>
           </div>
-          {selectedTemplate?.os_version && <Badge tone="info">{selectedTemplate.os_version}</Badge>}
+          {selectedTemplate?.type && <Badge tone="info">{selectedTemplate.type}</Badge>}
         </div>
-      </header>
+      </header>}
 
       <div className="console-group">
         <div className="console-group-header">
           <div>
-            <p className="console-group-title">Template-derived operating system</p>
-            <p className="console-group-description">Read-only source information.</p>
+            <p className="console-group-title">OVF / OVA package</p>
+            <p className="console-group-description">The package defines the base guest and virtual appliance configuration.</p>
           </div>
           <MonitorCog className="h-4 w-4 text-slate-400" aria-hidden />
         </div>
         <div className="flex flex-wrap items-center gap-2 px-4 py-3">
           <span className="text-sm font-semibold text-slate-900">{selectedTemplate?.name ?? 'Selected template'}</span>
-          {selectedTemplate?.os_version && <Badge tone="neutral">{selectedTemplate.os_version}</Badge>}
-          {selectedTemplate && selectedTemplate.os_family !== 'windows' && (
-            <Badge tone="warning">Limited guest automation</Badge>
-          )}
+          {selectedTemplate?.type && <Badge tone="neutral">{selectedTemplate.type}</Badge>}
         </div>
       </div>
 

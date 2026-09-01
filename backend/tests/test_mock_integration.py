@@ -18,6 +18,7 @@ from app.services.vmware.base import BlankVmSpec, CloneSpec
 from app.services.vmware.mock import (
     DEFAULT_MOCK_VCENTER_ID,
     MockVMwareService,
+    get_mock_inventory,
     reset_mock_estates,
 )
 
@@ -71,12 +72,36 @@ class TestDiscovery:
         assert by_name["esx03.company.local"].available_for_provisioning is False
         assert by_name["esx01.company.local"].available_for_provisioning is True
 
-    async def test_templates_include_all_datacenters(self, target):
+    async def test_templates_are_ovf_ova_only_and_scoped_to_datacenter(self, target):
         service = MockVMwareService()
         primary = await service.get_templates(target, "datacenter-21")
         lab = await service.get_templates(target, "datacenter-22")
-        assert {template.id for template in primary} == {"vm-61", "vm-62", "vm-63"}
-        assert {template.id for template in lab} == {"vm-61", "vm-62", "vm-63"}
+        assert {template.id for template in primary} == {
+            "ovf-corp-windows-2022",
+            "ova-corp-windows-2025",
+        }
+        assert {template.id for template in lab} == {"ovf-lab-integration"}
+        assert {template.type for template in primary + lab} == {"OVF", "OVA"}
+
+    async def test_networks_are_strictly_scoped_to_datacenter(self, target):
+        service = MockVMwareService()
+        primary = await service.get_networks(target, "datacenter-21")
+        lab = await service.get_networks(target, "datacenter-22")
+        assert {network.id for network in primary} == {
+            "dvportgroup-51",
+            "dvportgroup-52",
+            "dvportgroup-53",
+        }
+        assert {network.id for network in lab} == {"network-54"}
+        assert {network.id for network in primary}.isdisjoint(network.id for network in lab)
+
+    async def test_isos_are_strictly_scoped_to_datacenter(self, target):
+        service = MockVMwareService()
+        primary = await service.get_isos(target, "datacenter-21")
+        lab = await service.get_isos(target, "datacenter-22")
+        assert {image.id for image in primary} == {"iso-corp-windows-2025"}
+        assert {image.id for image in lab} == {"iso-lab-ubuntu-2404"}
+        assert primary[0].datastore_id == "datastore-41"
 
     async def test_duplicate_names_detected(self, target):
         service = MockVMwareService()
@@ -88,7 +113,8 @@ class TestDiscovery:
 class TestLifecycle:
     async def make_spec(self, name="TEST-VM-001"):
         return CloneSpec(
-            template_id="vm-62", vm_name=name, cluster_id="domain-c7",
+            template_id="ova-corp-windows-2025", vm_name=name,
+            datacenter_id="datacenter-21", cluster_id="domain-c7",
             host_id="host-11", cpu=4, memory_mb=16384,
             disks=(DiskSpec(size_gb=100, provisioning=DiskProvisioning.THIN),),
             network_id="dvportgroup-51", adapter_type=AdapterType.VMXNET3,
@@ -99,7 +125,7 @@ class TestLifecycle:
         before = {d.id: d.free_gb for d in await service.get_datastores(target, "domain-c7")}
         ref = await service.clone_from_template(target, await self.make_spec())
         after = {d.id: d.free_gb for d in await service.get_datastores(target, "domain-c7")}
-        consumed = sum(b - a for b, a in zip(before.values(), after.values()))
+        consumed = sum(b - a for b, a in zip(before.values(), after.values(), strict=False))
         assert consumed == 100
         assert await service.vm_exists(target, ref.name)
 
@@ -129,6 +155,57 @@ class TestLifecycle:
         assert info.power_state == "poweredOff"
         assert info.tools_status is None
 
+    async def test_create_blank_vm_mounts_selected_datacenter_iso(self, target):
+        service = MockVMwareService()
+        spec = BlankVmSpec(
+            vm_name="BLANK-VM-ISO-001",
+            datacenter_id="datacenter-21",
+            cluster_id="domain-c7",
+            host_id="host-11",
+            cpu=2,
+            memory_mb=8192,
+            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
+            iso_id="iso-corp-windows-2025",
+        )
+        ref = await service.create_blank_vm(target, spec)
+        vm = get_mock_inventory(target.id).find_vm_by_name(ref.name)
+        assert vm is not None
+        assert vm.iso_id == "iso-corp-windows-2025"
+
+    async def test_create_blank_vm_rejects_iso_from_another_datacenter(self, target):
+        from app.core.errors import InfraOperationError
+
+        service = MockVMwareService()
+        spec = BlankVmSpec(
+            vm_name="BLANK-VM-ISO-002",
+            datacenter_id="datacenter-21",
+            cluster_id="domain-c7",
+            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
+            iso_id="iso-lab-ubuntu-2404",
+        )
+        with pytest.raises(InfraOperationError, match="selected ISO"):
+            await service.create_blank_vm(target, spec)
+
+    async def test_network_attachment_rejects_cross_datacenter_selection(self, target):
+        from app.core.errors import InfraOperationError
+
+        service = MockVMwareService()
+        spec = BlankVmSpec(
+            vm_name="BLANK-VM-NET-001",
+            datacenter_id="datacenter-21",
+            cluster_id="domain-c7",
+            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
+        )
+        ref = await service.create_blank_vm(target, spec)
+        with pytest.raises(InfraOperationError, match="another datacenter"):
+            await service.attach_network(
+                target,
+                ref.id,
+                "network-54",
+                AdapterType.VMXNET3,
+                "datacenter-21",
+            )
+
     async def test_tools_become_ready_after_power_on(self, target):
         service = MockVMwareService()
         ref = await service.clone_from_template(target, await self.make_spec())
@@ -151,7 +228,13 @@ class TestGuestAutomation:
 
         service = MockVMwareService()
         ref = await service.clone_from_template(
-            target, CloneSpec(template_id="vm-62", vm_name="NET-VM-001", cluster_id="domain-c7")
+            target,
+            CloneSpec(
+                template_id="ova-corp-windows-2025",
+                vm_name="NET-VM-001",
+                datacenter_id="datacenter-21",
+                cluster_id="domain-c7",
+            ),
         )
         await service.power_on(target, ref.id)
         await service.wait_for_tools(target, ref.id, timeout_seconds=15)
@@ -182,14 +265,19 @@ class TestGuestAutomation:
             .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Root CA")]))
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1))
-            .not_valid_after(dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=365))
+            .not_valid_before(dt.datetime.now(dt.UTC) - dt.timedelta(days=1))
+            .not_valid_after(dt.datetime.now(dt.UTC) + dt.timedelta(days=365))
             .sign(key, hashes.SHA256())
         )
         pem = cert.public_bytes(serialization.Encoding.PEM).decode()
         meta_fingerprint = (
             __import__("hashlib").sha256(
-                cert.public_bytes(__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.DER)
+                cert.public_bytes(
+                    __import__(
+                        "cryptography.hazmat.primitives.serialization",
+                        fromlist=["Encoding"],
+                    ).Encoding.DER
+                )
             ).hexdigest().upper()
         )
 

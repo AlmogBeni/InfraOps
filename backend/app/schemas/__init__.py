@@ -9,12 +9,14 @@ from app.schemas.infrastructure import (
     DatastoreClusterOut,
     DatastoreOut,
     HostOut,
+    IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
     TemplateOut,
     VCenterSummary,
 )
 from app.schemas.jobs import JobDetailOut, JobListResponse, JobOut, JobStepOut, RetryRequest
+from app.schemas.logs import LogEventOut, LogListResponse, LogSeverity
 from app.schemas.provisioning import (
     AdapterType,
     CheckStatus,
@@ -50,12 +52,16 @@ __all__ = [
     "IpConflictCheckRequest",
     "IpConflictReport",
     "IpMode",
+    "IsoImageOut",
     "Ipv4Config",
     "JobDetailOut",
     "JobListResponse",
     "JobOut",
     "JobStepOut",
     "LoginRequest",
+    "LogEventOut",
+    "LogListResponse",
+    "LogSeverity",
     "NetworkOut",
     "NetworkSpec",
     "Page",

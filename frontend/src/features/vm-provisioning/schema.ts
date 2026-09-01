@@ -27,6 +27,7 @@ export type VmSourceType = 'blank' | 'template'
 export interface WizardData {
   source_type: VmSourceType | null
   template_id: string
+  iso_id: string | null
   vcenter_id: string
   datacenter_id: string
   cluster_id: string
@@ -62,6 +63,7 @@ export function initialWizardData(): WizardData {
   return {
     source_type: null,
     template_id: '',
+    iso_id: null,
     vcenter_id: '',
     datacenter_id: '',
     cluster_id: '',
@@ -119,11 +121,44 @@ const computeSchema = z.object({
 })
 
 export const stepSchemas = {
+  deployment: z.object({
+    source_type: z.enum(['blank', 'template'], {
+      required_error: 'Choose OVF/OVA deployment or Blank virtual machine.',
+    }),
+  }),
   source: z.object({
     source_type: z.enum(['blank', 'template'], {
       required_error: 'Choose Blank Virtual Machine or From Template.',
     }),
   }),
+  location: z
+    .object({
+      vcenter_id: z.string().min(1, 'Select a vCenter.'),
+      datacenter_id: z.string().min(1, 'Select a datacenter.'),
+      cluster_id: z.string().min(1, 'Select a cluster.'),
+      host_mode: z.enum(['auto', 'manual']),
+      host_id: z.string().nullable(),
+    })
+    .superRefine((value, context) => {
+      if (value.host_mode === 'manual' && !value.host_id) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['host_id'], message: 'Select a host.' })
+      }
+    }),
+  media: z
+    .object({
+      source_type: z.enum(['blank', 'template']),
+      template_id: z.string(),
+      iso_id: z.string().nullable(),
+    })
+    .superRefine((value, context) => {
+      if (value.source_type === 'template' && !value.template_id) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['template_id'],
+          message: 'Select an OVF or OVA package.',
+        })
+      }
+    }),
   infrastructure: z
     .object({
       source_type: z.enum(['blank', 'template']),
@@ -165,6 +200,38 @@ export const stepSchemas = {
         })
       }
     }),
+  configuration: computeSchema.extend({
+    source_type: z.enum(['blank', 'template']),
+    storage_mode: z.enum(['auto', 'manual']),
+    datastore_id: z.string().nullable(),
+    hostname: z.string(),
+    domain_join: z.object({
+      enabled: z.boolean(),
+      domain: z.string(),
+      ou: z.string(),
+      credential_secret_ref: z.string(),
+    }),
+  }).superRefine((value, context) => {
+    if (value.storage_mode === 'manual' && !value.datastore_id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['datastore_id'],
+        message: 'Select a datastore.',
+      })
+    }
+    if (value.source_type === 'template') {
+      const hostname = value.hostname || value.vm_name
+      if (!VM_NAME_REGEX.test(hostname)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['hostname'], message: 'Enter a valid guest hostname.' })
+      }
+      if (value.domain_join.enabled && value.domain_join.domain.length < 3) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['domain_join', 'domain'], message: 'Domain is required when joining.' })
+      }
+      if (value.domain_join.enabled && value.domain_join.credential_secret_ref.length < 2) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['domain_join', 'credential_secret_ref'], message: 'Select the domain-join credential reference.' })
+      }
+    }
+  }),
   network: z.object({
     network_id: z.string().min(1, 'Select a port group.'),
     ip_address: ipv4('Enter a valid IPv4 address.'),
@@ -209,7 +276,20 @@ export type StepKey = keyof typeof stepSchemas
 export function validateStep(step: StepKey, data: WizardData): Record<string, string> {
   const fromTemplate = data.source_type === 'template'
   const slice = {
+    deployment: { source_type: data.source_type },
     source: { source_type: data.source_type },
+    location: {
+      vcenter_id: data.vcenter_id,
+      datacenter_id: data.datacenter_id,
+      cluster_id: data.cluster_id,
+      host_mode: data.host_mode,
+      host_id: data.host_id,
+    },
+    media: {
+      source_type: data.source_type,
+      template_id: data.template_id,
+      iso_id: data.iso_id,
+    },
     infrastructure: {
       source_type: data.source_type,
       vcenter_id: data.vcenter_id,
@@ -220,6 +300,17 @@ export function validateStep(step: StepKey, data: WizardData): Record<string, st
       template_id: data.template_id,
     },
     compute: { vm_name: data.vm_name, cpu: data.cpu, memory_gb: data.memory_gb, disks: data.disks },
+    configuration: {
+      source_type: data.source_type,
+      vm_name: data.vm_name,
+      cpu: data.cpu,
+      memory_gb: data.memory_gb,
+      disks: data.disks,
+      storage_mode: data.storage_mode,
+      datastore_id: data.datastore_id,
+      hostname: data.hostname,
+      domain_join: data.domain_join,
+    },
     storage: { storage_mode: data.storage_mode, datastore_id: data.datastore_id },
     network: {
       network_id: data.network_id,
@@ -280,6 +371,7 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
     },
     guest: {
       template_id: fromTemplate ? data.template_id : null,
+      iso_id: fromTemplate ? null : data.iso_id,
       hostname: fromTemplate ? (data.hostname || data.vm_name) : null,
       timezone: fromTemplate ? (data.timezone || null) : null,
       domain_join:

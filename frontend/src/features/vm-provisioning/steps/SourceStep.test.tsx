@@ -19,7 +19,7 @@ describe('SourceStep', () => {
     draft.template_id = 'vm-template-x'
     draft.certificate_package_ids = ['package-1']
     draft.application_ids = ['application-1']
-    localStorage.setItem('infraops.provisioning-draft', JSON.stringify(draft))
+    localStorage.setItem('infraops.provisioning-draft.v2', JSON.stringify(draft))
 
     render(
       <WizardProvider>

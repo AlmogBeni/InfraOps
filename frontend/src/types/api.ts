@@ -98,20 +98,39 @@ export interface NetworkOut {
   id: string
   name: string
   type: string
+  datacenter_id?: string | null
+  datacenter_name?: string | null
 }
 
 export interface TemplateOut {
   id: string
   name: string
-  os_family: string
-  os_version: string
-  last_modified: string | null
+  type: 'OVF' | 'OVA'
   description: string
   datacenter_id: string | null
   datacenter_name: string | null
-  cpu: number | null
-  memory_mb: number | null
-  disk_size_gb: number | null
+  storage_name: string | null
+  location: string | null
+  size_bytes: number | null
+  last_modified: string | null
+  /** Legacy fields remain optional while old jobs are still readable. */
+  os_family?: string | null
+  os_version?: string | null
+  cpu?: number | null
+  memory_mb?: number | null
+  disk_size_gb?: number | null
+}
+
+export interface IsoImageOut {
+  id: string
+  name: string
+  datacenter_id: string
+  datacenter_name: string | null
+  datastore_id: string
+  datastore_name: string
+  path: string
+  size_bytes: number | null
+  last_modified: string | null
 }
 
 // ── Provisioning ─────────────────────────────────────────────────────────────
@@ -159,6 +178,7 @@ export interface ProvisioningRequest {
   }
   guest: {
     template_id: string | null
+    iso_id: string | null
     hostname: string | null
     timezone: string | null
     domain_join: DomainJoinSpec | null
@@ -234,6 +254,8 @@ export interface JobOut {
   job_type: JobType
   status: JobStatus
   vm_name: string
+  datacenter_id: string | null
+  datacenter_name: string | null
   requested_by_username: string | null
   current_stage: string | null
   progress: number
@@ -362,16 +384,41 @@ export interface AuditEventOut {
   user_id: string | null
   username: string | null
   action: string
+  action_label?: string | null
   resource_type: string | null
   resource_name: string | null
   job_id: string | null
   result: string | null
   source_ip: string | null
+  datacenter_name?: string | null
+  datacenter_id?: string | null
+  detail_text?: string | null
   details: Record<string, unknown>
 }
 
 export interface AuditListResponse {
   items: AuditEventOut[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type LogSeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL' | 'DEBUG'
+
+export interface LogEventOut {
+  id: string
+  timestamp: string
+  severity: LogSeverity
+  component: string
+  message: string
+  resource_name: string | null
+  datacenter_name: string | null
+  job_id: string | null
+  details: Record<string, unknown>
+}
+
+export interface LogListResponse {
+  items: LogEventOut[]
   total: number
   page: number
   page_size: number

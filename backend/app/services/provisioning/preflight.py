@@ -13,6 +13,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import InfraOperationError
 from app.core.logging import get_logger
 from app.models.applications import Application
 from app.models.certificates import CertificatePackage
@@ -43,6 +44,16 @@ from app.services.settings_store import (
 from app.services.vmware.base import VCenterTarget, VMwareService
 
 log = get_logger(__name__)
+
+
+def _safe_infrastructure_failure(exc: Exception, fallback: str) -> str:
+    if isinstance(exc, InfraOperationError):
+        return (
+            f"{exc.human_message} Reason: {exc.reason} "
+            f"Recommended action: {exc.recommended_action}"
+        )
+    log.exception("Unexpected preflight integration failure")
+    return fallback
 
 
 class PreflightValidator:
@@ -91,7 +102,15 @@ class PreflightValidator:
                 else:
                     add("vcenter", "vCenter connection", CheckStatus.FAIL, result.detail)
         except Exception as exc:  # noqa: BLE001
-            add("vcenter", "vCenter connection", CheckStatus.FAIL, f"{type(exc).__name__}: {exc}")
+            add(
+                "vcenter",
+                "vCenter connection",
+                CheckStatus.FAIL,
+                _safe_infrastructure_failure(
+                    exc,
+                    "The vCenter connection could not be tested. Try again or contact an administrator.",
+                ),
+            )
 
         # ── Infrastructure discovery ─────────────────────────────────────────
         if target is not None:
@@ -122,7 +141,15 @@ class PreflightValidator:
                 else:
                     add("vm_name_unique", "VM name is available", CheckStatus.PASS)
             except Exception as exc:  # noqa: BLE001
-                add("vm_name_unique", "VM name uniqueness", CheckStatus.FAIL, str(exc))
+                add(
+                    "vm_name_unique",
+                    "VM name uniqueness",
+                    CheckStatus.FAIL,
+                    _safe_infrastructure_failure(
+                        exc,
+                        "VM name availability could not be checked. Try again.",
+                    ),
+                )
 
         # ── Network addressing ───────────────────────────────────────────────
         if request.network.mode == IpMode.STATIC and request.network.ipv4 is not None:
@@ -152,7 +179,10 @@ class PreflightValidator:
                             report.confidence_note)
                 except Exception as exc:  # noqa: BLE001
                     add("ip_conflict", "IP conflict check", CheckStatus.WARN,
-                        f"Conflict providers failed: {exc}", blocking=False)
+                        _safe_infrastructure_failure(
+                            exc,
+                            "One or more conflict providers could not be checked.",
+                        ), blocking=False)
 
         # ── Certificates ─────────────────────────────────────────────────────
         await self._check_certificates(request, add)
@@ -266,24 +296,45 @@ class PreflightValidator:
                     f"{network.name} ({network.type})")
 
             if request.source_type == VmSourceType.TEMPLATE:
-                templates = {t.id: t for t in await self._vmware.get_templates(target, None)}
+                templates = {t.id: t for t in await self._vmware.get_templates(target, dc.id)}
                 template = templates.get(request.guest.template_id)
                 if template is None:
                     add("template", "Template accessible", CheckStatus.FAIL,
                         f"Template '{request.guest.template_id}' was not found.")
                 else:
-                    status = CheckStatus.PASS
-                    detail = f"{template.name} ({template.os_version})"
-                    if template.os_family != "windows":
-                        status = CheckStatus.WARN
-                        detail += " — Linux guests are not yet supported by guest automation."
-                    add("template", "Template accessible", status, detail)
+                    add("template", "OVF/OVA package accessible", CheckStatus.PASS,
+                        f"{template.name} ({template.type})")
             else:
-                add("source", "Blank VM source", CheckStatus.PASS,
-                    "A powered-off VM will be created without an operating system.")
+                if request.guest.iso_id:
+                    isos = {
+                        image.id: image
+                        for image in await self._vmware.get_isos(target, dc.id)
+                    }
+                    image = isos.get(request.guest.iso_id)
+                    if image is None:
+                        add("iso", "ISO available", CheckStatus.FAIL,
+                            "The selected ISO was not found in this datacenter.")
+                    elif image.datastore_id not in datastores or not datastores[
+                        image.datastore_id
+                    ].accessible:
+                        add("iso", "ISO accessible to cluster", CheckStatus.FAIL,
+                            f"{image.name} is stored on a datastore unavailable to this cluster.")
+                    else:
+                        add("iso", "ISO available", CheckStatus.PASS,
+                            f"{image.name} on {image.datastore_name}")
+                else:
+                    add("iso", "Installation media", CheckStatus.PASS,
+                        "No ISO will be mounted.")
         except Exception as exc:  # noqa: BLE001
-            add("infrastructure", "Infrastructure discovery", CheckStatus.FAIL,
-                f"Discovery failed: {type(exc).__name__}: {exc}")
+            add(
+                "infrastructure",
+                "Infrastructure discovery",
+                CheckStatus.FAIL,
+                _safe_infrastructure_failure(
+                    exc,
+                    "Infrastructure inventory could not be loaded. Try again.",
+                ),
+            )
 
     async def _selected_applications(self, request: ProvisioningRequest) -> list[Application]:
         if not request.application_ids:
@@ -368,8 +419,11 @@ class PreflightValidator:
                 except SecretNotFoundError:
                     problems.append(f"Secret '{base}/{suffix}' is not resolvable by the "
                                     f"'{self._secrets.provider_name}' provider.")
-                except Exception as exc:  # noqa: BLE001
-                    problems.append(f"Secret '{base}/{suffix}' could not be checked: {exc}")
+                except Exception:  # noqa: BLE001
+                    log.exception("Credential reference preflight check failed")
+                    problems.append(
+                        f"Secret '{base}/{suffix}' could not be checked. Contact an administrator."
+                    )
         if problems:
             add("credentials", "Credential references resolvable", CheckStatus.FAIL,
                 " ".join(problems))

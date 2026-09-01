@@ -26,6 +26,10 @@ function validData(): WizardData {
 
 describe('validateStep', () => {
   it('passes for a fully valid draft', () => {
+    expect(validateStep('deployment', validData())).toEqual({})
+    expect(validateStep('location', validData())).toEqual({})
+    expect(validateStep('media', validData())).toEqual({})
+    expect(validateStep('configuration', validData())).toEqual({})
     expect(validateStep('source', validData())).toEqual({})
     expect(validateStep('infrastructure', validData())).toEqual({})
     expect(validateStep('compute', validData())).toEqual({})
@@ -74,6 +78,15 @@ describe('validateStep', () => {
 
     template.source_type = 'blank'
     expect(validateStep('infrastructure', template).template_id).toBeUndefined()
+  })
+
+  it('requires an OVF or OVA package on the media step', () => {
+    const data = validData()
+    data.template_id = ''
+    expect(validateStep('media', data).template_id).toBe('Select an OVF or OVA package.')
+
+    data.source_type = 'blank'
+    expect(validateStep('media', data)).toEqual({})
   })
 
   it('requires a host for manual placement', () => {
@@ -149,6 +162,7 @@ describe('buildRequest', () => {
     const data = validData()
     data.source_type = 'blank'
     data.template_id = 'vm-stale'
+    data.iso_id = 'iso-ubuntu-2404'
     data.certificate_package_ids = ['11111111-1111-4111-8111-111111111111']
     data.application_ids = ['22222222-2222-4222-8222-222222222222']
     data.domain_join.enabled = true
@@ -156,8 +170,18 @@ describe('buildRequest', () => {
     const payload = buildRequest(data)
     expect(payload.source_type).toBe('blank')
     expect(payload.guest.template_id).toBeNull()
+    expect(payload.guest.iso_id).toBe('iso-ubuntu-2404')
     expect(payload.guest.domain_join).toBeNull()
     expect(payload.certificate_package_ids).toEqual([])
     expect(payload.application_ids).toEqual([])
+  })
+
+  it('sends an OVF or OVA package without an ISO', () => {
+    const data = validData()
+    data.iso_id = 'iso-stale'
+
+    const payload = buildRequest(data)
+    expect(payload.guest.template_id).toBe(data.template_id)
+    expect(payload.guest.iso_id).toBeNull()
   })
 })

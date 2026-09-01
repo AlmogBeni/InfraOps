@@ -4,12 +4,12 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
-import { formatDateTime } from '@/lib/utils'
+import { formatDateTime, humanizeIdentifier } from '@/lib/utils'
 import type { VCenterConnectionAdminOut } from '@/types/api'
 
 const EMPTY_FORM = {
@@ -28,6 +28,7 @@ export function VCenterConnectionsPage() {
   const [editing, setEditing] = useState<VCenterConnectionAdminOut | null>(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, string>>({})
 
   const connections = useQuery({ queryKey: ['admin-vcenters'], queryFn: () => api.admin.vcenters() })
@@ -69,18 +70,26 @@ export function VCenterConnectionsPage() {
 
   const remove = useMutation({
     mutationFn: (id: string) => api.admin.deleteVCenter(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['admin-vcenters'] }),
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      setActionError(null)
+      void queryClient.invalidateQueries({ queryKey: ['admin-vcenters'] })
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'The vCenter connection could not be deleted.'),
   })
 
   const test = useMutation({
     mutationFn: async (id: string) => ({ id, result: await api.admin.testVCenter(id) }),
+    onMutate: () => setActionError(null),
     onSuccess: ({ id, result }) => {
+      setActionError(null)
       setTestResults((previous) => ({
         ...previous,
         [id]: result.ok ? `Connected (${result.latency_ms ?? '?'} ms)` : result.detail,
       }))
       void queryClient.invalidateQueries({ queryKey: ['admin-vcenters'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'The connection test could not be completed.'),
   })
 
   return (
@@ -93,10 +102,10 @@ export function VCenterConnectionsPage() {
         meta={<span>{connections.data?.length ?? 0} configured endpoint(s)</span>}
       />
 
+      {actionError && <Alert tone="danger" title="vCenter action could not be completed">{actionError}</Alert>}
+
       {connections.isLoading ? (
-        <div className="flex h-40 items-center justify-center">
-          <Spinner />
-        </div>
+        <LoadingState title="Loading vCenter connections" description="Checking configured endpoints and their latest health state." />
       ) : connections.isError ? (
         <Alert tone="danger" title="vCenter registry unavailable">
           The connection registry could not be loaded.{' '}
@@ -137,7 +146,7 @@ export function VCenterConnectionsPage() {
                           : 'neutral'
                     }
                   >
-                    {connection.connection_state}
+                    {humanizeIdentifier(connection.connection_state)}
                   </Badge>
                   {testResults[connection.id] && (
                     <span className="ml-2 text-xs text-slate-500">{testResults[connection.id]}</span>

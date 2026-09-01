@@ -7,7 +7,8 @@ import uuid
 from fastapi import APIRouter, Query
 from sqlalchemy import select
 
-from app.api.deps import DbSession
+from app.api.deps import DbSession, require
+from app.auth.permissions import Permission
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.models.infrastructure import VCenterConnection
@@ -17,6 +18,7 @@ from app.schemas.infrastructure import (
     DatastoreClusterOut,
     DatastoreOut,
     HostOut,
+    IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
     TemplateOut,
@@ -25,7 +27,11 @@ from app.schemas.infrastructure import (
 from app.services.vmware.base import VCenterTarget
 from app.services.vmware.factory import get_vmware_service
 
-router = APIRouter(prefix="/infrastructure", tags=["infrastructure"])
+router = APIRouter(
+    prefix="/infrastructure",
+    tags=["infrastructure"],
+    dependencies=[require(Permission.INFRASTRUCTURE_READ)],
+)
 log = get_logger(__name__)
 
 
@@ -96,7 +102,7 @@ async def list_datastore_clusters(cluster_id: str, vcenter_id: uuid.UUID, db: Db
 async def list_networks(
     vcenter_id: uuid.UUID,
     db: DbSession,
-    datacenter_id: str | None = Query(default=None),
+    datacenter_id: str = Query(min_length=1, max_length=120),
 ) -> list[NetworkOut]:
     target = await _load_target(db, vcenter_id)
     return await get_vmware_service().get_networks(target, datacenter_id)
@@ -117,3 +123,13 @@ async def list_templates(
         len(templates),
     )
     return templates
+
+
+@router.get("/isos", response_model=list[IsoImageOut])
+async def list_isos(
+    vcenter_id: uuid.UUID,
+    db: DbSession,
+    datacenter_id: str = Query(min_length=1, max_length=120),
+) -> list[IsoImageOut]:
+    target = await _load_target(db, vcenter_id)
+    return await get_vmware_service().get_isos(target, datacenter_id)

@@ -1,13 +1,14 @@
 import { Network as NetworkIcon, Radar } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Alert, Badge, EmptyState } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { FormRow, Input, RadioGroup, Select } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useNetworks } from '@/features/vm-provisioning/hooks'
 import { api } from '@/lib/api'
+import { humanizeIdentifier } from '@/lib/utils'
 import type { IpConflictReport } from '@/types/api'
 
 export function NetworkStep() {
@@ -15,6 +16,16 @@ export function NetworkStep() {
   const data = wizard.data
   const networks = useNetworks(data.vcenter_id, data.datacenter_id)
   const [conflictReport, setConflictReport] = useState<IpConflictReport | null>(null)
+
+  useEffect(() => {
+    if (
+      networks.isSuccess
+      && data.network_id
+      && !networks.data.some((network) => network.id === data.network_id)
+    ) {
+      wizard.update({ network_id: '' })
+    }
+  }, [data.network_id, networks.data, networks.isSuccess, wizard.update])
 
   const ipCheck = useMutation({
     mutationFn: () => {
@@ -46,6 +57,13 @@ export function NetworkStep() {
           <span>{networks.error instanceof Error ? networks.error.message : 'Networks could not be loaded.'}</span>{' '}
           <Button type="button" size="sm" variant="secondary" onClick={() => void networks.refetch()}>Retry</Button>
         </Alert>
+      )}
+
+      {networks.isLoading && (
+        <LoadingState
+          title="Loading datacenter networks"
+          description="Discovering standard and distributed port groups in the selected location."
+        />
       )}
 
       {!networks.isLoading && !networks.isError && (networks.data ?? []).length === 0 && (
@@ -167,9 +185,9 @@ export function NetworkStep() {
                       {conflictReport.providers.map((provider) => (
                         <div key={provider.provider} className="rounded border border-slate-200 bg-white px-2.5 py-2 text-xs">
                           <Badge tone={provider.status === 'CONFLICT_DETECTED' ? 'danger' : provider.status === 'NO_CONFLICT' ? 'success' : 'neutral'}>
-                            {provider.status.replaceAll('_', ' ')}
+                            {humanizeIdentifier(provider.status)}
                           </Badge>
-                          <p className="mt-1 font-semibold text-slate-700">{provider.provider}</p>
+                          <p className="mt-1 font-semibold text-slate-700">{humanizeIdentifier(provider.provider)}</p>
                           <p className="mt-0.5 text-[11px] text-slate-500">{provider.detail}</p>
                         </div>
                       ))}

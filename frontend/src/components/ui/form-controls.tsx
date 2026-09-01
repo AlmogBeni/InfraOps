@@ -12,13 +12,13 @@ import {
 import { cn } from '@/lib/utils'
 
 const baseControl =
-  'w-full rounded-lg border border-[#d6def0] bg-white px-3 py-2 text-sm text-slate-900 ' +
-  'shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] outline-none transition-[border,box-shadow] duration-150 ' +
-  'focus:border-brand-500 focus:ring-2 focus:ring-brand-200 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500'
+  'w-full rounded-lg border border-[#cfd5cf] bg-white px-3 py-2 text-sm text-[#202923] ' +
+  'shadow-sm outline-none transition-[border,box-shadow] duration-150 placeholder:text-[#9aa39d] ' +
+  'focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:border-[#dde2dd] disabled:bg-[#eef1ed] disabled:text-[#7b857f]'
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   function Input({ className, ...props }, ref) {
-    return <input ref={ref} className={cn(baseControl, 'h-9', className)} {...props} />
+    return <input ref={ref} className={cn(baseControl, 'h-10', className)} {...props} />
   },
 )
 
@@ -31,7 +31,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
   function Select({ className, children, ...props }, ref) {
     return (
-      <select ref={ref} className={cn(baseControl, 'h-9 pr-8', className)} {...props}>
+      <select ref={ref} className={cn(baseControl, 'h-10 pr-8', className)} {...props}>
         {children}
       </select>
     )
@@ -50,15 +50,15 @@ interface FormRowProps {
 
 export function FormRow({ label, htmlFor, hint, error, required, children, className }: FormRowProps) {
   return (
-    <div className={cn('mb-3.5', className)}>
+    <div className={cn('mb-4', className)}>
       <label className="field-label" htmlFor={htmlFor}>
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
       </label>
       {children}
-      {hint && !error && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+      {hint && !error && <p className="mt-1.5 text-[11px] leading-4 text-[#758079]">{hint}</p>}
       {error && (
-        <p className="mt-1 text-xs font-medium text-red-600" role="alert">
+        <p className="mt-1.5 text-[11px] font-medium text-red-700" role="alert">
           {error}
         </p>
       )}
@@ -82,7 +82,7 @@ export function Checkbox({ label, className, id, ...props }: CheckboxProps) {
         {...props}
       />
       {label && (
-        <label htmlFor={inputId} className="cursor-pointer text-sm text-slate-700">
+        <label htmlFor={inputId} className="cursor-pointer text-sm leading-5 text-[#3f4a43]">
           {label}
         </label>
       )}
@@ -120,8 +120,8 @@ export function RadioGroup<T extends string>({
           <label
             key={option.value}
             className={cn(
-              'flex cursor-pointer items-start gap-2 rounded-lg border border-[#d6def0] bg-white px-3 py-2 transition-[border,background-color] hover:bg-[#f7faff]',
-              checked ? 'border-brand-500 bg-brand-50/70 ring-1 ring-brand-500' : '',
+              'flex min-h-20 cursor-pointer items-start gap-3 rounded-xl border border-[#d8ddd7] bg-white px-4 py-3 transition-[border,background-color,box-shadow] hover:bg-[#f8f9f6]',
+              checked ? 'border-brand-600 bg-brand-50/60 ring-1 ring-brand-500 shadow-sm' : '',
               option.disabled && 'cursor-not-allowed opacity-50',
             )}
           >

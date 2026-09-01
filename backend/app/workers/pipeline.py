@@ -16,8 +16,8 @@ from app.models.jobs import JobStatus, StepStatus
 from app.repositories.jobs import JobRepository
 from app.workers.context import JobRunContext
 from app.workers.events import JobEventPublisher
-from app.workers.state_machine import ORDERED_STAGES, StageDefinition
 from app.workers.stages import STAGE_HANDLERS, effective_timeout_seconds
+from app.workers.state_machine import ORDERED_STAGES, StageDefinition
 
 log = get_logger(__name__)
 
@@ -25,7 +25,7 @@ _MAX_OUTPUT_CHARS = 8000
 
 
 def _utcnow() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 class ProvisioningPipeline:
@@ -86,7 +86,7 @@ class ProvisioningPipeline:
                     retryable=False,
                 )
             outcome = await asyncio.wait_for(handler(ctx), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             failure = InfraOperationError(
                 f"'{stage.name}' exceeded its {int(timeout)} second timeout.",
                 reason="The operation did not complete within the configured time limit.",
@@ -96,11 +96,11 @@ class ProvisioningPipeline:
             )
         except InfraOperationError as exc:
             failure = exc
-        except Exception as exc:  # noqa: BLE001 - unexpected errors must still be surfaced clearly
+        except Exception:  # noqa: BLE001 - unexpected errors must still be surfaced clearly
             log.exception("Unexpected error in stage %s", stage.key)
             failure = InfraOperationError(
                 f"'{stage.name}' failed unexpectedly.",
-                reason=f"{type(exc).__name__}: {exc}",
+                reason="An unexpected internal error interrupted the stage.",
                 recommended_action="Review the technical details and retry the stage.",
                 technical_detail=traceback.format_exc()[-4000:],
                 retryable=True,
@@ -172,6 +172,9 @@ class ProvisioningPipeline:
             resource_type="provisioning_stage",
             resource_name=stage.name,
             job_id=ctx.job_id,
+            username=ctx.actor_username,
+            datacenter_id=ctx.request.compute.datacenter_id,
+            datacenter_name=ctx.job.datacenter_name,
             result="failure",
             details={"stage": stage.key, "attempt": step.attempt},
             detail_text=failure.summary(),
@@ -208,6 +211,9 @@ class ProvisioningPipeline:
             resource_type="virtual_machine",
             resource_name=ctx.vm_name,
             job_id=ctx.job_id,
+            username=ctx.actor_username,
+            datacenter_id=ctx.request.compute.datacenter_id,
+            datacenter_name=ctx.job.datacenter_name,
             result="success",
             details={"duration_seconds": ctx.job.duration_seconds},
         )
@@ -238,6 +244,9 @@ class ProvisioningPipeline:
             resource_type="virtual_machine",
             resource_name=ctx.vm_name,
             job_id=ctx.job_id,
+            username=ctx.actor_username,
+            datacenter_id=ctx.request.compute.datacenter_id,
+            datacenter_name=ctx.job.datacenter_name,
             result="cancelled",
         )
         await ctx.db.commit()

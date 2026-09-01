@@ -3,17 +3,19 @@ submission/inspection/retry/cancellation and the SSE live-event stream."""
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 
 from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.api.deps import ClientIp, DbSession, require
 from app.audit.actions import AuditAction
 from app.audit.recorder import AuditRecorder
-from app.auth.permissions import Permission
+from app.auth.permissions import Permission, roles_grant
 from app.core.errors import NotFoundError
 from app.models.infrastructure import VCenterConnection
 from app.models.jobs import ProvisioningJob, ProvisioningJobStep
@@ -36,6 +38,7 @@ from app.services.provisioning.preflight import PreflightValidator
 from app.services.provisioning.service import cancel_job, retry_stages, submit_provisioning
 from app.services.vmware.base import VCenterTarget
 from app.services.vmware.factory import get_vmware_service
+from app.workers.events import JobEventPublisher
 
 router = APIRouter(prefix="/provisioning", tags=["provisioning"])
 
@@ -48,6 +51,8 @@ def _job_out(job: ProvisioningJob, usernames: dict[uuid.UUID, str] | None = None
         job_type=job.job_type,
         status=job.status,
         vm_name=job.vm_name,
+        datacenter_id=job.datacenter_id,
+        datacenter_name=job.datacenter_name,
         requested_by_username=(usernames or {}).get(job.requested_by_user_id),
         current_stage=job.current_stage,
         progress=job.progress,
@@ -60,7 +65,32 @@ def _job_out(job: ProvisioningJob, usernames: dict[uuid.UUID, str] | None = None
     )
 
 
-def _step_out(step: ProvisioningJobStep) -> JobStepOut:
+def _normalized_request_payload(payload: dict | None) -> dict | None:
+    """Upgrade stored legacy request JSON to the current public contract."""
+    if not isinstance(payload, dict):
+        return None
+
+    candidate = copy.deepcopy(payload)
+    guest = candidate.get("guest")
+    if isinstance(guest, dict):
+        guest.setdefault("iso_id", None)
+        if "source_type" not in candidate:
+            candidate["source_type"] = (
+                "template" if guest.get("template_id") else "blank"
+            )
+    candidate.setdefault("certificate_package_ids", [])
+    candidate.setdefault("application_ids", [])
+
+    try:
+        return ProvisioningRequest.model_validate(candidate).model_dump(mode="json")
+    except ValidationError:
+        # Very old or externally imported rows can contain fields the current
+        # schema cannot safely reinterpret. Preserve their data while still
+        # supplying the discriminators/defaults required by current readers.
+        return candidate
+
+
+def _step_out(step: ProvisioningJobStep, *, include_technical: bool = False) -> JobStepOut:
     return JobStepOut(
         id=str(step.id),
         job_id=str(step.job_id),
@@ -75,7 +105,7 @@ def _step_out(step: ProvisioningJobStep) -> JobStepOut:
         finished_at=step.finished_at,
         output=step.output,
         error_human=step.error_human,
-        error_technical=step.error_technical,
+        error_technical=step.error_technical if include_technical else None,
         artifacts=step.artifacts or {},
     )
 
@@ -113,6 +143,7 @@ async def validate_provisioning_request(
         resource_type="provisioning_request",
         resource_name=payload.vm.name,
         result="ready" if report.ready else "blocked",
+        datacenter_id=payload.compute.datacenter_id,
         source_ip=source_ip,
         details={"checks": len(report.checks), "failures": failures, "warnings": warnings},
     )
@@ -214,23 +245,30 @@ async def get_job(job_id: uuid.UUID, db: DbSession, user=require(Permission.JOBS
     base = _job_out(job, usernames)
     detail = JobDetailOut(
         **base.model_dump(),
-        steps=[_step_out(step) for step in sorted(job.steps, key=lambda s: s.sequence)],
-        request_payload=job.request.payload if job.request else None,
+        steps=[
+            _step_out(
+                step,
+                include_technical=roles_grant(user.role_names, Permission.ADMIN_SETTINGS),
+            )
+            for step in sorted(job.steps, key=lambda s: s.sequence)
+        ],
+        request_payload=(
+            _normalized_request_payload(job.request.payload)
+            if job.request
+            else None
+        ),
     )
-    # Technical error details are administrator-visible only.
-    current = user  # permission already guarantees at least viewer
-    from app.auth.permissions import Permission, roles_grant
-
-    if not roles_grant(current.role_names, Permission.ADMIN_SETTINGS):
-        for step in detail.steps:
-            step.error_technical = None
     return detail
 
 
 @router.get("/jobs/{job_id}/steps", response_model=list[JobStepOut])
 async def get_job_steps(job_id: uuid.UUID, db: DbSession, user=require(Permission.JOBS_READ)):
     job = await _get_job(db, job_id)
-    return [_step_out(step) for step in sorted(job.steps, key=lambda s: s.sequence)]
+    include_technical = roles_grant(user.role_names, Permission.ADMIN_SETTINGS)
+    return [
+        _step_out(step, include_technical=include_technical)
+        for step in sorted(job.steps, key=lambda s: s.sequence)
+    ]
 
 
 @router.get("/jobs/{job_id}/request")
@@ -238,7 +276,7 @@ async def get_job_request(job_id: uuid.UUID, db: DbSession, user=require(Permiss
     job = await _get_job(db, job_id)
     if job.request is None:
         raise NotFoundError("No stored request for this job.")
-    return job.request.payload
+    return _normalized_request_payload(job.request.payload)
 
 
 # ── retry / cancel ───────────────────────────────────────────────────────────
@@ -295,6 +333,7 @@ async def stream_job_events(
     user=require(Permission.JOBS_READ),
 ) -> StreamingResponse:
     job = await _get_job(db, job_id)
+    include_technical = roles_grant(user.role_names, Permission.ADMIN_SETTINGS)
 
     async def event_stream():
         publisher = get_publisher()
@@ -303,7 +342,7 @@ async def stream_job_events(
             snapshot = {
                 "type": "snapshot",
                 "job": json.loads(_job_out(job).model_dump_json()),
-                "steps": [json.loads(_step_out(s).model_dump_json())
+                "steps": [json.loads(_step_out(s, include_technical=include_technical).model_dump_json())
                           for s in sorted(job.steps, key=lambda x: x.sequence)],
             }
             yield f"event: snapshot\ndata: {json.dumps(snapshot, default=str)}\n\n"

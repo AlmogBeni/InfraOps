@@ -12,11 +12,13 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.certificates import router as certificates_router
 from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.infrastructure import router as infrastructure_router
+from app.api.v1.logs import router as logs_router
 from app.api.v1.provisioning import router as provisioning_router
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(auth_router)
 api_v1_router.include_router(infrastructure_router)
+api_v1_router.include_router(logs_router)
 api_v1_router.include_router(provisioning_router)
 api_v1_router.include_router(applications_router)
 api_v1_router.include_router(certificates_router)

@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 
 export function Table({ className, ...props }: HTMLAttributes<HTMLTableElement>) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-[#d6def0] bg-white/95 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+    <div className="overflow-x-auto rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]">
       <table className={cn('table-base', className)} {...props} />
     </div>
   )
@@ -27,7 +27,7 @@ export function Tr({
     <tr
       className={cn(
         'animate-row-enter',
-        clickable && 'cursor-pointer transition-all duration-150 hover:bg-brand-50/80 hover:shadow-[0_2px_12px_rgba(37,99,235,0.15)]',
+        clickable && 'cursor-pointer transition-colors duration-150 hover:bg-[#f5f8f4]',
         className,
       )}
       {...props}

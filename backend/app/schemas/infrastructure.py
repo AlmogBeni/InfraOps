@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -78,15 +79,26 @@ class NetworkOut(BaseModel):
 class TemplateOut(BaseModel):
     id: str
     name: str
-    os_family: str  # windows | linux | other
-    os_version: str
-    last_modified: dt.datetime | None = None
+    type: Literal["OVF", "OVA"]
     description: str = ""
     datacenter_id: str | None = None
     datacenter_name: str | None = None
-    cpu: int | None = None
-    memory_mb: int | None = None
-    disk_size_gb: float | None = None
+    storage_name: str | None = None
+    location: str | None = None
+    size_bytes: int | None = None
+    last_modified: dt.datetime | None = None
+
+
+class IsoImageOut(BaseModel):
+    id: str
+    name: str
+    datacenter_id: str
+    datacenter_name: str | None = None
+    datastore_id: str
+    datastore_name: str
+    path: str
+    size_bytes: int | None = None
+    last_modified: dt.datetime | None = None
 
 
 class ConnectionTestResult(BaseModel):

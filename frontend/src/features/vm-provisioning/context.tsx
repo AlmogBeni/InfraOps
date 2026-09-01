@@ -11,7 +11,7 @@ import {
   type WizardData,
 } from '@/features/vm-provisioning/schema'
 
-const STORAGE_KEY = 'infraops.provisioning-draft'
+const STORAGE_KEY = 'infraops.provisioning-draft.v2'
 
 export interface WizardStepDefinition {
   key: string
@@ -19,14 +19,11 @@ export interface WizardStepDefinition {
 }
 
 export const WIZARD_STEPS: WizardStepDefinition[] = [
-  { key: 'source', title: 'Source' },
-  { key: 'infrastructure', title: 'Infrastructure' },
-  { key: 'compute', title: 'Compute' },
-  { key: 'storage', title: 'Storage' },
+  { key: 'deployment', title: 'Deployment type' },
+  { key: 'location', title: 'Location' },
+  { key: 'media', title: 'Source' },
+  { key: 'configuration', title: 'Configuration' },
   { key: 'network', title: 'Network' },
-  { key: 'os', title: 'Operating System' },
-  { key: 'certificates', title: 'Certificates' },
-  { key: 'applications', title: 'Applications' },
   { key: 'review', title: 'Review' },
 ]
 
@@ -37,6 +34,7 @@ interface WizardContextValue {
   currentStep: WizardStepDefinition
   goTo: (index: number) => void
   next: () => boolean
+  validateAll: () => boolean
   back: () => void
   errors: Record<string, string>
   setErrors: (errors: Record<string, string>) => void
@@ -47,13 +45,51 @@ interface WizardContextValue {
 const WizardContext = createContext<WizardContextValue | null>(null)
 
 function loadDraft(): WizardData {
+  const fresh = initialWizardData()
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return { ...initialWizardData(), ...(JSON.parse(raw) as WizardData) }
+    const draft = raw ? { ...fresh, ...(JSON.parse(raw) as WizardData) } : fresh
+    const query = new URLSearchParams(window.location.search)
+    const templateId = query.get('template_id')
+    if (templateId) {
+      const vcenterId = query.get('vcenter_id') ?? draft.vcenter_id
+      const datacenterId = query.get('datacenter_id') ?? draft.datacenter_id
+      const targetChanged = vcenterId !== draft.vcenter_id || datacenterId !== draft.datacenter_id
+      const sourceChanged = draft.source_type !== 'template'
+      return {
+        ...draft,
+        source_type: 'template',
+        template_id: templateId,
+        iso_id: null,
+        vcenter_id: vcenterId,
+        datacenter_id: datacenterId,
+        ...(targetChanged
+          ? {
+              cluster_id: '',
+              host_mode: 'auto' as const,
+              host_id: null,
+              resource_pool_id: null,
+              datastore_id: null,
+              network_id: '',
+              disks: draft.disks.map((disk) => ({ ...disk, datastore_id: null })),
+            }
+          : {}),
+        ...(sourceChanged
+          ? {
+              hostname: '',
+              timezone: '',
+              domain_join: { ...draft.domain_join, enabled: false },
+              certificate_package_ids: [],
+              application_ids: [],
+            }
+          : {}),
+      }
+    }
+    return draft
   } catch {
     /* corrupted draft — start fresh */
   }
-  return initialWizardData()
+  return fresh
 }
 
 export function WizardProvider({ children }: { children: ReactNode }) {
@@ -63,10 +99,62 @@ export function WizardProvider({ children }: { children: ReactNode }) {
 
   const update = useCallback((patch: Partial<WizardData>) => {
     setData((previous) => {
-      const next = {
+      let normalizedPatch = { ...patch }
+
+      if (patch.source_type !== undefined && patch.source_type !== previous.source_type) {
+        normalizedPatch = {
+          ...normalizedPatch,
+          template_id: '',
+          iso_id: null,
+          hostname: '',
+          timezone: '',
+          domain_join: { ...previous.domain_join, enabled: false },
+          certificate_package_ids: [],
+          application_ids: [],
+        }
+      }
+      if (patch.vcenter_id !== undefined && patch.vcenter_id !== previous.vcenter_id) {
+        normalizedPatch = {
+          ...normalizedPatch,
+          datacenter_id: '',
+          cluster_id: '',
+          host_mode: 'auto',
+          host_id: null,
+          resource_pool_id: null,
+          datastore_id: null,
+          network_id: '',
+          template_id: '',
+          iso_id: null,
+        }
+      }
+      if (patch.datacenter_id !== undefined && patch.datacenter_id !== previous.datacenter_id) {
+        normalizedPatch = {
+          ...normalizedPatch,
+          cluster_id: '',
+          host_mode: 'auto',
+          host_id: null,
+          resource_pool_id: null,
+          datastore_id: null,
+          network_id: '',
+          template_id: '',
+          iso_id: null,
+          disks: previous.disks.map((disk) => ({ ...disk, datastore_id: null })),
+        }
+      }
+      if (patch.cluster_id !== undefined && patch.cluster_id !== previous.cluster_id) {
+        normalizedPatch = {
+          ...normalizedPatch,
+          host_id: null,
+          resource_pool_id: null,
+          datastore_id: null,
+          disks: previous.disks.map((disk) => ({ ...disk, datastore_id: null })),
+        }
+      }
+
+      const next: WizardData = {
         ...previous,
-        ...patch,
-        ...(patch.source_type === 'blank'
+        ...normalizedPatch,
+        ...(normalizedPatch.source_type === 'blank'
           ? {
               template_id: '',
               hostname: '',
@@ -86,13 +174,26 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const goTo = useCallback(
-    (index: number) => {
-      setCurrentIndex(Math.max(0, Math.min(WIZARD_STEPS.length - 1, index)))
+  const goTo = useCallback((index: number) => {
+    const target = Math.max(0, Math.min(WIZARD_STEPS.length - 1, index))
+    if (target <= currentIndex) {
+      setCurrentIndex(target)
       setErrors({})
-    },
-    [],
-  )
+      return
+    }
+    for (let stepIndex = 0; stepIndex < target; stepIndex += 1) {
+      const step = WIZARD_STEPS[stepIndex]
+      if (!(step.key in stepSchemas)) continue
+      const found = validateStep(step.key as StepKey, data)
+      if (Object.keys(found).length > 0) {
+        setCurrentIndex(stepIndex)
+        setErrors(found)
+        return
+      }
+    }
+    setCurrentIndex(target)
+    setErrors({})
+  }, [currentIndex, data])
 
   const next = useCallback(() => {
     const step = WIZARD_STEPS[currentIndex]
@@ -112,6 +213,21 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     setCurrentIndex((index) => Math.max(0, index - 1))
     setErrors({})
   }, [])
+
+  const validateAll = useCallback(() => {
+    for (let stepIndex = 0; stepIndex < WIZARD_STEPS.length; stepIndex += 1) {
+      const step = WIZARD_STEPS[stepIndex]
+      if (!(step.key in stepSchemas)) continue
+      const found = validateStep(step.key as StepKey, data)
+      if (Object.keys(found).length > 0) {
+        setCurrentIndex(stepIndex)
+        setErrors(found)
+        return false
+      }
+    }
+    setErrors({})
+    return true
+  }, [data])
 
   const reset = useCallback(() => {
     const fresh = initialWizardData()
@@ -135,13 +251,14 @@ export function WizardProvider({ children }: { children: ReactNode }) {
       currentStep: WIZARD_STEPS[currentIndex],
       goTo,
       next,
+      validateAll,
       back,
       errors,
       setErrors,
       reset,
       requestPayload,
     }),
-    [data, update, currentIndex, goTo, next, back, errors, reset, requestPayload],
+    [data, update, currentIndex, goTo, next, validateAll, back, errors, reset, requestPayload],
   )
 
   return <WizardContext.Provider value={value}>{children}</WizardContext.Provider>
