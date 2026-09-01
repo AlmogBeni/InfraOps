@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.api.deps import DbSession
 from app.core.errors import NotFoundError
+from app.core.logging import get_logger
 from app.models.infrastructure import VCenterConnection
 from app.schemas.infrastructure import (
     ClusterOut,
@@ -25,6 +26,7 @@ from app.services.vmware.base import VCenterTarget
 from app.services.vmware.factory import get_vmware_service
 
 router = APIRouter(prefix="/infrastructure", tags=["infrastructure"])
+log = get_logger(__name__)
 
 
 async def _load_target(db, vcenter_id: uuid.UUID) -> VCenterTarget:
@@ -107,4 +109,11 @@ async def list_templates(
     datacenter_id: str | None = Query(default=None),
 ) -> list[TemplateOut]:
     target = await _load_target(db, vcenter_id)
-    return await get_vmware_service().get_templates(target, datacenter_id)
+    templates = await get_vmware_service().get_templates(target, datacenter_id)
+    log.info(
+        "Template inventory API response vcenter_id=%s datacenter_id=%s count=%s",
+        vcenter_id,
+        datacenter_id or "all",
+        len(templates),
+    )
+    return templates

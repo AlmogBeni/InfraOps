@@ -12,9 +12,9 @@ import {
 import { cn } from '@/lib/utils'
 
 const baseControl =
-  'w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm ' +
-  'placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 ' +
-  'disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500'
+  'w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-[inset_0_1px_1px_rgba(15,23,42,0.03)] ' +
+  'placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100 ' +
+  'disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500'
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   function Input({ className, ...props }, ref) {
@@ -50,7 +50,7 @@ interface FormRowProps {
 
 export function FormRow({ label, htmlFor, hint, error, required, children, className }: FormRowProps) {
   return (
-    <div className={cn('mb-4', className)}>
+    <div className={cn('mb-3.5', className)}>
       <label className="field-label" htmlFor={htmlFor}>
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
@@ -120,8 +120,8 @@ export function RadioGroup<T extends string>({
           <label
             key={option.value}
             className={cn(
-              'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition-colors',
-              checked ? 'border-brand-500 bg-brand-50/60 ring-1 ring-brand-500' : 'border-slate-200 bg-white',
+              'flex cursor-pointer items-start gap-2 rounded border px-3 py-2 transition-colors',
+              checked ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-slate-300 bg-white hover:bg-slate-50',
               option.disabled && 'cursor-not-allowed opacity-50',
             )}
           >

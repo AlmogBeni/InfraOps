@@ -182,16 +182,39 @@ class VsphereVMwareService(VMwareService):
             )
         return instance
 
-    async def _with_session(self, target: VCenterTarget, fn):
+    async def _with_session(self, target: VCenterTarget, fn, *, operation: str = "session-call"):
         """Run ``fn(si)`` in a thread; evict the session on connection errors."""
         si = await self._get_session(target)
         try:
             return await asyncio.to_thread(fn, si)
+        except (InfraOperationError, NotFoundError):
+            raise
         except (vim.fault.NoPermission, vim.fault.InvalidLogin) as exc:
-            raise _wrap("session-call", exc) from exc
+            log.warning(
+                "vCenter operation denied operation=%s vcenter_id=%s host=%s error_type=%s",
+                operation,
+                target.id,
+                target.host,
+                type(exc).__name__,
+            )
+            raise _wrap(operation, exc) from exc
         except (ConnectionError, OSError, vmodl.RuntimeFault) as exc:
             self._cache.evict(target.id)
-            raise _wrap("session-call", exc) from exc
+            log.exception(
+                "vCenter connection failed operation=%s vcenter_id=%s host=%s",
+                operation,
+                target.id,
+                target.host,
+            )
+            raise _wrap(operation, exc) from exc
+        except Exception as exc:  # noqa: BLE001
+            log.exception(
+                "vCenter operation failed operation=%s vcenter_id=%s host=%s",
+                operation,
+                target.id,
+                target.host,
+            )
+            raise _wrap(operation, exc) from exc
 
     # ── pyvmomi helpers (blocking, run inside threads) ───────────────────────
 
@@ -232,6 +255,28 @@ class VsphereVMwareService(VMwareService):
                     return vm
         finally:
             view.Destroy()
+        return None
+
+    @staticmethod
+    def _owning_datacenter(entity):
+        """Resolve an inventory entity's datacenter through its folder ancestry."""
+        current = entity
+        visited: set[int] = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            parent = getattr(current, "parent", None)
+            if parent is None:
+                return None
+            vm_folder = getattr(parent, "vmFolder", None)
+            if (
+                vm_folder is current
+                or (
+                    getattr(vm_folder, "_moId", None) is not None
+                    and getattr(vm_folder, "_moId", None) == getattr(current, "_moId", None)
+                )
+            ):
+                return parent
+            current = parent
         return None
 
     @staticmethod
@@ -439,18 +484,52 @@ class VsphereVMwareService(VMwareService):
             datacenter = self._find_by_moref(content, datacenter_id) if datacenter_id else None
             if datacenter_id and datacenter is None:
                 raise NotFoundError(f"Datacenter '{datacenter_id}' does not exist.")
-            root = datacenter.vmFolder if datacenter is not None else content.rootFolder
-            view = content.viewManager.CreateContainerView(root, [vim.VirtualMachine], True)
+            stats = {
+                "visible_vms": 0,
+                "visible_templates": 0,
+                "outside_datacenter": 0,
+                "unresolved_datacenter": 0,
+            }
+            # Query from the inventory root and resolve the owning datacenter
+            # from each VM's folder ancestry. This avoids vCenter-version and
+            # folder-layout differences in datacenter-scoped container views.
+            view = content.viewManager.CreateContainerView(
+                content.rootFolder, [vim.VirtualMachine], True
+            )
             try:
                 for vm in view.view:
-                    if not vm.config or not vm.config.template:
+                    stats["visible_vms"] += 1
+                    config = getattr(vm, "config", None)
+                    summary_config = getattr(getattr(vm, "summary", None), "config", None)
+                    is_template = bool(
+                        getattr(config, "template", False)
+                        or getattr(summary_config, "template", False)
+                    )
+                    if not is_template:
                         continue
-                    guest = vm.config.guestFullName or ""
+                    stats["visible_templates"] += 1
+
+                    owner = self._owning_datacenter(vm)
+                    owner_id = getattr(owner, "_moId", None)
+                    owner_name = getattr(owner, "name", None)
+                    if datacenter is not None and owner_id != datacenter._moId:
+                        if owner_id is None:
+                            stats["unresolved_datacenter"] += 1
+                        else:
+                            stats["outside_datacenter"] += 1
+                        continue
+
+                    guest = (
+                        getattr(config, "guestFullName", None)
+                        or getattr(summary_config, "guestFullName", None)
+                        or ""
+                    )
                     family = "windows" if "windows" in guest.lower() else (
                         "linux" if any(k in guest.lower() for k in ("linux", "rhel", "ubuntu", "debian")) else "other"
                     )
+                    hardware = getattr(config, "hardware", None)
                     disks = [
-                        device for device in (vm.config.hardware.device or [])
+                        device for device in (getattr(hardware, "device", None) or [])
                         if isinstance(device, vim.vm.device.VirtualDisk)
                     ]
                     templates.append(
@@ -459,20 +538,37 @@ class VsphereVMwareService(VMwareService):
                             name=vm.name,
                             os_family=family,
                             os_version=guest,
-                            last_modified=vm.config.modifyDate,
-                            description=vm.config.annotation or "",
-                            datacenter_id=datacenter_id,
-                            datacenter_name=datacenter.name if datacenter is not None else None,
-                            cpu=vm.config.hardware.numCPU,
-                            memory_mb=vm.config.hardware.memoryMB,
+                            last_modified=getattr(config, "modifyDate", None),
+                            description=getattr(config, "annotation", None) or "",
+                            datacenter_id=owner_id,
+                            datacenter_name=owner_name,
+                            cpu=getattr(hardware, "numCPU", None),
+                            memory_mb=getattr(hardware, "memoryMB", None),
                             disk_size_gb=round(sum(disk.capacityInKB for disk in disks) / 1024**2, 1),
                         )
                     )
             finally:
                 view.Destroy()
-            return templates
+            return templates, stats
 
-        return sorted(await self._with_session(target, op), key=lambda t: t.name)
+        templates, stats = await self._with_session(
+            target, op, operation="list-templates"
+        )
+        log_method = log.warning if not templates else log.info
+        log_method(
+            "vCenter template inventory complete vcenter_id=%s host=%s datacenter_id=%s "
+            "visible_vms=%s visible_classic_templates=%s returned_templates=%s "
+            "outside_datacenter=%s unresolved_datacenter=%s",
+            target.id,
+            target.host,
+            datacenter_id or "all",
+            stats["visible_vms"],
+            stats["visible_templates"],
+            len(templates),
+            stats["outside_datacenter"],
+            stats["unresolved_datacenter"],
+        )
+        return sorted(templates, key=lambda template: template.name)
 
     # ── Inventory queries ────────────────────────────────────────────────────
 

@@ -4,8 +4,9 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input } from '@/components/ui/form-controls'
+import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { formatDateTime } from '@/lib/utils'
@@ -84,19 +85,29 @@ export function VCenterConnectionsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-500">
-          Credentials are referenced by secret name only — values live in the secrets provider.
-        </p>
-        <Button onClick={openCreate}>
-          <Plus className="h-4 w-4" /> Add vCenter
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Infrastructure administration"
+        title="vCenter connection registry"
+        description="Manage authenticated vSphere endpoints, TLS verification, external secret references, and connection health."
+        actions={<Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" /> Add vCenter</Button>}
+        meta={<span>{connections.data?.length ?? 0} configured endpoint(s)</span>}
+      />
 
       {connections.isLoading ? (
         <div className="flex h-40 items-center justify-center">
           <Spinner />
         </div>
+      ) : connections.isError ? (
+        <Alert tone="danger" title="vCenter registry unavailable">
+          The connection registry could not be loaded.{' '}
+          <Button size="sm" variant="secondary" onClick={() => void connections.refetch()}>Retry</Button>
+        </Alert>
+      ) : (connections.data ?? []).length === 0 ? (
+        <EmptyState
+          title="No vCenter endpoints configured"
+          description="Add a connection before operators can browse inventory or provision virtual machines."
+          action={<Button size="sm" onClick={openCreate}><Plus className="h-3.5 w-3.5" /> Add vCenter</Button>}
+        />
       ) : (
         <Table>
           <thead>

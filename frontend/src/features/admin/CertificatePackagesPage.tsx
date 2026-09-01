@@ -4,8 +4,9 @@ import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input, Select, Textarea } from '@/components/ui/form-controls'
+import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { readPublicCertificateFile, validateCertificateFile } from '@/features/admin/certificate-file'
@@ -134,25 +135,34 @@ export function CertificatePackagesPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-500">
-          Packages group certificates that operators select during provisioning. Fingerprints and validity
-          dates are computed server-side from the public X.509 certificate.
-        </p>
-        <Button onClick={() => setPackageDialogOpen(true)}>
-          <Plus className="h-4 w-4" /> Add package
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Trust administration"
+        title="Certificate deployment packages"
+        description="Publish verified public X.509 trust chains for operator selection. Fingerprints, validity, and Windows stores are validated server-side."
+        actions={<Button size="sm" onClick={() => setPackageDialogOpen(true)}><Plus className="h-4 w-4" /> Add package</Button>}
+        meta={<span>{packages.data?.length ?? 0} package(s) configured</span>}
+      />
 
       {packages.isLoading ? (
         <div className="flex h-40 items-center justify-center">
           <Spinner />
         </div>
+      ) : packages.isError ? (
+        <Alert tone="danger" title="Certificate catalog unavailable">
+          Certificate packages could not be loaded.{' '}
+          <Button size="sm" variant="secondary" onClick={() => void packages.refetch()}>Retry</Button>
+        </Alert>
+      ) : (packages.data ?? []).length === 0 ? (
+        <EmptyState
+          title="No certificate packages"
+          description="Create a package, then register public root or intermediate CA certificates."
+          action={<Button size="sm" onClick={() => setPackageDialogOpen(true)}><Plus className="h-3.5 w-3.5" /> Add package</Button>}
+        />
       ) : (
         <div className="space-y-4">
           {(packages.data ?? []).map((package_) => (
-            <div key={package_.id} className="rounded-lg border border-slate-200 bg-white shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+            <div key={package_.id} className="overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-[#f5f7f9] px-4 py-2.5">
                 <div>
                   <p className="text-sm font-semibold text-slate-800">
                     {package_.name}{' '}

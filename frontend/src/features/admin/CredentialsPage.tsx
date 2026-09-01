@@ -4,8 +4,9 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { FormRow, Input, Select } from '@/components/ui/form-controls'
+import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 
@@ -34,19 +35,27 @@ export function CredentialsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="max-w-2xl text-xs text-slate-500">
-          Credential references are logical names only. Actual secret values are stored in the configured
-          provider (environment variables in development, HashiCorp Vault in production) and are never
-          displayed, logged or exported by this platform.
-        </p>
-        <Button onClick={() => { setDialogOpen(true); setFormError(null) }}>
-          <Plus className="h-4 w-4" /> Add reference
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Security administration"
+        title="Credential and secret references"
+        description="Register logical references to external secret providers. Secret material is never displayed, logged, persisted in jobs, or exported."
+        actions={<Button size="sm" onClick={() => { setDialogOpen(true); setFormError(null) }}><Plus className="h-4 w-4" /> Add reference</Button>}
+        meta={<span>{credentials.data?.length ?? 0} registered reference(s)</span>}
+      />
 
       {credentials.isLoading ? (
         <div className="flex h-40 items-center justify-center"><Spinner /></div>
+      ) : credentials.isError ? (
+        <Alert tone="danger" title="Secret reference registry unavailable">
+          Credential references could not be loaded.{' '}
+          <Button size="sm" variant="secondary" onClick={() => void credentials.refetch()}>Retry</Button>
+        </Alert>
+      ) : (credentials.data ?? []).length === 0 ? (
+        <EmptyState
+          title="No credential references"
+          description="Register a logical provider reference without exposing the underlying secret material."
+          action={<Button size="sm" onClick={() => { setDialogOpen(true); setFormError(null) }}><Plus className="h-3.5 w-3.5" /> Add reference</Button>}
+        />
       ) : (
         <Table>
           <thead>

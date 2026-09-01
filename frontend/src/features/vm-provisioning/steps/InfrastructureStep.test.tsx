@@ -114,4 +114,34 @@ describe('InfrastructureStep cluster-to-host flow', () => {
       expect(stored.template_id).toBe('vm-template-1')
     })
   })
+
+  it('distinguishes templates in another datacenter from an empty vCenter inventory', async () => {
+    const draft = JSON.parse(localStorage.getItem('infraops.provisioning-draft') ?? '{}')
+    draft.source_type = 'template'
+    draft.template_id = ''
+    localStorage.setItem('infraops.provisioning-draft', JSON.stringify(draft))
+    vi.mocked(api.templates).mockImplementation(async (_vcenterId, datacenterId) => (
+      datacenterId
+        ? []
+        : [{
+            id: 'vm-template-other',
+            name: 'Template in Lab',
+            os_family: 'windows',
+            os_version: 'Windows Server 2022',
+            last_modified: null,
+            description: '',
+            datacenter_id: 'dc-2',
+            datacenter_name: 'Lab',
+            cpu: 2,
+            memory_mb: 4096,
+            disk_size_gb: 80,
+          }]
+    ))
+
+    renderStep()
+
+    expect(await screen.findByText('Templates are visible, but none belong to this datacenter.')).toBeInTheDocument()
+    expect(screen.getByText(/1 template\(s\) are visible in other datacenters/i)).toBeInTheDocument()
+    expect(api.templates).toHaveBeenCalledWith('vc-1', undefined)
+  })
 })

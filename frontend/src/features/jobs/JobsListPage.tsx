@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { Plus } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { EmptyState, JobStatusBadge, Spinner } from '@/components/ui/feedback'
 import { Input, Select } from '@/components/ui/form-controls'
+import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { formatDateTime, formatDuration } from '@/lib/utils'
@@ -28,7 +30,7 @@ export function JobsListPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [vmNameFilter, setVmNameFilter] = useState('')
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['jobs', page, statusFilter, vmNameFilter],
     queryFn: () =>
       api.jobs({
@@ -50,8 +52,15 @@ export function JobsListPage() {
 
   return (
     <div className="space-y-4">
-      {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3">
+      <PageHeader
+        eyebrow="Operations"
+        title="Provisioning job queue"
+        description="Inspect active and historical executions, open stage-level diagnostics, and retry recoverable failures."
+        actions={<Button size="sm" onClick={() => navigate('/provisioning/new')}><Plus className="h-3.5 w-3.5" /> New VM request</Button>}
+        meta={<span>{data?.total ?? 0} job(s) match the current scope</span>}
+      />
+
+      <div className="console-toolbar">
         <div className="w-56">
           <label className="field-label" htmlFor="jobs-vm-filter">
             VM name contains
@@ -85,7 +94,7 @@ export function JobsListPage() {
             ))}
           </Select>
         </div>
-        <Button variant="secondary" onClick={() => { setStatusFilter(''); setVmNameFilter(''); setPage(1) }}>
+        <Button size="sm" variant="secondary" onClick={() => { setStatusFilter(''); setVmNameFilter(''); setPage(1) }}>
           Clear filters
         </Button>
       </div>
@@ -94,6 +103,12 @@ export function JobsListPage() {
         <div className="flex h-48 items-center justify-center">
           <Spinner />
         </div>
+      ) : isError ? (
+        <EmptyState
+          title="Job queue unavailable"
+          description="The provisioning job API could not be reached."
+          action={<Button size="sm" variant="secondary" onClick={() => void refetch()}>Retry</Button>}
+        />
       ) : !data || data.items.length === 0 ? (
         <EmptyState title="No jobs found" description="Adjust the filters or provision a new VM." />
       ) : (

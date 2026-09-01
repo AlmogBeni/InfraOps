@@ -85,7 +85,7 @@ function ConfigurationSnapshot() {
         : 'Not selected'
 
   return (
-    <aside className="hidden overflow-hidden rounded-lg border border-slate-200 bg-white 2xl:block">
+    <aside className="hidden overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)] 2xl:block">
       <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-700">
           Configuration snapshot
@@ -183,7 +183,7 @@ function WizardShell() {
       </header>
 
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[210px_minmax(0,1fr)] 2xl:grid-cols-[210px_minmax(0,1fr)_250px]">
-        <aside className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+        <aside className="overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <Stepper
             steps={WIZARD_STEPS.map(({ key, title }) => ({ key, title }))}
             currentIndex={wizard.currentIndex}
@@ -193,7 +193,7 @@ function WizardShell() {
         </aside>
 
         <form
-          className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
+          className="min-w-0 overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
           onSubmit={(event) => {
             event.preventDefault()
             if (!isReview) wizard.next()

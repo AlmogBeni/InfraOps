@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, Badge, Spinner } from '@/components/ui/feedback'
 import { FormRow, Input, Textarea } from '@/components/ui/form-controls'
+import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import type { PlatformSettingsOut } from '@/types/api'
@@ -29,20 +30,56 @@ export function SettingsPage() {
         default_timeouts: payload.default_timeouts,
         environment_label: payload.environment_label,
       }),
-    onSuccess: () => {
+    onMutate: () => setSaved(false),
+    onSuccess: (updated) => {
+      setDraft(structuredClone(updated))
       setSaved(true)
       void queryClient.invalidateQueries({ queryKey: ['admin-settings'] })
     },
   })
 
-  if (settings.isLoading || !draft) {
+  if (settings.isLoading) {
     return (
       <div className="flex h-40 items-center justify-center"><Spinner /></div>
     )
   }
+  if (settings.isError) {
+    return (
+      <Alert tone="danger" title="Platform settings unavailable">
+        The settings API could not be reached.{' '}
+        <Button size="sm" variant="secondary" onClick={() => void settings.refetch()}>Retry</Button>
+      </Alert>
+    )
+  }
+  if (!draft) return <div className="flex h-40 items-center justify-center"><Spinner /></div>
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(settings.data)
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-5xl space-y-4">
+      <PageHeader
+        eyebrow="Platform administration"
+        title="Policy and execution defaults"
+        description="Set naming controls, repository boundaries, stage timeouts, and the operator-facing environment label."
+        meta={<span>Changes apply to new validation and provisioning requests</span>}
+        actions={
+          <>
+            {saved && !isDirty && !save.isPending && <Badge tone="success">Saved</Badge>}
+            <Button
+              size="sm"
+              disabled={!isDirty}
+              loading={save.isPending}
+              onClick={() => save.mutate(draft)}
+            >
+              Save changes
+            </Button>
+          </>
+        }
+      />
+      {save.isError && (
+        <Alert tone="danger" title="Settings were not saved">
+          Check the API response and retry the change.
+        </Alert>
+      )}
       <Card>
         <CardHeader><CardTitle>Naming & policy</CardTitle></CardHeader>
         <CardContent>
@@ -118,12 +155,6 @@ export function SettingsPage() {
           </FormRow>
         </CardContent>
       </Card>
-
-      <div className="flex items-center gap-3">
-        <Button loading={save.isPending} onClick={() => save.mutate(draft)}>Save settings</Button>
-        {saved && !save.isPending && <Badge tone="success">Saved</Badge>}
-        {save.isError && <Alert tone="danger">Save failed — please retry.</Alert>}
-      </div>
 
       <Card>
         <CardHeader><CardTitle>Roles</CardTitle></CardHeader>

@@ -30,8 +30,17 @@ export function InfrastructureStep() {
     data.datacenter_id,
     data.source_type === 'template',
   )
+  const diagnoseAllTemplates = Boolean(
+    data.source_type === 'template'
+      && data.vcenter_id
+      && data.datacenter_id
+      && templates.isSuccess
+      && templates.data.length === 0,
+  )
+  const allTemplates = useTemplates(data.vcenter_id, null, diagnoseAllTemplates)
 
   const selectedCluster = clusters.data?.find((cluster) => cluster.id === data.cluster_id)
+  const selectedDatacenter = datacenters.data?.find((entry) => entry.id === data.datacenter_id)
   const filteredTemplates = useMemo(() => {
     const query = templateSearch.trim().toLowerCase()
     if (!query) return templates.data ?? []
@@ -295,11 +304,56 @@ export function InfrastructureStep() {
               </Alert>
             </div>
           ) : (templates.data ?? []).length === 0 ? (
-            <EmptyState
-              title="No VM templates are available for this datacenter."
-              description="Verify template inventory and the vCenter service account's read permissions."
-              action={<Button type="button" size="sm" variant="secondary" onClick={() => void templates.refetch()}>Retry</Button>}
-            />
+            <div className="divide-y divide-slate-200">
+              {allTemplates.isLoading ? (
+                <div className="flex h-24 items-center justify-center gap-2 text-xs text-slate-500">
+                  <Spinner /> Checking template inventory across this vCenter…
+                </div>
+              ) : (
+                <EmptyState
+                  title={
+                    allTemplates.isError
+                      ? 'Datacenter returned no templates; the wider inventory check failed.'
+                      : (allTemplates.data ?? []).length > 0
+                      ? 'Templates are visible, but none belong to this datacenter.'
+                      : 'vCenter returned no classic VM templates.'
+                  }
+                  description={
+                    allTemplates.isError
+                      ? (allTemplates.error instanceof Error ? allTemplates.error.message : 'The vCenter-wide diagnostic query could not be completed.')
+                      : (allTemplates.data ?? []).length > 0
+                      ? `${allTemplates.data?.length ?? 0} template(s) are visible in other datacenters. Select the matching datacenter or move the template in vCenter.`
+                      : 'The inventory query completed successfully. Confirm the source is converted to a classic VM template. Content Library VM Templates are not clone-compatible with this workflow.'
+                  }
+                  action={(
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void Promise.all([templates.refetch(), allTemplates.refetch()])}
+                    >
+                      Refresh inventory
+                    </Button>
+                  )}
+                />
+              )}
+              <div className="grid gap-3 bg-slate-950 px-4 py-3 text-[11px] text-slate-300 sm:grid-cols-3">
+                <div>
+                  <p className="uppercase tracking-wider text-slate-500">Query scope</p>
+                  <p className="mt-1 font-mono text-slate-100">{selectedDatacenter?.name ?? data.datacenter_id}</p>
+                </div>
+                <div>
+                  <p className="uppercase tracking-wider text-slate-500">Datacenter MoRef</p>
+                  <p className="mt-1 font-mono text-slate-100">{data.datacenter_id}</p>
+                </div>
+                <div>
+                  <p className="uppercase tracking-wider text-slate-500">vCenter-wide templates</p>
+                  <p className="mt-1 font-mono text-slate-100">
+                    {allTemplates.isError ? 'Diagnostic failed' : allTemplates.data?.length ?? 'Checking'}
+                  </p>
+                </div>
+              </div>
+            </div>
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 px-4 py-3">

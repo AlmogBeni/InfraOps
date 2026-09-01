@@ -4,8 +4,9 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input, Select, Textarea } from '@/components/ui/form-controls'
+import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import type { ApplicationOut, DetectionMethod } from '@/types/api'
@@ -155,18 +156,27 @@ export function ApplicationCatalogPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-500">
-          Installer paths, arguments and detection rules are administrator-defined. Operators can only select
-          these approved entries.
-        </p>
-        <Button onClick={openCreate}>
-          <Plus className="h-4 w-4" /> Add application
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Software governance"
+        title="Approved application catalog"
+        description="Control installer sources, silent arguments, detection rules, timeouts, reboot behavior, and dependency ordering."
+        actions={<Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" /> Add application</Button>}
+        meta={<span>{applications.data?.length ?? 0} catalog entry(s)</span>}
+      />
 
       {applications.isLoading ? (
         <div className="flex h-40 items-center justify-center"><Spinner /></div>
+      ) : applications.isError ? (
+        <Alert tone="danger" title="Application catalog unavailable">
+          Approved applications could not be loaded.{' '}
+          <Button size="sm" variant="secondary" onClick={() => void applications.refetch()}>Retry</Button>
+        </Alert>
+      ) : (applications.data ?? []).length === 0 ? (
+        <EmptyState
+          title="No approved applications"
+          description="Create a governed installer entry before operators can include software in provisioning requests."
+          action={<Button size="sm" onClick={openCreate}><Plus className="h-3.5 w-3.5" /> Add application</Button>}
+        />
       ) : (
         <Table>
           <thead>

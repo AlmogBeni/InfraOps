@@ -31,7 +31,7 @@ export function Badge({
     warning: 'bg-amber-50 text-amber-800 ring-amber-200',
     danger: 'bg-red-50 text-red-700 ring-red-200',
     info: 'bg-sky-50 text-sky-700 ring-sky-200',
-    running: 'bg-indigo-50 text-indigo-700 ring-indigo-200',
+    running: 'bg-sky-50 text-sky-700 ring-sky-200',
   }
   return (
     <span
@@ -68,7 +68,7 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
 
 const STEP_STATUS_META: Record<StepStatus, { icon: typeof OkIcon; classes: string }> = {
   PENDING: { icon: CircleDashed, classes: 'text-slate-400' },
-  RUNNING: { icon: Loader2, classes: 'text-indigo-600 animate-spin' },
+  RUNNING: { icon: Loader2, classes: 'text-sky-600 animate-spin' },
   SUCCEEDED: { icon: OkIcon, classes: 'text-emerald-600' },
   FAILED: { icon: FailIcon, classes: 'text-red-600' },
   SKIPPED: { icon: CircleDashed, classes: 'text-slate-400' },
@@ -140,7 +140,7 @@ export function ProgressBar({ percent, label }: { percent: number; label?: strin
   return (
     <div>
       <div
-        className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200"
+        className="h-2 w-full overflow-hidden rounded-sm bg-slate-200"
         role="progressbar"
         aria-valuenow={clamped}
         aria-valuemin={0}
@@ -148,7 +148,7 @@ export function ProgressBar({ percent, label }: { percent: number; label?: strin
         aria-label={label ?? 'Progress'}
       >
         <div
-          className="h-full rounded-full bg-brand-500 transition-all duration-500"
+          className="h-full bg-brand-500 transition-[width] duration-300"
           style={{ width: `${clamped}%` }}
         />
       </div>

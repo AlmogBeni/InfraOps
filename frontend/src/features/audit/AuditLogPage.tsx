@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/feedback'
 import { Button } from '@/components/ui/button'
 import { EmptyState, Spinner } from '@/components/ui/feedback'
 import { Input } from '@/components/ui/form-controls'
+import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
 import { formatDateTime } from '@/lib/utils'
@@ -46,7 +47,14 @@ export function AuditLogPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
+      <PageHeader
+        eyebrow="Governance"
+        title="Audit event stream"
+        description="Immutable operator and automation activity with resource context, outcome, source address, and correlated job identifiers."
+        meta={<span>{audit.data?.total ?? 0} event(s) match the current scope · refreshes every 30 seconds</span>}
+      />
+
+      <div className="console-toolbar">
         <div className="w-64">
           <label className="field-label" htmlFor="audit-action">Action</label>
           <Input id="audit-action" className="font-mono text-xs" placeholder="e.g. JOB_COMPLETED"
@@ -57,13 +65,19 @@ export function AuditLogPage() {
           <Input id="audit-user" value={usernameFilter}
                  onChange={(event) => { setPage(1); setUsernameFilter(event.target.value) }} />
         </div>
-        <Button variant="secondary" onClick={() => { setActionFilter(''); setUsernameFilter(''); setPage(1) }}>
+        <Button size="sm" variant="secondary" onClick={() => { setActionFilter(''); setUsernameFilter(''); setPage(1) }}>
           Clear filters
         </Button>
       </div>
 
       {audit.isLoading ? (
         <div className="flex h-48 items-center justify-center"><Spinner /></div>
+      ) : audit.isError ? (
+        <EmptyState
+          title="Audit stream unavailable"
+          description="The audit API could not be reached."
+          action={<Button size="sm" variant="secondary" onClick={() => void audit.refetch()}>Retry</Button>}
+        />
       ) : !audit.data || audit.data.items.length === 0 ? (
         <EmptyState title="No audit events found" description="Adjust the filters or perform an action first." />
       ) : (

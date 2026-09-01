@@ -68,7 +68,7 @@ export function useTemplates(vcenterId: string, datacenterId: string | null, ena
   return useQuery({
     queryKey: ['templates', vcenterId, datacenterId],
     queryFn: () => api.templates(vcenterId, datacenterId ?? undefined),
-    enabled: Boolean(enabled && vcenterId && datacenterId),
+    enabled: Boolean(enabled && vcenterId),
   })
 }
 

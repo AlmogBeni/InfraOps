@@ -46,6 +46,14 @@ Implementation notes:
 * Tools readiness polls `guest.toolsStatus ∈ {toolsOk, toolsOld}`.
 * All faults are translated to `InfraOperationError`; `NoPermission` and `InvalidLogin`
   produce dedicated actionable messages.
+* Classic VM templates are discovered from the vCenter-wide VM inventory and assigned to
+  datacenters by their folder ancestry. Every query logs the selected datacenter, visible VM
+  count, visible classic-template count, returned count, and cross-datacenter exclusions.
+  A successful zero-result query is logged at warning level instead of being silent.
+
+Content Library VM Templates are a separate vSphere object type and cannot be passed to the
+classic `CloneVM_Task` workflow. Convert or clone the library item to a classic inventory VM
+template before selecting it in InfraOps.
 
 ### Required vCenter privileges (least privilege)
 

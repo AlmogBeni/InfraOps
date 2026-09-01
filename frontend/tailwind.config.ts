@@ -11,11 +11,11 @@ export default {
           raised: '#ffffff',
         },
         brand: {
-          50: '#eef2ff',
-          100: '#e0e7ff',
-          500: '#4f46e5',
-          600: '#4338ca',
-          700: '#3730a3',
+          50: '#edf8ff',
+          100: '#d7efff',
+          500: '#1688d4',
+          600: '#0b6fab',
+          700: '#075987',
         },
       },
       fontFamily: {
