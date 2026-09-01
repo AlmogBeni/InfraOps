@@ -12,9 +12,9 @@ import {
 import { cn } from '@/lib/utils'
 
 const baseControl =
-  'w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-[inset_0_1px_1px_rgba(15,23,42,0.03)] ' +
-  'placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100 ' +
-  'disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500'
+  'w-full rounded-lg border border-[#d6def0] bg-white px-3 py-2 text-sm text-slate-900 ' +
+  'shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] outline-none transition-[border,box-shadow] duration-150 ' +
+  'focus:border-brand-500 focus:ring-2 focus:ring-brand-200 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500'
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   function Input({ className, ...props }, ref) {
@@ -78,7 +78,7 @@ export function Checkbox({ label, className, id, ...props }: CheckboxProps) {
       <input
         id={inputId}
         type="checkbox"
-        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+        className="mt-0.5 h-4 w-4 rounded border-slate-300 bg-white text-brand-600 focus:ring-2 focus:ring-brand-200"
         {...props}
       />
       {label && (
@@ -120,8 +120,8 @@ export function RadioGroup<T extends string>({
           <label
             key={option.value}
             className={cn(
-              'flex cursor-pointer items-start gap-2 rounded border px-3 py-2 transition-colors',
-              checked ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-slate-300 bg-white hover:bg-slate-50',
+              'flex cursor-pointer items-start gap-2 rounded-lg border border-[#d6def0] bg-white px-3 py-2 transition-[border,background-color] hover:bg-[#f7faff]',
+              checked ? 'border-brand-500 bg-brand-50/70 ring-1 ring-brand-500' : '',
               option.disabled && 'cursor-not-allowed opacity-50',
             )}
           >
@@ -132,7 +132,7 @@ export function RadioGroup<T extends string>({
               checked={checked}
               disabled={option.disabled}
               onChange={() => onChange(option.value)}
-              className="mt-0.5 h-4 w-4 border-slate-300 text-brand-600 focus:ring-brand-500"
+              className="mt-0.5 h-4 w-4 border-slate-300 bg-white text-brand-600 focus:ring-2 focus:ring-brand-200"
             />
             <span>
               <span className="block text-sm font-medium text-slate-800">{option.label}</span>

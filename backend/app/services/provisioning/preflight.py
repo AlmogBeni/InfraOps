@@ -266,7 +266,7 @@ class PreflightValidator:
                     f"{network.name} ({network.type})")
 
             if request.source_type == VmSourceType.TEMPLATE:
-                templates = {t.id: t for t in await self._vmware.get_templates(target, dc.id)}
+                templates = {t.id: t for t in await self._vmware.get_templates(target, None)}
                 template = templates.get(request.guest.template_id)
                 if template is None:
                     add("template", "Template accessible", CheckStatus.FAIL,

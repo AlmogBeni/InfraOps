@@ -16,11 +16,11 @@ export function RequireAuth() {
   }
   if (!user) return <Navigate to="/login" replace />
   return (
-    <div className="flex h-screen overflow-hidden bg-[#e9eef3]">
+    <div className="layout-shell flex h-screen overflow-hidden">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header />
-        <main className="flex-1 overflow-y-auto bg-[#e9eef3] p-3 sm:p-4 lg:p-5 xl:p-6">
+        <main className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5 xl:p-6">
           <div className="mx-auto w-full max-w-[1800px]">
             <Outlet />
           </div>

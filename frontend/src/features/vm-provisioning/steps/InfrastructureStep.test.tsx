@@ -106,7 +106,7 @@ describe('InfrastructureStep cluster-to-host flow', () => {
     const template = await screen.findByRole('radio', { name: /Windows Server 2025 Base/i })
     expect(template).toHaveTextContent('4 vCPU')
     expect(template).toHaveTextContent('16 GB RAM')
-    expect(api.templates).toHaveBeenCalledWith('vc-1', 'dc-1')
+    expect(api.templates).toHaveBeenCalledWith('vc-1', undefined)
 
     fireEvent.click(template)
     await waitFor(() => {
@@ -115,33 +115,28 @@ describe('InfrastructureStep cluster-to-host flow', () => {
     })
   })
 
-  it('distinguishes templates in another datacenter from an empty vCenter inventory', async () => {
+  it('loads templates even when they belong to another datacenter', async () => {
     const draft = JSON.parse(localStorage.getItem('infraops.provisioning-draft') ?? '{}')
     draft.source_type = 'template'
     draft.template_id = ''
     localStorage.setItem('infraops.provisioning-draft', JSON.stringify(draft))
-    vi.mocked(api.templates).mockImplementation(async (_vcenterId, datacenterId) => (
-      datacenterId
-        ? []
-        : [{
-            id: 'vm-template-other',
-            name: 'Template in Lab',
-            os_family: 'windows',
-            os_version: 'Windows Server 2022',
-            last_modified: null,
-            description: '',
-            datacenter_id: 'dc-2',
-            datacenter_name: 'Lab',
-            cpu: 2,
-            memory_mb: 4096,
-            disk_size_gb: 80,
-          }]
-    ))
+    vi.mocked(api.templates).mockResolvedValue([{
+      id: 'vm-template-other',
+      name: 'Template in Lab',
+      os_family: 'windows',
+      os_version: 'Windows Server 2022',
+      last_modified: null,
+      description: '',
+      datacenter_id: 'dc-2',
+      datacenter_name: 'Lab',
+      cpu: 2,
+      memory_mb: 4096,
+      disk_size_gb: 80,
+    }])
 
     renderStep()
 
-    expect(await screen.findByText('Templates are visible, but none belong to this datacenter.')).toBeInTheDocument()
-    expect(screen.getByText(/1 template\(s\) are visible in other datacenters/i)).toBeInTheDocument()
+    expect(await screen.findByRole('radio', { name: /Template in Lab/i })).toBeInTheDocument()
     expect(api.templates).toHaveBeenCalledWith('vc-1', undefined)
   })
 })

@@ -45,12 +45,8 @@ export function Sidebar() {
     {
       heading: 'Operations',
       items: [
-        ...(hasPermission('jobs.read')
-          ? [{ to: '/jobs', label: 'Provisioning jobs', icon: ClipboardList }]
-          : []),
-        ...(hasPermission('audit.read')
-          ? [{ to: '/audit', label: 'Audit events', icon: FileClock }]
-          : []),
+        ...(hasPermission('jobs.read') ? [{ to: '/jobs', label: 'Provisioning jobs', icon: ClipboardList }] : []),
+        ...(hasPermission('audit.read') ? [{ to: '/audit', label: 'Audit events', icon: FileClock }] : []),
       ],
     },
     {
@@ -68,23 +64,23 @@ export function Sidebar() {
   ].filter((section) => section.items.length > 0)
 
   return (
-    <aside className="flex w-[268px] shrink-0 flex-col border-r border-slate-800 bg-[#07111f] text-slate-300">
-      <div className="flex h-16 items-center gap-3 border-b border-slate-800/90 px-4">
-        <span className="flex h-9 w-9 items-center justify-center rounded-md border border-brand-500/50 bg-brand-600/15 text-brand-100">
+    <aside className="flex w-[272px] shrink-0 flex-col border-r border-[#173a68]/60 bg-[#08182d] bg-[linear-gradient(180deg,#08182d_0%,#071427_40%,#061426_100%)] text-slate-200">
+      <div className="flex h-16 items-center gap-3 border-b border-slate-700/80 px-4">
+        <span className="flex h-9 w-9 items-center justify-center rounded-md border border-brand-500/50 bg-brand-600/25 text-brand-100 shadow-[0_10px_22px_rgba(42,116,255,0.35)]">
           <ServerCog className="h-5 w-5" aria-hidden />
         </span>
         <div className="min-w-0">
           <p className="text-sm font-bold leading-4 tracking-wide text-white">INFRAOPS</p>
-          <p className="mt-0.5 truncate text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+          <p className="mt-0.5 truncate text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-400">
             Virtualization control plane
           </p>
         </div>
       </div>
 
-      <div className="border-b border-slate-800/90 px-4 py-3">
-        <div className="flex items-center gap-2 text-[11px] text-slate-400">
+      <div className="border-b border-slate-700/90 bg-[#071a32]/80 px-4 py-3">
+        <div className="flex items-center gap-2 text-[11px] text-slate-300">
           <Activity className="h-3.5 w-3.5 text-emerald-400" aria-hidden />
-          <span className="font-medium text-slate-200">Operator workspace</span>
+          <span className="font-medium text-slate-100">Operator workspace</span>
           <span className="ml-auto h-1.5 w-1.5 rounded-full bg-emerald-400" title="Authenticated" />
         </div>
       </div>
@@ -93,7 +89,7 @@ export function Sidebar() {
         {sections.map((section, index) => (
           <div key={section.heading ?? index} className="mb-5">
             {section.heading && (
-              <p className="px-3 pb-1.5 pt-2 text-[9px] font-bold uppercase tracking-[0.16em] text-slate-600">
+              <p className="px-3 pb-1.5 pt-2 text-[9px] font-bold uppercase tracking-[0.16em] text-slate-500">
                 {section.heading}
               </p>
             )}
@@ -105,18 +101,18 @@ export function Sidebar() {
                     end={item.to === '/'}
                     className={({ isActive }) =>
                       cn(
-                        'group flex h-9 items-center gap-2.5 rounded px-3 text-[13px] transition-colors',
+                        'group flex h-9 items-center gap-2.5 rounded-lg px-3 text-[13px] transition-all duration-150',
                         isActive
-                          ? 'bg-brand-600/15 font-semibold text-white ring-1 ring-inset ring-brand-500/20'
-                          : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-100',
+                          ? 'bg-brand-600/15 font-semibold text-white ring-1 ring-inset ring-brand-500/35'
+                          : 'text-slate-300 hover:bg-slate-800/65 hover:text-white',
                       )
                     }
                   >
                     {({ isActive }) => (
                       <>
-                        <item.icon className={cn('h-4 w-4 shrink-0', isActive && 'text-brand-500')} aria-hidden />
+                        <item.icon className={cn('h-4 w-4 shrink-0', isActive && 'text-brand-400')} aria-hidden />
                         <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                        {isActive && <ChevronRight className="h-3.5 w-3.5 text-brand-500" aria-hidden />}
+                        {isActive && <ChevronRight className="h-3.5 w-3.5 text-brand-400" aria-hidden />}
                       </>
                     )}
                   </NavLink>
@@ -127,12 +123,12 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="border-t border-slate-800 px-4 py-3">
+      <div className="border-t border-slate-700 px-4 py-3">
         <p className="truncate text-[11px] font-medium text-slate-300">
           {user?.full_name ?? user?.username ?? 'Authenticated operator'}
         </p>
-        <p className="mt-0.5 truncate text-[9px] uppercase tracking-wider text-slate-600">
-          {user?.roles.join(' · ') ?? 'secure session'}
+        <p className="mt-0.5 truncate text-[9px] uppercase tracking-wider text-slate-500">
+          {user?.roles.join(' • ') ?? 'secure session'}
         </p>
       </div>
     </aside>

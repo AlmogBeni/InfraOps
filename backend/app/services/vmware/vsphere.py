@@ -481,14 +481,9 @@ class VsphereVMwareService(VMwareService):
         def op(si):
             content = self._content(si)
             templates = []
-            datacenter = self._find_by_moref(content, datacenter_id) if datacenter_id else None
-            if datacenter_id and datacenter is None:
-                raise NotFoundError(f"Datacenter '{datacenter_id}' does not exist.")
             stats = {
                 "visible_vms": 0,
                 "visible_templates": 0,
-                "outside_datacenter": 0,
-                "unresolved_datacenter": 0,
             }
             # Query from the inventory root and resolve the owning datacenter
             # from each VM's folder ancestry. This avoids vCenter-version and
@@ -512,13 +507,6 @@ class VsphereVMwareService(VMwareService):
                     owner = self._owning_datacenter(vm)
                     owner_id = getattr(owner, "_moId", None)
                     owner_name = getattr(owner, "name", None)
-                    if datacenter is not None and owner_id != datacenter._moId:
-                        if owner_id is None:
-                            stats["unresolved_datacenter"] += 1
-                        else:
-                            stats["outside_datacenter"] += 1
-                        continue
-
                     guest = (
                         getattr(config, "guestFullName", None)
                         or getattr(summary_config, "guestFullName", None)
@@ -557,16 +545,13 @@ class VsphereVMwareService(VMwareService):
         log_method = log.warning if not templates else log.info
         log_method(
             "vCenter template inventory complete vcenter_id=%s host=%s datacenter_id=%s "
-            "visible_vms=%s visible_classic_templates=%s returned_templates=%s "
-            "outside_datacenter=%s unresolved_datacenter=%s",
+            "visible_vms=%s visible_classic_templates=%s returned_templates=%s",
             target.id,
             target.host,
             datacenter_id or "all",
             stats["visible_vms"],
             stats["visible_templates"],
             len(templates),
-            stats["outside_datacenter"],
-            stats["unresolved_datacenter"],
         )
         return sorted(templates, key=lambda template: template.name)
 

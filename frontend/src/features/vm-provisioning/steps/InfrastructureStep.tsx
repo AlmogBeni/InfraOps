@@ -27,17 +27,10 @@ export function InfrastructureStep() {
   const pools = useResourcePools(data.vcenter_id, data.cluster_id)
   const templates = useTemplates(
     data.vcenter_id,
-    data.datacenter_id,
+    null,
     data.source_type === 'template',
   )
-  const diagnoseAllTemplates = Boolean(
-    data.source_type === 'template'
-      && data.vcenter_id
-      && data.datacenter_id
-      && templates.isSuccess
-      && templates.data.length === 0,
-  )
-  const allTemplates = useTemplates(data.vcenter_id, null, diagnoseAllTemplates)
+  const allTemplates = templates
 
   const selectedCluster = clusters.data?.find((cluster) => cluster.id === data.cluster_id)
   const selectedDatacenter = datacenters.data?.find((entry) => entry.id === data.datacenter_id)
@@ -285,7 +278,7 @@ export function InfrastructureStep() {
           <div className="console-group-header">
             <div>
               <p className="console-group-title">Source template</p>
-              <p className="console-group-description">Live templates scoped to the selected datacenter.</p>
+              <p className="console-group-description">Live templates discovered in the selected vCenter.</p>
             </div>
             <Database className="h-4 w-4 text-slate-400" aria-hidden />
           </div>
@@ -315,14 +308,14 @@ export function InfrastructureStep() {
                     allTemplates.isError
                       ? 'Datacenter returned no templates; the wider inventory check failed.'
                       : (allTemplates.data ?? []).length > 0
-                      ? 'Templates are visible, but none belong to this datacenter.'
+                      ? 'Templates are visible only when a compatible filter is applied.'
                       : 'vCenter returned no classic VM templates.'
                   }
                   description={
                     allTemplates.isError
                       ? (allTemplates.error instanceof Error ? allTemplates.error.message : 'The vCenter-wide diagnostic query could not be completed.')
                       : (allTemplates.data ?? []).length > 0
-                      ? `${allTemplates.data?.length ?? 0} template(s) are visible in other datacenters. Select the matching datacenter or move the template in vCenter.`
+                      ? `${allTemplates.data?.length ?? 0} template(s) are visible in this vCenter.`
                       : 'The inventory query completed successfully. Confirm the source is converted to a classic VM template. Content Library VM Templates are not clone-compatible with this workflow.'
                   }
                   action={(

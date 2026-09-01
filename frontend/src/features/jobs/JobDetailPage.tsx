@@ -155,7 +155,7 @@ function StageRow({
       </div>
 
       {expanded && hasDetails && (
-        <div className="space-y-3 border-b border-slate-200 bg-[#f8fafb] px-4 py-3 pl-[86px]">
+        <div className="space-y-3 border-b border-[#d6def0] bg-[#f8fbff] px-4 py-3 pl-[86px]">
           {step.error_human && (
             <Alert tone="danger" title="Operator diagnosis">
               <span className="whitespace-pre-wrap">{step.error_human}</span>
@@ -170,7 +170,7 @@ function StageRow({
             </div>
           )}
           {isAdmin && step.error_technical && (
-            <details className="rounded border border-slate-300 bg-white px-3 py-2 text-xs text-slate-600">
+            <details className="rounded border border-[#d6def0] bg-white px-3 py-2 text-xs text-slate-600">
               <summary className="cursor-pointer select-none font-semibold">Administrator technical detail</summary>
               <LogViewer text={step.error_technical} className="mt-2 max-h-48" ariaLabel="Technical error detail" />
             </details>

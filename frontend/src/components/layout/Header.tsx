@@ -27,16 +27,19 @@ export function Header() {
   }
 
   return (
-    <header className="sticky top-0 z-20 flex h-12 items-center gap-3 border-b border-slate-300 bg-[#f8fafb] px-4 sm:px-5">
+    <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-slate-200/80 bg-white/90 px-4 backdrop-blur-sm sm:px-5">
       <div className="flex min-w-0 items-center gap-2 text-xs">
-        <span className="font-medium text-slate-400">Control plane</span>
-        <ChevronRight className="h-3.5 w-3.5 text-slate-300" aria-hidden />
+        <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 font-semibold uppercase tracking-[0.13em] text-slate-500">
+          <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
+          Control plane
+        </span>
+        <ChevronRight className="h-3.5 w-3.5 text-slate-400" aria-hidden />
         <h1 className="truncate font-semibold text-slate-800">{title}</h1>
       </div>
       <div className="ml-auto flex items-center gap-3">
         {user && (
-          <div className="flex items-center gap-2 border-l border-slate-300 pl-3">
-            <span className="hidden items-center gap-1.5 rounded border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:inline-flex">
+          <div className="flex items-center gap-2 border-l border-slate-200 pl-3">
+            <span className="hidden items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 sm:inline-flex">
               <ShieldCheck className="h-3 w-3 text-emerald-600" aria-hidden />
               Authenticated
             </span>

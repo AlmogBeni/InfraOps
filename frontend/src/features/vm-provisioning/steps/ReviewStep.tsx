@@ -48,7 +48,7 @@ export function ReviewStep() {
   const hosts = useHosts(data.vcenter_id, data.cluster_id)
   const datastores = useDatastores(data.vcenter_id, data.cluster_id)
   const networks = useNetworks(data.vcenter_id, data.datacenter_id)
-  const templates = useTemplates(data.vcenter_id, data.datacenter_id, data.source_type === 'template')
+  const templates = useTemplates(data.vcenter_id, null, data.source_type === 'template')
   const packages = useCertificatePackages()
   const applications = useApplications()
 

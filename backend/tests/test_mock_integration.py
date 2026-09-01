@@ -71,12 +71,12 @@ class TestDiscovery:
         assert by_name["esx03.company.local"].available_for_provisioning is False
         assert by_name["esx01.company.local"].available_for_provisioning is True
 
-    async def test_templates_scoped_to_datacenter(self, target):
+    async def test_templates_include_all_datacenters(self, target):
         service = MockVMwareService()
         primary = await service.get_templates(target, "datacenter-21")
         lab = await service.get_templates(target, "datacenter-22")
-        assert {template.id for template in primary} == {"vm-61", "vm-62"}
-        assert {template.id for template in lab} == {"vm-63"}
+        assert {template.id for template in primary} == {"vm-61", "vm-62", "vm-63"}
+        assert {template.id for template in lab} == {"vm-61", "vm-62", "vm-63"}
 
     async def test_duplicate_names_detected(self, target):
         service = MockVMwareService()

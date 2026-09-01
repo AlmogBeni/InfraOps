@@ -161,8 +161,8 @@ export function CertificatePackagesPage() {
       ) : (
         <div className="space-y-4">
           {(packages.data ?? []).map((package_) => (
-            <div key={package_.id} className="overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-[#f5f7f9] px-4 py-2.5">
+            <div key={package_.id} className="shell-card overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#d6def0] bg-gradient-to-r from-[#f8faff] to-[#eef3ff] px-4 py-2.5">
                 <div>
                   <p className="text-sm font-semibold text-slate-800">
                     {package_.name}{' '}

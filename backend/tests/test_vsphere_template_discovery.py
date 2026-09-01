@@ -39,7 +39,7 @@ def _inventory_vm(name: str, moref: str, datacenter: object, *, template: bool) 
 
 
 @pytest.mark.asyncio
-async def test_templates_are_scoped_by_inventory_ancestry(caplog: pytest.LogCaptureFixture) -> None:
+async def test_templates_are_discovered_across_datacenters(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO)
     first_dc = SimpleNamespace(_moId="datacenter-21", name="Production")
     first_dc.vmFolder = SimpleNamespace(parent=first_dc)
@@ -56,8 +56,6 @@ async def test_templates_are_scoped_by_inventory_ancestry(caplog: pytest.LogCapt
 
     service = object.__new__(VsphereVMwareService)
     service._content = lambda _: content
-    service._find_by_moref = lambda _, moref: first_dc if moref == first_dc._moId else None
-
     async def invoke(_, fn, *, operation="session-call"):
         assert operation == "list-templates"
         return fn(object())
@@ -75,12 +73,12 @@ async def test_templates_are_scoped_by_inventory_ancestry(caplog: pytest.LogCapt
 
     templates = await service.get_templates(target, first_dc._moId)
 
-    assert [template.id for template in templates] == ["vm-101"]
-    assert templates[0].datacenter_id == first_dc._moId
-    assert templates[0].datacenter_name == first_dc.name
+    assert {template.id for template in templates} == {"vm-101", "vm-102"}
+    assert {template.datacenter_id for template in templates} == {first_dc._moId, second_dc._moId}
+    assert {template.datacenter_name for template in templates} == {"Production", "Lab"}
     assert view.destroyed is True
     assert "visible_classic_templates=2" in caplog.text
-    assert "returned_templates=1" in caplog.text
+    assert "returned_templates=2" in caplog.text
 
 
 def test_datacenter_resolution_handles_nested_vm_folders() -> None:

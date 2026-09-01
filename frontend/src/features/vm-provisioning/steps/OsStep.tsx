@@ -8,7 +8,7 @@ import { useTemplates } from '@/features/vm-provisioning/hooks'
 export function OsStep() {
   const wizard = useWizard()
   const data = wizard.data
-  const templates = useTemplates(data.vcenter_id, data.datacenter_id, data.source_type === 'template')
+  const templates = useTemplates(data.vcenter_id, null, data.source_type === 'template')
   const selectedTemplate = templates.data?.find((template) => template.id === data.template_id)
 
   if (data.source_type === 'blank') {

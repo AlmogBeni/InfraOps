@@ -344,7 +344,7 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
 
     if r.source_type == VmSourceType.TEMPLATE:
         templates = {
-            t.id: t for t in await ctx.vmware.get_templates(ctx.target, r.compute.datacenter_id)
+            t.id: t for t in await ctx.vmware.get_templates(ctx.target, None)
         }
         if r.guest.template_id not in templates:
             problems.append(f"template '{r.guest.template_id}' missing")

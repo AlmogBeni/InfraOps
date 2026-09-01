@@ -26,12 +26,12 @@ export function Badge({
   className?: string
 }) {
   const tones: Record<string, string> = {
-    neutral: 'bg-slate-100 text-slate-700 ring-slate-200',
-    success: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-    warning: 'bg-amber-50 text-amber-800 ring-amber-200',
-    danger: 'bg-red-50 text-red-700 ring-red-200',
-    info: 'bg-sky-50 text-sky-700 ring-sky-200',
-    running: 'bg-sky-50 text-sky-700 ring-sky-200',
+    neutral: 'bg-slate-100/80 text-slate-700 ring-slate-200',
+    success: 'bg-emerald-100/80 text-emerald-800 ring-emerald-200',
+    warning: 'bg-amber-100/80 text-amber-800 ring-amber-200',
+    danger: 'bg-red-100/80 text-red-800 ring-red-200',
+    info: 'bg-brand-100 text-brand-800 ring-brand-200',
+    running: 'bg-cyan-100 text-cyan-700 ring-cyan-200',
   }
   return (
     <span
@@ -148,7 +148,7 @@ export function ProgressBar({ percent, label }: { percent: number; label?: strin
         aria-label={label ?? 'Progress'}
       >
         <div
-          className="h-full bg-brand-500 transition-[width] duration-300"
+          className="h-full animate-[pulse_1.6s_ease-in-out_infinite] bg-gradient-to-r from-brand-500 to-brand-700 transition-[width] duration-300"
           style={{ width: `${clamped}%` }}
         />
       </div>
@@ -176,7 +176,9 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-1.5 px-5 py-7 text-center">
-      <CircleDashed aria-hidden className="h-6 w-6 text-slate-300" />
+      <div className="rounded-full border border-[#d6def0] bg-[#f7faff] p-2">
+        <CircleDashed aria-hidden className="h-6 w-6 text-slate-400" />
+      </div>
       <p className="text-sm font-medium text-slate-700">{title}</p>
       {description && <p className="max-w-md text-xs text-slate-500">{description}</p>}
       {action}

@@ -85,8 +85,8 @@ function ConfigurationSnapshot() {
         : 'Not selected'
 
   return (
-    <aside className="hidden overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)] 2xl:block">
-      <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+    <aside className="shell-card hidden 2xl:block">
+      <div className="border-b border-[#d6def0] bg-gradient-to-r from-[#f8faff] to-[#eef3ff] px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-700">
           Configuration snapshot
         </p>
@@ -104,7 +104,7 @@ function ConfigurationSnapshot() {
         <SnapshotRow label="Storage" value={`${data.disks.length} disk(s) · ${totalDisk} GB`} ready={data.disks.length > 0} />
         <SnapshotRow label="Network" value={data.network_id ? 'Port group selected' : 'Not configured'} ready={Boolean(data.network_id)} />
       </div>
-      <div className="border-t border-slate-200 bg-slate-50 px-4 py-3">
+      <div className="border-t border-[#d6def0] bg-[#f8fbff] px-4 py-3">
         <div className="flex items-start gap-2 text-xs text-slate-600">
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
           <span>Inventory and policy checks run again before any infrastructure is created.</span>
@@ -183,7 +183,7 @@ function WizardShell() {
       </header>
 
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[210px_minmax(0,1fr)] 2xl:grid-cols-[210px_minmax(0,1fr)_250px]">
-        <aside className="overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+        <aside className="shell-card">
           <Stepper
             steps={WIZARD_STEPS.map(({ key, title }) => ({ key, title }))}
             currentIndex={wizard.currentIndex}
@@ -193,7 +193,7 @@ function WizardShell() {
         </aside>
 
         <form
-          className="min-w-0 overflow-hidden rounded-md border border-slate-300 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
+          className="shell-card min-w-0 overflow-hidden"
           onSubmit={(event) => {
             event.preventDefault()
             if (!isReview) wizard.next()
@@ -221,7 +221,7 @@ function WizardShell() {
             )}
           </div>
 
-          <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 sm:px-5">
+          <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/80 bg-[#f8fbff] px-4 py-3 sm:px-5">
             <div className="flex items-center gap-3">
               <Button
                 type="button"

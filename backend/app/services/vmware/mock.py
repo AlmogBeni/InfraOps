@@ -329,8 +329,6 @@ class MockVMwareService(VMwareService):
         inv = _estate(target.id)
         templates = []
         for tpl in inv.templates.values():
-            if datacenter_id and tpl.datacenter_id != datacenter_id:
-                continue
             templates.append(
                 TemplateOut(
                     id=tpl.id,

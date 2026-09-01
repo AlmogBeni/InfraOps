@@ -26,7 +26,7 @@ export function Stepper({
 
   return (
     <nav aria-label="Wizard progress">
-      <div className="border-b border-slate-200 px-4 py-3">
+      <div className="border-b border-slate-200/90 bg-[#f8fbff] px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -38,7 +38,7 @@ export function Stepper({
           </div>
           <span className="font-mono text-xs font-semibold text-slate-500">{progress}%</span>
         </div>
-        <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-200" aria-hidden>
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-200/70" aria-hidden>
           <div className="h-full bg-brand-600" style={{ width: `${progress}%` }} />
         </div>
       </div>
@@ -63,9 +63,9 @@ export function Stepper({
                 onClick={() => clickable && onStepClick?.(index)}
                 aria-current={state === 'current' ? 'step' : undefined}
                 className={cn(
-                  'flex min-h-10 w-full items-center gap-2.5 rounded-md border-l-2 px-2.5 py-2 text-left',
+                  'animate-row-enter flex min-h-10 w-full items-center gap-2.5 rounded-md border-l-4 border-transparent px-2.5 py-2 text-left transition-all',
                   state === 'current' && 'border-brand-600 bg-brand-50 text-brand-900',
-                  state === 'complete' && 'border-transparent text-slate-700',
+                  state === 'complete' && 'border-transparent bg-white text-slate-700',
                   state === 'upcoming' && 'border-transparent text-slate-400',
                   state === 'error' && 'border-red-500 bg-red-50 text-red-800',
                   clickable && 'cursor-pointer hover:bg-slate-100',
@@ -73,7 +73,7 @@ export function Stepper({
               >
                 <span
                   className={cn(
-                    'flex h-5 w-5 shrink-0 items-center justify-center rounded border text-[10px] font-bold',
+                    'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border text-[10px] font-bold',
                     state === 'current' && 'border-brand-600 bg-brand-600 text-white',
                     state === 'complete' && 'border-emerald-600 bg-emerald-600 text-white',
                     state === 'upcoming' && 'border-slate-300 bg-white text-slate-400',

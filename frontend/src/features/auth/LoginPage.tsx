@@ -31,29 +31,29 @@ export function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-screen bg-[#07111f] lg:grid-cols-[minmax(420px,1.15fr)_minmax(420px,0.85fr)]">
+    <main className="layout-shell grid min-h-screen lg:grid-cols-[minmax(420px,1.15fr)_minmax(420px,0.85fr)]">
       <section className="hidden min-h-screen flex-col justify-between border-r border-slate-800 p-12 lg:flex xl:p-16">
         <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-md border border-brand-500/50 bg-brand-600/15 text-brand-100">
+          <span className="flex h-10 w-10 items-center justify-center rounded-md border border-brand-400/40 bg-brand-700/25 text-brand-100 shadow-[0_10px_22px_rgba(42,116,255,0.35)]">
             <ServerCog className="h-5 w-5" aria-hidden />
           </span>
           <div>
             <p className="text-sm font-bold tracking-[0.12em] text-white">INFRAOPS</p>
-            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-500">Virtualization control plane</p>
+            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-300">Virtualization control plane</p>
           </div>
         </div>
 
         <div className="max-w-2xl">
-          <p className="console-kicker text-brand-500">Infrastructure operations</p>
+          <p className="console-kicker text-brand-200">Infrastructure operations</p>
           <h1 className="mt-3 text-4xl font-semibold leading-tight tracking-tight text-white xl:text-5xl">
             Provision with control.<br />Operate with evidence.
           </h1>
-          <p className="mt-5 max-w-xl text-sm leading-6 text-slate-400">
+          <p className="mt-5 max-w-xl text-sm leading-6 text-slate-300">
             A focused administration surface for vSphere inventory, repeatable VM deployment,
             guest configuration, and audited operational execution.
           </p>
 
-          <div className="mt-10 grid max-w-xl gap-px overflow-hidden rounded-md border border-slate-800 bg-slate-800 sm:grid-cols-3">
+          <div className="mt-10 grid max-w-xl gap-px overflow-hidden rounded-xl border border-slate-800 bg-slate-900/30 sm:grid-cols-3">
             {[
               [Workflow, 'Controlled workflows', 'Validated placement and ordered execution'],
               [ShieldCheck, 'Policy aligned', 'RBAC, preflight checks, and audit evidence'],
@@ -71,13 +71,13 @@ export function LoginPage() {
           </div>
         </div>
 
-        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-600">Authorized infrastructure personnel only</p>
+        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Authorized infrastructure personnel only</p>
       </section>
 
-      <section className="flex min-h-screen items-center justify-center bg-[#edf1f5] px-5 py-10">
+      <section className="flex min-h-screen items-center justify-center bg-transparent px-5 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6 flex items-center gap-3 lg:hidden">
-            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand-600 text-white">
+            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand-700 text-white shadow-[0_8px_20px_rgba(36,86,191,0.35)]">
               <ServerCog className="h-5 w-5" aria-hidden />
             </span>
             <p className="text-sm font-bold tracking-[0.1em] text-slate-950">INFRAOPS</p>
@@ -89,7 +89,7 @@ export function LoginPage() {
             <p className="mt-2 text-xs leading-5 text-slate-600">Use your assigned infrastructure operations account.</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="rounded-md border border-slate-300 bg-white p-6 shadow-[0_8px_30px_rgba(15,23,42,0.08)]">
+          <form onSubmit={handleSubmit} className="shell-card p-6">
             {error && (
               <div className="mb-4">
                 <Alert tone="danger" title="Authentication failed">{error}</Alert>
