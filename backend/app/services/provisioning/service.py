@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.actions import AuditAction
@@ -64,6 +62,7 @@ async def submit_provisioning(
         result="queued",
         source_ip=source_ip,
         details={
+            "source_type": request.source_type.value,
             "vcenter_id": str(request.compute.vcenter_id),
             "cluster_id": request.compute.cluster_id,
             "template_id": request.guest.template_id,

@@ -1,4 +1,4 @@
-import { Spinner } from '@/components/ui/feedback'
+import { Alert, Spinner } from '@/components/ui/feedback'
 import { Checkbox } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useCertificatePackages } from '@/features/vm-provisioning/hooks'
@@ -7,6 +7,18 @@ export function CertificatesStep() {
   const wizard = useWizard()
   const data = wizard.data
   const packages = useCertificatePackages()
+
+  if (data.source_type === 'blank') {
+    return (
+      <section aria-label="Certificate selection" className="space-y-4">
+        <header><h2 className="text-sm font-semibold text-slate-900">Certificates</h2></header>
+        <Alert tone="info" title="Available after OS installation">
+          Certificate deployment requires a running guest with VMware Tools. No certificate material will be
+          submitted with this blank VM request.
+        </Alert>
+      </section>
+    )
+  }
 
   function togglePackage(packageId: string, checked: boolean) {
     const set = new Set(data.certificate_package_ids)

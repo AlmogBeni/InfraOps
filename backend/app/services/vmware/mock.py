@@ -27,7 +27,14 @@ from app.schemas.infrastructure import (
     TemplateOut,
 )
 from app.schemas.provisioning import AdapterType, FirmwareType
-from app.services.vmware.base import CloneSpec, PowerStateInfo, VCenterTarget, VMwareService, VmRef
+from app.services.vmware.base import (
+    BlankVmSpec,
+    CloneSpec,
+    PowerStateInfo,
+    VCenterTarget,
+    VmRef,
+    VMwareService,
+)
 
 log = get_logger(__name__)
 
@@ -65,12 +72,28 @@ class _MockDatastore:
 
 
 class _MockTemplate:
-    def __init__(self, id_: str, name: str, os_family: str, os_version: str, description: str) -> None:
+    def __init__(
+        self,
+        id_: str,
+        name: str,
+        os_family: str,
+        os_version: str,
+        description: str,
+        datacenter_id: str,
+        *,
+        cpu: int = 4,
+        memory_mb: int = 8192,
+        disk_size_gb: float = 100,
+    ) -> None:
         self.id = id_
         self.name = name
         self.os_family = os_family
         self.os_version = os_version
         self.description = description
+        self.datacenter_id = datacenter_id
+        self.cpu = cpu
+        self.memory_mb = memory_mb
+        self.disk_size_gb = disk_size_gb
         self.last_modified = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=14)
 
 
@@ -135,12 +158,21 @@ class _MockInventory:
             "network-54": NetworkOut(id="network-54", name="VLAN400-LAB", type="STANDARD_PORT_GROUP"),
         }
         self.templates: dict[str, _MockTemplate] = {
-            "vm-61": _MockTemplate("vm-61", "Windows Server 2022 - Corporate Base", "windows",
-                                   "Windows Server 2022 Standard", "Hardened corporate baseline, TLS 1.2+ enforced"),
-            "vm-62": _MockTemplate("vm-62", "Windows Server 2025 - Corporate Base", "windows",
-                                   "Windows Server 2025 Standard", "Current corporate baseline image"),
-            "vm-63": _MockTemplate("vm-63", "Windows Server 2019 - Legacy", "windows",
-                                   "Windows Server 2019 Standard", "Legacy workloads only"),
+            "vm-61": _MockTemplate(
+                "vm-61", "Windows Server 2022 - Corporate Base", "windows",
+                "Windows Server 2022 Standard", "Hardened corporate baseline, TLS 1.2+ enforced",
+                "datacenter-21",
+            ),
+            "vm-62": _MockTemplate(
+                "vm-62", "Windows Server 2025 - Corporate Base", "windows",
+                "Windows Server 2025 Standard", "Current corporate baseline image",
+                "datacenter-21", memory_mb=16384, disk_size_gb=120,
+            ),
+            "vm-63": _MockTemplate(
+                "vm-63", "Windows Server 2019 - Legacy", "windows",
+                "Windows Server 2019 Standard", "Legacy workloads only", "datacenter-22",
+                cpu=2, memory_mb=4096, disk_size_gb=80,
+            ),
         }
         # Pre-existing estate demonstrating duplicate-name / IP-conflict detection.
         self.existing_vms: dict[str, _MockVM] = {}
@@ -297,6 +329,8 @@ class MockVMwareService(VMwareService):
         inv = _estate(target.id)
         templates = []
         for tpl in inv.templates.values():
+            if datacenter_id and tpl.datacenter_id != datacenter_id:
+                continue
             templates.append(
                 TemplateOut(
                     id=tpl.id,
@@ -305,6 +339,11 @@ class MockVMwareService(VMwareService):
                     os_version=tpl.os_version,
                     last_modified=tpl.last_modified,
                     description=tpl.description,
+                    datacenter_id=tpl.datacenter_id,
+                    datacenter_name=inv.datacenters.get(tpl.datacenter_id),
+                    cpu=tpl.cpu,
+                    memory_mb=tpl.memory_mb,
+                    disk_size_gb=tpl.disk_size_gb,
                 )
             )
         return sorted(templates, key=lambda t: t.name)
@@ -401,6 +440,58 @@ class MockVMwareService(VMwareService):
         vm.memory_mb = spec.memory_mb
         vm.disks_gb = [disk.size_gb for disk in spec.disks]
         vm.network_id = spec.network_id or None
+        inv.existing_vms[spec.vm_name.upper()] = vm
+        return VmRef(id=vm_id, name=spec.vm_name)
+
+    async def create_blank_vm(self, target: VCenterTarget, spec: BlankVmSpec) -> VmRef:
+        log.info("MOCK create blank VM: name=%s cluster=%s", spec.vm_name, spec.cluster_id)
+        inv = _estate(target.id)
+        cluster = inv.clusters.get(spec.cluster_id)
+        if cluster is None or cluster["dc"] != spec.datacenter_id:
+            raise InfraOperationError(
+                f"Cluster '{spec.cluster_id}' is not available in the selected datacenter.",
+                reason="The placement inventory changed after validation.",
+                recommended_action="Re-open the wizard and select the infrastructure again.",
+                retryable=False,
+            )
+        if spec.host_id and spec.host_id not in cluster["hosts"]:
+            raise InfraOperationError(
+                f"Host '{spec.host_id}' does not belong to cluster '{spec.cluster_id}'.",
+                reason="The requested host and cluster do not match.",
+                recommended_action="Select a host from the chosen cluster.",
+                retryable=False,
+            )
+        if inv.find_vm_by_name(spec.vm_name) is not None:
+            raise InfraOperationError(
+                f"A virtual machine named '{spec.vm_name}' already exists.",
+                reason="Duplicate VM name in the vCenter inventory.",
+                recommended_action="Choose a different VM name and resubmit the request.",
+                retryable=False,
+            )
+
+        total_required_gb = sum(disk.size_gb for disk in spec.disks)
+        candidates = [
+            datastore for datastore in inv.datastores.values()
+            if datastore.accessible and datastore.free_gb >= total_required_gb
+        ]
+        if spec.datastore_id:
+            candidates = [datastore for datastore in candidates if datastore.id == spec.datastore_id]
+        if not candidates:
+            raise InfraOperationError(
+                "No selected datastore has enough accessible capacity for the blank VM.",
+                reason=f"The VM requires approximately {total_required_gb} GB.",
+                recommended_action="Select another datastore or reduce the requested disk capacity.",
+                retryable=False,
+            )
+        datastore = max(candidates, key=lambda entry: entry.free_gb)
+        datastore.free_gb -= total_required_gb
+
+        await asyncio.sleep(_LATENCY_CLONE)
+        vm_id = f"vm-{uuid.uuid4().hex[:8]}"
+        vm = _MockVM(vm_id, spec.vm_name, "")
+        vm.cpu = spec.cpu
+        vm.memory_mb = spec.memory_mb
+        vm.disks_gb = [disk.size_gb for disk in spec.disks]
         inv.existing_vms[spec.vm_name.upper()] = vm
         return VmRef(id=vm_id, name=spec.vm_name)
 

@@ -92,6 +92,11 @@ class TemplateOut(BaseModel):
     os_version: str
     last_modified: dt.datetime | None = None
     description: str = ""
+    datacenter_id: str | None = None
+    datacenter_name: str | None = None
+    cpu: int | None = None
+    memory_mb: int | None = None
+    disk_size_gb: float | None = None
 
 
 class ConnectionTestResult(BaseModel):

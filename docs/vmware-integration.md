@@ -9,7 +9,7 @@ test_connection / get_datacenters / get_clusters / get_hosts /
 get_resource_pools / get_datastores / get_datastore_clusters /
 get_networks / get_templates
 vm_exists / get_vm_info / get_used_ips / resolve_vm_id
-clone_from_template / configure_hardware / attach_network /
+clone_from_template / create_blank_vm / configure_hardware / attach_network /
 power_on / wait_for_tools
 ```
 

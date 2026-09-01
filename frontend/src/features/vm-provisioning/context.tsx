@@ -19,15 +19,15 @@ export interface WizardStepDefinition {
 }
 
 export const WIZARD_STEPS: WizardStepDefinition[] = [
+  { key: 'source', title: 'Source' },
   { key: 'infrastructure', title: 'Infrastructure' },
   { key: 'compute', title: 'Compute' },
   { key: 'storage', title: 'Storage' },
-  { key: 'hardware', title: 'VM Hardware' },
-  { key: 'os', title: 'Operating System' },
   { key: 'network', title: 'Network' },
+  { key: 'os', title: 'Operating System' },
   { key: 'certificates', title: 'Certificates' },
   { key: 'applications', title: 'Applications' },
-  { key: 'review', title: 'Review & Provision' },
+  { key: 'review', title: 'Review' },
 ]
 
 interface WizardContextValue {
@@ -63,7 +63,20 @@ export function WizardProvider({ children }: { children: ReactNode }) {
 
   const update = useCallback((patch: Partial<WizardData>) => {
     setData((previous) => {
-      const next = { ...previous, ...patch }
+      const next = {
+        ...previous,
+        ...patch,
+        ...(patch.source_type === 'blank'
+          ? {
+              template_id: '',
+              hostname: '',
+              timezone: '',
+              domain_join: { ...previous.domain_join, enabled: false },
+              certificate_package_ids: [],
+              application_ids: [],
+            }
+          : {}),
+      }
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
       } catch {

@@ -18,7 +18,7 @@ import datetime as dt
 import json
 import re
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Awaitable, Callable
 
 from sqlalchemy import select
@@ -29,17 +29,17 @@ from app.core.errors import InfraOperationError
 from app.core.logging import get_logger
 from app.models.applications import Application
 from app.models.certificates import Certificate, CertificatePackage
-from app.schemas.provisioning import IpMode
+from app.schemas.provisioning import IpMode, VmSourceType
 from app.services.applications.installer import ApplicationDefinition
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
 from app.services.certificates.store_logic import POWERSHELL_PATH
-from app.services.vmware.base import VmRef
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
     SETTING_VM_NAME_POLICY,
     load_effective,
 )
+from app.services.vmware.base import VmRef
 from app.workers.context import JobRunContext
 from app.workers.state_machine import ORDERED_STAGES
 
@@ -140,12 +140,24 @@ def _require_vm_id(ctx: JobRunContext) -> str:
             ctx.vm_ref = VmRef(id=stored, name=ctx.vm_name)
             return stored
         raise InfraOperationError(
-            "The cloned VM reference is missing.",
-            reason="The clone stage has not produced a VM identifier.",
-            recommended_action="Retry the 'Clone VM' stage.",
+            "The created VM reference is missing.",
+            reason="The VM creation stage has not produced a VM identifier.",
+            recommended_action="Retry the 'Create virtual machine' stage.",
             retryable=True,
         )
     return ctx.vm_ref.id
+
+
+def _blank_guest_skip(ctx: JobRunContext, operation: str) -> StageOutcome | None:
+    if ctx.request.source_type != VmSourceType.BLANK:
+        return None
+    return StageOutcome(
+        status="SKIPPED",
+        output=(
+            f"{operation} is not applicable to a blank VM. The VM is left powered off "
+            "until an operating system is installed."
+        ),
+    )
 
 
 async def _load_certificates(
@@ -262,6 +274,7 @@ async def stage_validate_request(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(
         output=(
             f"Request validated.\n"
+            f"Source: {r.source_type.value}\n"
             f"VM: {r.vm.name}\nCluster: {r.compute.cluster_id}\n"
             f"CPU/Memory: {r.hardware.cpu} vCPU / {r.hardware.memory_mb} MB\n"
             f"Disks: {len(r.hardware.disks)}\nMode: {r.network.mode.value}"
@@ -329,9 +342,12 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
     if r.network.network_id not in networks:
         problems.append(f"network '{r.network.network_id}' missing")
 
-    templates = {t.id: t for t in await ctx.vmware.get_templates(ctx.target, r.compute.datacenter_id)}
-    if r.guest.template_id not in templates:
-        problems.append(f"template '{r.guest.template_id}' missing")
+    if r.source_type == VmSourceType.TEMPLATE:
+        templates = {
+            t.id: t for t in await ctx.vmware.get_templates(ctx.target, r.compute.datacenter_id)
+        }
+        if r.guest.template_id not in templates:
+            problems.append(f"template '{r.guest.template_id}' missing")
 
     if problems:
         raise InfraOperationError(
@@ -341,12 +357,15 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
             technical_detail=json.dumps(problems),
             retryable=True,
         )
-    return StageOutcome(output="Datacenter, cluster, placement, storage, network and template verified.")
+    source_detail = " and template" if r.source_type == VmSourceType.TEMPLATE else ""
+    return StageOutcome(
+        output=f"Datacenter, cluster, placement, storage, network{source_detail} verified."
+    )
 
 
 async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
     from app.audit.recorder import record_audit
-    from app.services.vmware.base import CloneSpec, VmRef
+    from app.services.vmware.base import BlankVmSpec, CloneSpec, VmRef
 
     r = ctx.request
     existing_id = await ctx.vmware.resolve_vm_id(ctx.target, ctx.vm_name)
@@ -359,23 +378,42 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
         )
 
     datastore_id = next((d.datastore_id for d in r.hardware.disks if d.datastore_id), None)
-    spec = CloneSpec(
-        template_id=r.guest.template_id,
-        vm_name=r.vm.name,
-        description=r.vm.description,
-        cluster_id=r.compute.cluster_id,
-        host_id=r.compute.host_id,
-        resource_pool_id=r.compute.resource_pool_id,
-        datastore_id=datastore_id,
-        cpu=r.hardware.cpu,
-        memory_mb=r.hardware.memory_mb,
-        disks=tuple(r.hardware.disks),
-        network_id=r.network.network_id,
-        adapter_type=r.network.adapter_type,
-        firmware=r.hardware.firmware,
-        secure_boot=r.hardware.secure_boot,
-    )
-    vm_ref = await ctx.vmware.clone_from_template(ctx.target, spec)
+    if r.source_type == VmSourceType.TEMPLATE:
+        spec = CloneSpec(
+            template_id=r.guest.template_id or "",
+            vm_name=r.vm.name,
+            description=r.vm.description,
+            cluster_id=r.compute.cluster_id,
+            host_id=r.compute.host_id,
+            resource_pool_id=r.compute.resource_pool_id,
+            datastore_id=datastore_id,
+            cpu=r.hardware.cpu,
+            memory_mb=r.hardware.memory_mb,
+            disks=tuple(r.hardware.disks),
+            network_id=r.network.network_id,
+            adapter_type=r.network.adapter_type,
+            firmware=r.hardware.firmware,
+            secure_boot=r.hardware.secure_boot,
+        )
+        vm_ref = await ctx.vmware.clone_from_template(ctx.target, spec)
+        output = f"Cloned '{vm_ref.name}' from template {r.guest.template_id}."
+    else:
+        blank_spec = BlankVmSpec(
+            vm_name=r.vm.name,
+            datacenter_id=r.compute.datacenter_id,
+            description=r.vm.description,
+            cluster_id=r.compute.cluster_id,
+            host_id=r.compute.host_id,
+            resource_pool_id=r.compute.resource_pool_id,
+            datastore_id=datastore_id,
+            cpu=r.hardware.cpu,
+            memory_mb=r.hardware.memory_mb,
+            disks=tuple(r.hardware.disks),
+            firmware=r.hardware.firmware,
+            secure_boot=r.hardware.secure_boot,
+        )
+        vm_ref = await ctx.vmware.create_blank_vm(ctx.target, blank_spec)
+        output = f"Created blank virtual machine '{vm_ref.name}' in powered-off state."
     ctx.vm_ref = vm_ref
     await record_audit(ctx.db).record(
         AuditAction.VM_CREATED,
@@ -383,10 +421,14 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
         resource_name=vm_ref.name,
         job_id=ctx.job_id,
         result="success",
-        details={"template_id": r.guest.template_id, "vm_id": vm_ref.id},
+        details={
+            "source_type": r.source_type.value,
+            "template_id": r.guest.template_id,
+            "vm_id": vm_ref.id,
+        },
     )
     return StageOutcome(
-        output=f"Cloned '{vm_ref.name}' from template {r.guest.template_id}.",
+        output=output,
         artifacts={"vm_id": vm_ref.id, "vm_name": vm_ref.name},
     )
 
@@ -414,6 +456,9 @@ async def stage_attach_network_adapter(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Power-on")
+    if skipped:
+        return skipped
     vm_id = _require_vm_id(ctx)
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
     if info is not None and info.power_state == "poweredOn":
@@ -423,6 +468,9 @@ async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "VMware Tools readiness")
+    if skipped:
+        return skipped
     vm_id = _require_vm_id(ctx)
     timeout = await effective_timeout_seconds(ctx, "wait_for_tools")
     await ctx.vmware.wait_for_tools(ctx.target, vm_id, timeout)
@@ -430,6 +478,9 @@ async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Guest network configuration")
+    if skipped:
+        return skipped
     credentials = await ctx.resolve_guest_credentials()
     net = ctx.request.network
     if net.mode == IpMode.STATIC and net.ipv4 is not None:
@@ -469,6 +520,9 @@ async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Guest network validation")
+    if skipped:
+        return skipped
     credentials = await ctx.resolve_guest_credentials()
     net = ctx.request.network
     checks: list[str] = []
@@ -537,6 +591,9 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Hostname configuration")
+    if skipped:
+        return skipped
     credentials = await ctx.resolve_guest_credentials()
     desired = (ctx.request.guest.hostname or ctx.vm_name).upper()
 
@@ -568,6 +625,9 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Domain join")
+    if skipped:
+        return skipped
     join = ctx.request.guest.domain_join
     if join is None:
         return StageOutcome(status="SKIPPED", output="Domain join not requested.")
@@ -601,6 +661,9 @@ async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Guest restart")
+    if skipped:
+        return skipped
     steps = ctx.steps_by_key
     join_step = steps.get("join_domain")
     joined = bool((join_step.artifacts or {}).get("joined")) if join_step else False
@@ -617,6 +680,9 @@ async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_wait_guest_ready(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Guest availability check")
+    if skipped:
+        return skipped
     steps = ctx.steps_by_key
     join_step = steps.get("join_domain")
     joined = bool((join_step.artifacts or {}).get("joined")) if join_step else False
@@ -656,8 +722,6 @@ async def _deploy_certificate_group(
 
     failures = [r for r in records if r.action == "FAILED"]
     installed = [r for r in records if r.action == "INSTALLED"]
-    skipped = [r for r in records if r.action == "ALREADY_PRESENT"]
-
     from app.audit.recorder import record_audit
 
     for record in installed:
@@ -850,13 +914,19 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
     add("VM", "Exists in vCenter", info is not None)
     if info is not None:
-        add("VM", "Powered on", info.power_state == "poweredOn", info.power_state)
-        add("VM", "VMware Tools running", info.tools_status in ("toolsOk", "toolsOld"),
-            info.tools_status or "unknown")
+        if ctx.request.source_type == VmSourceType.BLANK:
+            add("VM", "Left powered off for OS installation", info.power_state == "poweredOff",
+                info.power_state)
+        else:
+            add("VM", "Powered on", info.power_state == "poweredOn", info.power_state)
+            add("VM", "VMware Tools running", info.tools_status in ("toolsOk", "toolsOld"),
+                info.tools_status or "unknown")
 
     net_step = ctx.steps_by_key.get("configure_guest_network")
     net_artifacts = net_step.artifacts if net_step else {}
-    if ctx.request.network.mode == IpMode.STATIC and ctx.request.network.ipv4 is not None:
+    if ctx.request.source_type == VmSourceType.BLANK:
+        add("Network", "Virtual adapter attached", True, ctx.request.network.network_id)
+    elif ctx.request.network.mode == IpMode.STATIC and ctx.request.network.ipv4 is not None:
         expected = ctx.request.network.ipv4.address
         observed = info.ip_addresses if info else []
         add("Network", f"Correct IP address ({expected})", expected in observed,

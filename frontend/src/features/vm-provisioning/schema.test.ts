@@ -9,6 +9,7 @@ import {
 
 function validData(): WizardData {
   const data = initialWizardData()
+  data.source_type = 'template'
   data.vcenter_id = '11111111-1111-4111-8111-111111111111'
   data.site_id = '22222222-2222-4222-8222-222222222222'
   data.datacenter_id = 'datacenter-21'
@@ -26,8 +27,9 @@ function validData(): WizardData {
 
 describe('validateStep', () => {
   it('passes for a fully valid draft', () => {
+    expect(validateStep('source', validData())).toEqual({})
     expect(validateStep('infrastructure', validData())).toEqual({})
-    expect(validateStep('hardware', validData())).toEqual({})
+    expect(validateStep('compute', validData())).toEqual({})
     expect(validateStep('os', validData())).toEqual({})
     expect(validateStep('network', validData())).toEqual({})
   })
@@ -42,7 +44,7 @@ describe('validateStep', () => {
   it('rejects invalid VM names', () => {
     const data = validData()
     data.vm_name = '-bad name-'
-    expect(validateStep('hardware', data)['vm_name']).toBeTruthy()
+    expect(validateStep('compute', data)['vm_name']).toBeTruthy()
   })
 
   it('rejects bad IP addresses on the network step', () => {
@@ -64,6 +66,32 @@ describe('validateStep', () => {
     data.gateway = ''
     data.dns_primary = ''
     expect(validateStep('network', data)).toEqual({})
+  })
+
+  it('requires a template only for template mode', () => {
+    const template = validData()
+    template.template_id = ''
+    expect(validateStep('infrastructure', template).template_id).toBe('Select a VM template.')
+
+    template.source_type = 'blank'
+    expect(validateStep('infrastructure', template).template_id).toBeUndefined()
+  })
+
+  it('requires a host for manual placement', () => {
+    const data = validData()
+    data.host_mode = 'manual'
+    data.host_id = null
+    expect(validateStep('infrastructure', data).host_id).toBe('Select a host.')
+  })
+
+  it('requires a datastore for manual storage placement', () => {
+    const data = validData()
+    data.storage_mode = 'manual'
+    data.datastore_id = null
+    expect(validateStep('storage', data).datastore_id).toBe('Select a datastore.')
+
+    data.storage_mode = 'auto'
+    expect(validateStep('storage', data)).toEqual({})
   })
 })
 
@@ -114,5 +142,21 @@ describe('buildRequest', () => {
 
     data.host_mode = 'auto'
     expect(buildRequest(data).compute.host_id).toBeNull()
+  })
+
+  it('removes all template and guest-only state from blank requests', () => {
+    const data = validData()
+    data.source_type = 'blank'
+    data.template_id = 'vm-stale'
+    data.certificate_package_ids = ['11111111-1111-4111-8111-111111111111']
+    data.application_ids = ['22222222-2222-4222-8222-222222222222']
+    data.domain_join.enabled = true
+
+    const payload = buildRequest(data)
+    expect(payload.source_type).toBe('blank')
+    expect(payload.guest.template_id).toBeNull()
+    expect(payload.guest.domain_join).toBeNull()
+    expect(payload.certificate_package_ids).toEqual([])
+    expect(payload.application_ids).toEqual([])
   })
 })

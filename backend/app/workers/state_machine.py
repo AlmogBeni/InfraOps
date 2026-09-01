@@ -22,7 +22,7 @@ ORDERED_STAGES: tuple[StageDefinition, ...] = (
     StageDefinition("validate_request", "Validate request"),
     StageDefinition("connect_vcenter", "Connect to vCenter"),
     StageDefinition("validate_infrastructure", "Validate infrastructure configuration"),
-    StageDefinition("clone_vm", "Clone VM from template", destructive=True),
+    StageDefinition("clone_vm", "Create virtual machine", destructive=True),
     StageDefinition("configure_hardware", "Configure hardware"),
     StageDefinition("attach_network_adapter", "Attach network adapter"),
     StageDefinition("power_on", "Power on VM"),

@@ -8,7 +8,6 @@ import { useAuth } from '@/lib/auth'
 import { api } from '@/lib/api'
 import { WizardProvider, WIZARD_STEPS, useWizard } from '@/features/vm-provisioning/context'
 import { InfrastructureStep } from '@/features/vm-provisioning/steps/InfrastructureStep'
-import { ComputeStep } from '@/features/vm-provisioning/steps/ComputeStep'
 import { StorageStep } from '@/features/vm-provisioning/steps/StorageStep'
 import { HardwareStep } from '@/features/vm-provisioning/steps/HardwareStep'
 import { OsStep } from '@/features/vm-provisioning/steps/OsStep'
@@ -16,18 +15,19 @@ import { NetworkStep } from '@/features/vm-provisioning/steps/NetworkStep'
 import { CertificatesStep } from '@/features/vm-provisioning/steps/CertificatesStep'
 import { ApplicationsStep } from '@/features/vm-provisioning/steps/ApplicationsStep'
 import { ReviewStep } from '@/features/vm-provisioning/steps/ReviewStep'
+import { SourceStep } from '@/features/vm-provisioning/steps/SourceStep'
 
 function StepContent() {
   const { currentStep } = useWizard()
   switch (currentStep.key) {
+    case 'source':
+      return <SourceStep />
     case 'infrastructure':
       return <InfrastructureStep />
     case 'compute':
-      return <ComputeStep />
+      return <HardwareStep />
     case 'storage':
       return <StorageStep />
-    case 'hardware':
-      return <HardwareStep />
     case 'os':
       return <OsStep />
     case 'network':
@@ -56,9 +56,14 @@ function WizardShell() {
     setSubmitting(true)
     try {
       const payload = wizard.requestPayload()
+      const preflight = await api.validate(payload)
+      if (!preflight.ready) {
+        setSubmitError(preflight.summary)
+        return
+      }
       const idempotencyKey =
         globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
-      const job = await api.submitJob(payload as never, idempotencyKey)
+      const job = await api.submitJob(payload, idempotencyKey)
       wizard.reset()
       navigate(`/jobs/${job.id}`)
     } catch (error) {
@@ -71,7 +76,7 @@ function WizardShell() {
   }
 
   return (
-    <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
+    <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 lg:grid-cols-[200px_1fr]">
       {/* Persistent progress indicator */}
       <aside>
         <Stepper
@@ -134,7 +139,7 @@ function WizardShell() {
                 title={canSubmit ? undefined : 'Your role cannot provision VMs.'}
                 onClick={handleProvision}
               >
-                Provision VM
+                {wizard.data.source_type === 'blank' ? 'Create Blank VM' : 'Deploy VM'}
               </Button>
             ) : (
               <Button type="submit">Next</Button>

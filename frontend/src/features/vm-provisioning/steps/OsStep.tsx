@@ -1,75 +1,61 @@
-import { Badge, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input, Select } from '@/components/ui/form-controls'
-import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useTemplates } from '@/features/vm-provisioning/hooks'
 
 export function OsStep() {
   const wizard = useWizard()
   const data = wizard.data
-  const templates = useTemplates(data.vcenter_id, data.datacenter_id)
+  const templates = useTemplates(
+    data.vcenter_id,
+    data.datacenter_id,
+    data.source_type === 'template',
+  )
+  const selectedTemplate = templates.data?.find((template) => template.id === data.template_id)
+
+  if (data.source_type === 'blank') {
+    return (
+      <section aria-label="Operating system" className="space-y-4">
+        <header>
+          <h2 className="text-sm font-semibold text-slate-900">Operating system</h2>
+          <p className="mt-1 text-xs text-slate-500">No operating system is installed by this workflow.</p>
+        </header>
+        <Alert tone="info" title="Blank virtual machine">
+          InfraOps will create empty virtual disks and leave the VM powered off. Install the operating system
+          and VMware Tools before configuring guest networking, certificates or applications.
+        </Alert>
+      </section>
+    )
+  }
 
   return (
-    <section aria-label="Operating system selection" className="space-y-4">
+    <section aria-label="Operating system configuration" className="space-y-4">
       <header>
-        <h2 className="text-sm font-semibold text-slate-800">Operating system</h2>
-        <p className="text-xs text-slate-500">
-          Provisioning is template-based — pick a corporate image retrieved live from vCenter.
+        <h2 className="text-sm font-semibold text-slate-900">Operating system customization</h2>
+        <p className="mt-1 text-xs text-slate-500">
+          The infrastructure template was selected earlier. Configure supported guest settings here.
         </p>
       </header>
 
-      {templates.isLoading ? (
-        <div className="flex h-24 items-center justify-center">
-          <Spinner />
-        </div>
-      ) : (
-        <>
-          <Table>
-            <thead>
-              <tr>
-                <Th />
-                <Th>Template</Th>
-                <Th>OS</Th>
-                <Th>Last modified</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {(templates.data ?? []).map((template) => (
-                <Tr key={template.id} clickable onClick={() => wizard.update({ template_id: template.id })}>
-                  <Td>
-                    <input
-                      type="radio"
-                      name="template-select"
-                      aria-label={`Select ${template.name}`}
-                      checked={data.template_id === template.id}
-                      onChange={() => wizard.update({ template_id: template.id })}
-                      className="h-4 w-4 border-slate-300 text-brand-600 focus:ring-brand-500"
-                    />
-                  </Td>
-                  <Td className="font-medium text-slate-800">
-                    {template.name}{' '}
-                    {template.os_family !== 'windows' && <Badge tone="warning">Non-Windows</Badge>}
-                  </Td>
-                  <Td>{template.os_version}</Td>
-                  <Td>{template.last_modified ? new Date(template.last_modified).toLocaleDateString() : '—'}</Td>
-                  <Td className="max-w-xs truncate text-slate-500">{template.description}</Td>
-                </Tr>
-              ))}
-            </tbody>
-          </Table>
-          {wizard.errors['template_id'] && (
-            <p className="text-xs font-medium text-red-600">{wizard.errors['template_id']}</p>
+      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Template-derived OS</p>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold text-slate-900">
+            {selectedTemplate?.name ?? 'Selected template'}
+          </span>
+          {selectedTemplate?.os_version && <Badge tone="info">{selectedTemplate.os_version}</Badge>}
+          {selectedTemplate && selectedTemplate.os_family !== 'windows' && (
+            <Badge tone="warning">Guest automation may be unavailable</Badge>
           )}
-        </>
-      )}
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
         <FormRow
           label="Computer name (hostname)"
           htmlFor="hostname"
           hint="Defaults to the VM name when left empty."
-          error={wizard.errors['hostname']}
+          error={wizard.errors.hostname}
         >
           <Input
             id="hostname"
@@ -99,9 +85,7 @@ export function OsStep() {
             label="Join an Active Directory domain after first boot"
             checked={data.domain_join.enabled}
             onChange={(event) =>
-              wizard.update({
-                domain_join: { ...data.domain_join, enabled: event.target.checked },
-              })
+              wizard.update({ domain_join: { ...data.domain_join, enabled: event.target.checked } })
             }
           />
           {data.domain_join.enabled && (
@@ -117,9 +101,7 @@ export function OsStep() {
                   placeholder="ad.company.local"
                   value={data.domain_join.domain}
                   onChange={(event) =>
-                    wizard.update({
-                      domain_join: { ...data.domain_join, domain: event.target.value },
-                    })
+                    wizard.update({ domain_join: { ...data.domain_join, domain: event.target.value } })
                   }
                 />
               </FormRow>

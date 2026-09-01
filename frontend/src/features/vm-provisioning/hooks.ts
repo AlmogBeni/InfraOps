@@ -68,11 +68,11 @@ export function useNetworks(vcenterId: string, datacenterId: string | null) {
   })
 }
 
-export function useTemplates(vcenterId: string, datacenterId: string | null) {
+export function useTemplates(vcenterId: string, datacenterId: string | null, enabled = true) {
   return useQuery({
     queryKey: ['templates', vcenterId, datacenterId],
     queryFn: () => api.templates(vcenterId, datacenterId ?? undefined),
-    enabled: Boolean(vcenterId),
+    enabled: Boolean(enabled && vcenterId && datacenterId),
   })
 }
 

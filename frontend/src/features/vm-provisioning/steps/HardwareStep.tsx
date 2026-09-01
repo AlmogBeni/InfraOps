@@ -19,9 +19,9 @@ export function HardwareStep() {
   }
 
   return (
-    <section aria-label="VM hardware" className="space-y-4">
+    <section aria-label="Compute configuration" className="space-y-4">
       <header>
-        <h2 className="text-sm font-semibold text-slate-800">Virtual machine hardware</h2>
+        <h2 className="text-sm font-semibold text-slate-900">Compute and virtual hardware</h2>
         <p className="text-xs text-slate-500">
           Name, description, CPU, memory and virtual disks.
         </p>

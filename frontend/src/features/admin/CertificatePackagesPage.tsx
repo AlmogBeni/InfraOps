@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { Plus, Trash2, Upload, X } from 'lucide-react'
+import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -8,6 +8,7 @@ import { Alert, Badge, Spinner } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input, Select, Textarea } from '@/components/ui/form-controls'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
+import { readPublicCertificateFile, validateCertificateFile } from '@/features/admin/certificate-file'
 
 export function CertificatePackagesPage() {
   const queryClient = useQueryClient()
@@ -21,6 +22,11 @@ export function CertificatePackagesPage() {
     pem_body: '',
   })
   const [formError, setFormError] = useState<string | null>(null)
+  const [certFile, setCertFile] = useState<File | null>(null)
+  const [fileValidation, setFileValidation] = useState<{ valid: boolean; message: string } | null>(null)
+  const [fileReading, setFileReading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const fileReadGenerationRef = useRef(0)
 
   const packages = useQuery({ queryKey: ['admin-packages'], queryFn: () => api.admin.packages() })
 
@@ -52,8 +58,13 @@ export function CertificatePackagesPage() {
       })
     },
     onSuccess: () => {
+      fileReadGenerationRef.current += 1
       setCertDialogFor(null)
       setCertForm({ friendly_name: '', certificate_type: 'ROOT', pem_body: '' })
+      setCertFile(null)
+      setFileValidation(null)
+      setFileReading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
       invalidate()
     },
     onError: (error) => setFormError(error instanceof Error ? error.message : 'Registration failed.'),
@@ -69,6 +80,57 @@ export function CertificatePackagesPage() {
       api.admin.updateCertificate(id, { enabled }),
     onSuccess: invalidate,
   })
+
+  function closeCertificateDialog() {
+    fileReadGenerationRef.current += 1
+    setCertDialogFor(null)
+    setCertForm({ friendly_name: '', certificate_type: 'ROOT', pem_body: '' })
+    setCertFile(null)
+    setFileValidation(null)
+    setFileReading(false)
+    setFormError(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  async function selectCertificateFile(file: File | undefined) {
+    if (!file) return
+    const generation = ++fileReadGenerationRef.current
+    setCertFile(file)
+    setFileReading(true)
+    setFileValidation(null)
+    setCertForm((current) => ({ ...current, pem_body: '' }))
+    const validation = validateCertificateFile(file)
+    if (!validation.valid) {
+      setFileValidation(validation)
+      setFileReading(false)
+      return
+    }
+    try {
+      const pemBody = await readPublicCertificateFile(file)
+      if (generation !== fileReadGenerationRef.current) return
+      setCertForm((current) => ({
+        ...current,
+        friendly_name: current.friendly_name || file.name.replace(/\.[^.]+$/, ''),
+        pem_body: pemBody,
+      }))
+      setFileValidation({ valid: true, message: 'Valid PEM certificate file; ready to register.' })
+    } catch (error) {
+      if (generation !== fileReadGenerationRef.current) return
+      setCertForm((current) => ({ ...current, pem_body: '' }))
+      setFileValidation({
+        valid: false,
+        message: error instanceof Error ? error.message : 'The certificate file could not be read.',
+      })
+    } finally {
+      if (generation === fileReadGenerationRef.current) setFileReading(false)
+    }
+  }
+
+  function openCertificateFilePicker() {
+    if (!fileInputRef.current) return
+    fileInputRef.current.value = ''
+    fileInputRef.current.click()
+  }
 
   return (
     <div className="space-y-4">
@@ -188,13 +250,17 @@ export function CertificatePackagesPage() {
       {/* Certificate dialog */}
       <Dialog
         open={certDialogFor !== null}
-        onClose={() => setCertDialogFor(null)}
+        onClose={closeCertificateDialog}
         title="Register certificate"
         wide
         footer={
           <>
-            <Button variant="secondary" onClick={() => setCertDialogFor(null)}>Cancel</Button>
-            <Button loading={registerCertificate.isPending} onClick={() => registerCertificate.mutate()}>
+            <Button variant="secondary" onClick={closeCertificateDialog}>Cancel</Button>
+            <Button
+              loading={registerCertificate.isPending}
+              disabled={fileReading || !certForm.friendly_name || !certForm.pem_body || fileValidation?.valid === false}
+              onClick={() => registerCertificate.mutate()}
+            >
               Register
             </Button>
           </>
@@ -215,10 +281,71 @@ export function CertificatePackagesPage() {
             <option value="INTERMEDIATE">Intermediate Certification Authorities (LocalMachine\CA)</option>
           </Select>
         </FormRow>
+        <FormRow
+          label="Certificate file"
+          htmlFor="cert-file"
+          hint="Public X.509 certificate only; PEM-encoded .pem, .crt or .cer, maximum 100 KB."
+          error={fileValidation?.valid === false ? fileValidation.message : undefined}
+        >
+          <input
+            ref={fileInputRef}
+            id="cert-file"
+            type="file"
+            className="sr-only"
+            accept=".pem,.crt,.cer,application/x-pem-file,application/pkix-cert"
+            onChange={(event) => void selectCertificateFile(event.target.files?.[0])}
+          />
+          {!certFile ? (
+            <Button type="button" variant="secondary" onClick={openCertificateFilePicker}>
+              <Upload className="h-4 w-4" /> Choose file
+            </Button>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-slate-800">{certFile.name}</p>
+                <p className="text-xs text-slate-500">
+                  {certFile.type || 'Certificate file'} · {(certFile.size / 1024).toFixed(1)} KB
+                </p>
+                {fileReading && <p className="text-xs text-slate-500">Reading and validating…</p>}
+                {fileValidation?.valid && <p className="text-xs font-medium text-emerald-700">{fileValidation.message}</p>}
+              </div>
+              <div className="flex gap-1">
+                <Button type="button" size="sm" variant="secondary" onClick={openCertificateFilePicker}>
+                  Replace
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Remove selected certificate file"
+                  onClick={() => {
+                    fileReadGenerationRef.current += 1
+                    setCertFile(null)
+                    setFileValidation(null)
+                    setFileReading(false)
+                    setCertForm((current) => ({ ...current, pem_body: '' }))
+                    if (fileInputRef.current) fileInputRef.current.value = ''
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </FormRow>
+        <div className="my-3 flex items-center gap-3 text-xs uppercase tracking-wide text-slate-400">
+          <span className="h-px flex-1 bg-slate-200" /> or paste PEM <span className="h-px flex-1 bg-slate-200" />
+        </div>
         <FormRow label="PEM body" htmlFor="cert-pem" required
                  hint={'Paste the public certificate beginning with -----BEGIN CERTIFICATE-----'}>
           <Textarea id="cert-pem" rows={8} className="font-mono text-xs" value={certForm.pem_body}
-                    onChange={(event) => setCertForm({ ...certForm, pem_body: event.target.value })} />
+                    onChange={(event) => {
+                      fileReadGenerationRef.current += 1
+                      setCertFile(null)
+                      setFileValidation(null)
+                      setFileReading(false)
+                      setCertForm({ ...certForm, pem_body: event.target.value })
+                    }} />
         </FormRow>
       </Dialog>
     </div>

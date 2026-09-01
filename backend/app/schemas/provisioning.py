@@ -13,7 +13,7 @@ import enum
 import ipaddress
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, UUID4, model_validator
+from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
 
 # ── Shared enumerations ──────────────────────────────────────────────────────
 
@@ -36,6 +36,11 @@ class IpMode(str, enum.Enum):
 class AdapterType(str, enum.Enum):
     VMXNET3 = "VMXNET3"
     E1000E = "E1000E"
+
+
+class VmSourceType(enum.StrEnum):
+    BLANK = "blank"
+    TEMPLATE = "template"
 
 
 VM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9\-.]{0,61}[A-Za-z0-9])?$")
@@ -110,7 +115,7 @@ class DomainJoinSpec(BaseModel):
 class GuestSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    template_id: str = Field(min_length=1, max_length=120)
+    template_id: str | None = Field(default=None, min_length=1, max_length=120)
     hostname: str | None = Field(default=None, max_length=64, pattern=VM_NAME_PATTERN.pattern)
     timezone: str | None = Field(default=None, max_length=100)
     domain_join: DomainJoinSpec | None = None
@@ -184,6 +189,9 @@ class ProvisioningRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Defaults to template for compatibility with requests created before
+    # source selection became an explicit part of the contract.
+    source_type: VmSourceType = VmSourceType.TEMPLATE
     vm: VmSpec
     compute: ComputeSpec
     hardware: HardwareSpec
@@ -193,8 +201,21 @@ class ProvisioningRequest(BaseModel):
     application_ids: list[UUID4] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")
-    def _hostname_defaults_to_vm_name(self) -> "ProvisioningRequest":
-        if not self.guest.hostname:
+    def _validate_source(self) -> ProvisioningRequest:
+        if self.source_type == VmSourceType.TEMPLATE and not self.guest.template_id:
+            raise ValueError("guest.template_id is required when source_type is 'template'.")
+        if self.source_type == VmSourceType.BLANK:
+            if self.guest.template_id is not None:
+                raise ValueError("guest.template_id must be null when source_type is 'blank'.")
+            if self.guest.hostname or self.guest.timezone or self.guest.domain_join:
+                raise ValueError(
+                    "Guest customization is unavailable for a blank VM until an operating system is installed."
+                )
+            if self.certificate_package_ids or self.application_ids:
+                raise ValueError(
+                    "Certificates and applications cannot be installed on a blank VM without an operating system."
+                )
+        elif not self.guest.hostname:
             self.guest.hostname = self.vm.name
         return self
 

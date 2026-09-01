@@ -1,4 +1,4 @@
-import { Badge, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, Spinner } from '@/components/ui/feedback'
 import { Checkbox } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useApplications } from '@/features/vm-provisioning/hooks'
@@ -7,6 +7,18 @@ export function ApplicationsStep() {
   const wizard = useWizard()
   const data = wizard.data
   const applications = useApplications()
+
+  if (data.source_type === 'blank') {
+    return (
+      <section aria-label="Application selection" className="space-y-4">
+        <header><h2 className="text-sm font-semibold text-slate-900">Applications</h2></header>
+        <Alert tone="info" title="Available after OS installation">
+          Application installation requires a running guest with VMware Tools. No applications will be
+          submitted with this blank VM request.
+        </Alert>
+      </section>
+    )
+  }
 
   function toggleApplication(applicationId: string, checked: boolean) {
     const set = new Set(data.application_ids)

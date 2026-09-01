@@ -7,14 +7,12 @@ is blocked whenever any blocking check fails.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.applications import Application
 from app.models.certificates import CertificatePackage
@@ -25,8 +23,10 @@ from app.schemas.provisioning import (
     PreflightCheck,
     PreflightReport,
     ProvisioningRequest,
+    VmSourceType,
 )
 from app.secrets.base import SecretNotFoundError
+from app.secrets.service import SecretsService, get_secrets_service
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.network.conflict import (
     DnsForwardProvider,
@@ -41,7 +41,6 @@ from app.services.settings_store import (
     load_effective,
 )
 from app.services.vmware.base import VCenterTarget, VMwareService
-from app.secrets.service import SecretsService, get_secrets_service
 
 log = get_logger(__name__)
 
@@ -149,7 +148,6 @@ class PreflightValidator:
                 add("ip_syntax", "IP address syntax valid", CheckStatus.PASS)
 
             if run_ip_conflict_checks and not issues and target is not None:
-                settings_mode = get_settings()
                 providers = [
                     IcmpPingProvider(),
                     DnsForwardProvider(),
@@ -280,18 +278,22 @@ class PreflightValidator:
                 add("network", "Network exists", CheckStatus.PASS,
                     f"{network.name} ({network.type})")
 
-            templates = {t.id: t for t in await self._vmware.get_templates(target, dc.id)}
-            template = templates.get(request.guest.template_id)
-            if template is None:
-                add("template", "Template accessible", CheckStatus.FAIL,
-                    f"Template '{request.guest.template_id}' was not found.")
+            if request.source_type == VmSourceType.TEMPLATE:
+                templates = {t.id: t for t in await self._vmware.get_templates(target, dc.id)}
+                template = templates.get(request.guest.template_id)
+                if template is None:
+                    add("template", "Template accessible", CheckStatus.FAIL,
+                        f"Template '{request.guest.template_id}' was not found.")
+                else:
+                    status = CheckStatus.PASS
+                    detail = f"{template.name} ({template.os_version})"
+                    if template.os_family != "windows":
+                        status = CheckStatus.WARN
+                        detail += " — Linux guests are not yet supported by guest automation."
+                    add("template", "Template accessible", status, detail)
             else:
-                status = CheckStatus.PASS
-                detail = f"{template.name} ({template.os_version})"
-                if template.os_family != "windows":
-                    status = CheckStatus.WARN
-                    detail += " — Linux guests are not yet supported by guest automation."
-                add("template", "Template accessible", status, detail)
+                add("source", "Blank VM source", CheckStatus.PASS,
+                    "A powered-off VM will be created without an operating system.")
         except Exception as exc:  # noqa: BLE001
             add("infrastructure", "Infrastructure discovery", CheckStatus.FAIL,
                 f"Discovery failed: {type(exc).__name__}: {exc}")
@@ -364,6 +366,10 @@ class PreflightValidator:
                 "Install order: " + " → ".join(node.name for node in ordered))
 
     async def _check_credentials(self, request: ProvisioningRequest, add) -> None:
+        if request.source_type == VmSourceType.BLANK:
+            add("credentials", "Guest credentials", CheckStatus.PASS,
+                "Not required for a powered-off blank VM.")
+            return
         bases = ["guest-local-admin"]
         if request.guest.domain_join:
             bases.append(request.guest.domain_join.credential_secret_ref)

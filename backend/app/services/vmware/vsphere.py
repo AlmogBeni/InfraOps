@@ -17,8 +17,8 @@ import ssl
 import threading
 import time
 
-from app.core.errors import InfraOperationError, NotFoundError, ServiceUnavailableError
 from app.core.config import get_settings
+from app.core.errors import InfraOperationError, NotFoundError, ServiceUnavailableError
 from app.core.logging import get_logger
 from app.core.metrics import vcenter_api_errors_total
 from app.schemas.infrastructure import (
@@ -34,7 +34,14 @@ from app.schemas.infrastructure import (
 )
 from app.schemas.provisioning import AdapterType, FirmwareType
 from app.secrets.service import SecretsService
-from app.services.vmware.base import CloneSpec, PowerStateInfo, VCenterTarget, VMwareService, VmRef
+from app.services.vmware.base import (
+    BlankVmSpec,
+    CloneSpec,
+    PowerStateInfo,
+    VCenterTarget,
+    VmRef,
+    VMwareService,
+)
 
 log = get_logger(__name__)
 
@@ -304,7 +311,10 @@ class VsphereVMwareService(VMwareService):
                 raise NotFoundError(f"Cluster '{cluster_id}' does not exist.")
             hosts = []
             for host in cluster.host:
-                quick = host.quickStats
+                # HostSystem exposes quick statistics through summary, not as
+                # a direct HostSystem attribute. Accessing host.quickStats made
+                # the entire discovery request fail on real vCenter sessions.
+                quick = host.summary.quickStats
                 cpu_pct = 0.0
                 mem_pct = 0.0
                 try:
@@ -313,7 +323,8 @@ class VsphereVMwareService(VMwareService):
                             host.hardware.cpuInfo.numCpuCores * host.hardware.cpuInfo.hz / 1e6
                         ) * 100, 1)
                     if host.hardware.memorySize:
-                        mem_pct = round((quick.overallMemoryUsage or 0) / host.hardware.memorySize * 100, 1)
+                        used_bytes = (quick.overallMemoryUsage or 0) * 1024**2
+                        mem_pct = round(used_bytes / host.hardware.memorySize * 100, 1)
                 except (TypeError, ZeroDivisionError):
                     pass
                 hosts.append(
@@ -425,7 +436,11 @@ class VsphereVMwareService(VMwareService):
         def op(si):
             content = self._content(si)
             templates = []
-            view = self._container_view(content, vim.VirtualMachine)
+            datacenter = self._find_by_moref(content, datacenter_id) if datacenter_id else None
+            if datacenter_id and datacenter is None:
+                raise NotFoundError(f"Datacenter '{datacenter_id}' does not exist.")
+            root = datacenter.vmFolder if datacenter is not None else content.rootFolder
+            view = content.viewManager.CreateContainerView(root, [vim.VirtualMachine], True)
             try:
                 for vm in view.view:
                     if not vm.config or not vm.config.template:
@@ -434,6 +449,10 @@ class VsphereVMwareService(VMwareService):
                     family = "windows" if "windows" in guest.lower() else (
                         "linux" if any(k in guest.lower() for k in ("linux", "rhel", "ubuntu", "debian")) else "other"
                     )
+                    disks = [
+                        device for device in (vm.config.hardware.device or [])
+                        if isinstance(device, vim.vm.device.VirtualDisk)
+                    ]
                     templates.append(
                         TemplateOut(
                             id=vm._moId,
@@ -442,6 +461,11 @@ class VsphereVMwareService(VMwareService):
                             os_version=guest,
                             last_modified=vm.config.modifyDate,
                             description=vm.config.annotation or "",
+                            datacenter_id=datacenter_id,
+                            datacenter_name=datacenter.name if datacenter is not None else None,
+                            cpu=vm.config.hardware.numCPU,
+                            memory_mb=vm.config.hardware.memoryMB,
+                            disk_size_gb=round(sum(disk.capacityInKB for disk in disks) / 1024**2, 1),
                         )
                     )
             finally:
@@ -545,10 +569,10 @@ class VsphereVMwareService(VMwareService):
             # Placement: explicit host > resource pool > cluster default.
             if spec.host_id:
                 host = self._find_by_moref(content, spec.host_id)
-                if host is None or not self._host_usable(host):
+                if host is None or host not in cluster.host or not self._host_usable(host):
                     raise InfraOperationError(
                         f"Host '{spec.host_id}' is not available for provisioning.",
-                        reason="Host disconnected or in maintenance mode.",
+                        reason="Host disconnected, in maintenance mode, or outside the selected cluster.",
                         recommended_action="Select a different host or use automatic placement.",
                         retryable=False,
                     )
@@ -587,7 +611,10 @@ class VsphereVMwareService(VMwareService):
             clone_spec.powerOn = False
             clone_spec.template = False
 
-            vm_folder = template.parent.parent.vmFolder
+            # Clone beside the source template. This also works for templates
+            # stored in nested VM folders; walking via parent.parent.vmFolder
+            # only worked for templates directly under the datacenter VM folder.
+            vm_folder = template.parent
             try:
                 task = template.Clone(folder=vm_folder, name=spec.vm_name, spec=clone_spec)
                 self._wait_for_task(task)
@@ -607,6 +634,121 @@ class VsphereVMwareService(VMwareService):
             return VmRef(id=created._moId, name=created.name)
 
         log.info("vSphere clone: template=%s name=%s cluster=%s", spec.template_id, spec.vm_name, spec.cluster_id)
+        return await self._with_session(target, op)
+
+    async def create_blank_vm(self, target: VCenterTarget, spec: BlankVmSpec) -> VmRef:
+        def op(si):
+            content = self._content(si)
+            if self._find_vm_by_name(content, spec.vm_name) is not None:
+                raise InfraOperationError(
+                    f"A virtual machine named '{spec.vm_name}' already exists.",
+                    reason="Duplicate VM name in the vCenter inventory.",
+                    recommended_action="Choose a different VM name and resubmit the request.",
+                    retryable=False,
+                )
+
+            datacenter = self._find_by_moref(content, spec.datacenter_id)
+            cluster = self._find_by_moref(content, spec.cluster_id)
+            if datacenter is None or cluster is None:
+                raise InfraOperationError(
+                    "The selected datacenter or cluster was not found.",
+                    reason="The placement inventory changed after validation.",
+                    recommended_action="Re-open the wizard and select the infrastructure again.",
+                    retryable=False,
+                )
+
+            host = None
+            if spec.host_id:
+                candidate = self._find_by_moref(content, spec.host_id)
+                if candidate is None or candidate not in cluster.host or not self._host_usable(candidate):
+                    raise InfraOperationError(
+                        f"Host '{spec.host_id}' is not available in the selected cluster.",
+                        reason="The host is disconnected, in maintenance mode, or belongs to another cluster.",
+                        recommended_action="Select another host or use automatic placement.",
+                        retryable=False,
+                    )
+                host = candidate
+
+            pool = cluster.resourcePool
+            if spec.resource_pool_id:
+                requested_pool = self._find_by_moref(content, spec.resource_pool_id)
+                if requested_pool is not None:
+                    pool = requested_pool
+
+            datastores = list(self._cluster_datastores(cluster).values())
+            required_bytes = sum(disk.size_gb for disk in spec.disks) * 1024**3
+            candidates = [
+                datastore for datastore in datastores
+                if datastore.summary.accessible and (datastore.summary.freeSpace or 0) >= required_bytes
+            ]
+            if spec.datastore_id:
+                candidates = [datastore for datastore in candidates if datastore._moId == spec.datastore_id]
+            if not candidates:
+                raise InfraOperationError(
+                    "No selected datastore has enough accessible capacity for the blank VM.",
+                    reason=f"The VM requires approximately {sum(d.size_gb for d in spec.disks)} GB.",
+                    recommended_action="Select another datastore or reduce the requested disk capacity.",
+                    retryable=False,
+                )
+            datastore = max(candidates, key=lambda entry: entry.summary.freeSpace or 0)
+
+            config = vim.vm.ConfigSpec()
+            config.name = spec.vm_name
+            config.annotation = spec.description
+            config.guestId = "otherGuest64"
+            config.numCPUs = spec.cpu
+            config.memoryMB = spec.memory_mb
+            config.files = vim.vm.FileInfo(vmPathName=f"[{datastore.name}]")
+            if spec.firmware == FirmwareType.EFI:
+                config.firmware = "efi"
+                if spec.secure_boot:
+                    config.bootOptions = vim.vm.BootOptions(efiSecureBootEnabled=True)
+
+            controller = vim.vm.device.ParaVirtualSCSIController()
+            controller.key = -100
+            controller.busNumber = 0
+            controller.sharedBus = vim.vm.device.VirtualSCSIController.Sharing.noSharing
+            controller_spec = vim.vm.device.VirtualDeviceSpec()
+            controller_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+            controller_spec.device = controller
+            device_changes = [controller_spec]
+
+            for index, disk in enumerate(spec.disks):
+                backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
+                backing.fileName = ""
+                backing.diskMode = "persistent"
+                backing.thinProvisioned = disk.provisioning.value == "thin"
+                virtual_disk = vim.vm.device.VirtualDisk()
+                virtual_disk.key = -101 - index
+                virtual_disk.controllerKey = controller.key
+                # SCSI unit 7 is reserved for the controller itself.
+                virtual_disk.unitNumber = index if index < 7 else index + 1
+                virtual_disk.capacityInKB = disk.size_gb * 1024 * 1024
+                virtual_disk.backing = backing
+                disk_spec = vim.vm.device.VirtualDeviceSpec()
+                disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                disk_spec.fileOperation = vim.vm.device.VirtualDeviceSpec.FileOperation.create
+                disk_spec.device = virtual_disk
+                device_changes.append(disk_spec)
+            config.deviceChange = device_changes
+
+            try:
+                task = datacenter.vmFolder.CreateVM_Task(config=config, pool=pool, host=host)
+                self._wait_for_task(task)
+            except Exception as exc:  # noqa: BLE001
+                raise _wrap("create_blank_vm", exc) from exc
+
+            created = self._find_vm_by_name(content, spec.vm_name)
+            if created is None:
+                raise InfraOperationError(
+                    f"Create task completed but VM '{spec.vm_name}' was not found.",
+                    reason="Inventory inconsistency after VM creation.",
+                    recommended_action="Check recent tasks in vCenter before retrying.",
+                    retryable=True,
+                )
+            return VmRef(id=created._moId, name=created.name)
+
+        log.info("vSphere create blank VM: name=%s cluster=%s", spec.vm_name, spec.cluster_id)
         return await self._with_session(target, op)
 
     async def configure_hardware(

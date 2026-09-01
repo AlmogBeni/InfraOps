@@ -54,7 +54,7 @@ Provisioning** — on top of generic job machinery designed for future modules
    executes stages sequentially with `asyncio.wait_for` timeouts.
 5. Every stage transition is committed to `provisioning_job_steps` and published to Redis;
    the API streams those events to the browser over SSE.
-6. Failure semantics: if `clone_vm` already succeeded the job becomes
+6. Failure semantics: if the `clone_vm` creation stage already succeeded the job becomes
    `PARTIALLY_COMPLETED` (VM retained; failed stages retryable); otherwise `FAILED`.
 7. Completion runs final validation producing a structured checklist artifact rendered by
    the UI.
@@ -70,9 +70,10 @@ reboot_guest → wait_guest_ready → install_root_certificates →
 install_intermediate_certificates → validate_certificates → resolve_dependencies →
 install_applications → validate_applications → final_validation
 
-\* only destructive stage. Resume-after-retry skips SUCCEEDED/SKIPPED steps, so retries
-never re-clone a VM that exists. Not-applicable stages (domain join, reboot) are marked
-SKIPPED rather than silently omitted.
+\* only destructive stage; it clones a template or creates a blank VM according to the
+request source. Resume-after-retry skips SUCCEEDED/SKIPPED steps, so retries never recreate
+a VM that exists. Guest-dependent stages for blank VMs and other not-applicable stages are
+marked SKIPPED rather than silently omitted.
 
 ## Key abstractions
 

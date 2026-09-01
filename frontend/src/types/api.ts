@@ -115,6 +115,11 @@ export interface TemplateOut {
   os_version: string
   last_modified: string | null
   description: string
+  datacenter_id: string | null
+  datacenter_name: string | null
+  cpu: number | null
+  memory_mb: number | null
+  disk_size_gb: number | null
 }
 
 // ── Provisioning ─────────────────────────────────────────────────────────────
@@ -144,6 +149,7 @@ export interface DomainJoinSpec {
 }
 
 export interface ProvisioningRequest {
+  source_type: 'blank' | 'template'
   vm: { name: string; description: string }
   compute: {
     vcenter_id: string
@@ -161,7 +167,7 @@ export interface ProvisioningRequest {
     disks: DiskSpec[]
   }
   guest: {
-    template_id: string
+    template_id: string | null
     hostname: string | null
     timezone: string | null
     domain_join: DomainJoinSpec | null

@@ -11,6 +11,7 @@ from app.schemas.provisioning import (
     IpMode,
     NetworkSpec,
     ProvisioningRequest,
+    VmSourceType,
 )
 from tests.conftest import make_ipv4, make_request
 
@@ -31,6 +32,37 @@ class TestVmSpec:
         payload["guest"]["hostname"] = None
         rebuilt = ProvisioningRequest.model_validate(payload)
         assert rebuilt.guest.hostname == rebuilt.vm.name
+
+    def test_legacy_request_defaults_to_template_source(self):
+        payload = make_request().model_dump(mode="json")
+        payload.pop("source_type")
+        rebuilt = ProvisioningRequest.model_validate(payload)
+        assert rebuilt.source_type == VmSourceType.TEMPLATE
+
+    def test_template_source_requires_template(self):
+        payload = make_request().model_dump(mode="json")
+        payload["guest"]["template_id"] = None
+        with pytest.raises(ValidationError, match="template_id is required"):
+            ProvisioningRequest.model_validate(payload)
+
+    def test_blank_source_accepts_no_guest_automation(self):
+        payload = make_request().model_dump(mode="json")
+        payload["source_type"] = "blank"
+        payload["guest"] = {
+            "template_id": None,
+            "hostname": None,
+            "timezone": None,
+            "domain_join": None,
+        }
+        rebuilt = ProvisioningRequest.model_validate(payload)
+        assert rebuilt.source_type == VmSourceType.BLANK
+        assert rebuilt.guest.template_id is None
+
+    def test_blank_source_rejects_stale_template(self):
+        payload = make_request().model_dump(mode="json")
+        payload["source_type"] = "blank"
+        with pytest.raises(ValidationError, match="template_id must be null"):
+            ProvisioningRequest.model_validate(payload)
 
 
 class TestHardwareSpec:

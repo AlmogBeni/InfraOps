@@ -1,64 +1,66 @@
 # VM Provisioning Workflow
 
-The wizard guides an operator through nine visible steps; execution adds two more phases
-(provision + validate) as a background job.
+The wizard guides an operator through nine visible steps; execution continues as an
+audited background job.
 
 ## Steps
 
-1. **Infrastructure** — vCenter connection, site, datacenter (all fetched live).
-2. **Compute** — cluster (DRS-aware), automatic or manual host placement with live host
-   health (state, maintenance mode, CPU/memory %), resource pool.
-3. **Storage** — automatic selection or manual datastore with type/capacity/free/usage;
-   datastore clusters listed separately.
-4. **VM Hardware** — name (policy + uniqueness validated at dry-run), description, vCPU,
-   RAM, up to 8 disks (size, thin/thick), UEFI/BIOS, Secure Boot (UEFI only).
-5. **Operating System** — template table (name, OS, modified, description), hostname
-   (defaults to VM name), optional time zone, optional domain join (domain, OU, logical
-   credential reference).
-6. **Network** — port group + adapter type; DHCP or static IPv4 (address, mask *or*
-   prefix, gateway, primary/secondary/additional DNS). Inline **IP conflict check**
-   aggregates ICMP, forward/reverse DNS and the vCenter inventory with an explicit
-   confidence statement.
-7. **Certificates** — select administrator-published packages; contents (thumbprints,
-   stores, expiry) are shown before selection.
-8. **Applications** — approved catalog only; dependencies resolved automatically.
-9. **Review & Provision** — full human-readable summary, **Dry Run / Validate** button
-   rendering the preflight report, then an explicit **Provision VM** action.
+1. **Source** — choose a blank virtual machine or a deployment from a live vCenter template.
+2. **Infrastructure** — vCenter, site, datacenter, cluster and dependent host placement.
+   Templates are selected here after the datacenter is known. Changing an upstream target
+   clears all stale downstream selections.
+3. **Compute** — name, description, vCPU, RAM, virtual disks, firmware and Secure Boot.
+4. **Storage** — automatic selection or a manual datastore selected from the target cluster.
+5. **Network** — port group and adapter type. Template deployments also support DHCP or
+   static IPv4 and an inline conflict check.
+6. **Operating System** — template-derived OS information is read-only, followed by the
+   supported hostname, time-zone and optional domain-join settings. Blank VMs have no guest
+   customization.
+7. **Certificates** — select administrator-published packages and inspect their public
+   certificate metadata before deployment.
+8. **Applications** — select from the approved catalog; dependencies resolve automatically.
+9. **Review** — inspect source, infrastructure, compute, storage, network, OS, certificates
+   and applications, run a non-destructive preflight check, then explicitly create the VM.
 
-Drafts persist in localStorage; navigating back/forward never loses input.
+Drafts persist in localStorage. Certificate file contents are never added to the wizard
+draft or browser storage.
 
-## Execution sequence (worker)
+## Source behavior
 
-See `docs/architecture.md` for the ordered stage list. Highlights:
+Template mode retrieves templates from the selected vCenter datacenter and sends the
+selected managed-object reference through the provisioning request to
+`clone_from_template`.
 
-* Clone validates duplicate names and capacity again at execution time.
-* Guest networking uses PowerShell built exclusively from validated values
-  (`New-NetIPAddress`, `Set-DnsClientServerAddress`); DHCP mode enables DHCP instead.
-* Network validation pings the gateway and resolves DNS through the configured resolver.
-* Hostname change and domain join schedule a controlled reboot; the pipeline waits for
-  guest availability afterwards.
-* Certificates: presence probe by SHA-256 thumbprint → upload PEM to managed temp →
-  `certutil -addstore -f Root|CA` → re-probe verification. Expired certificates are refused.
-* Applications: topological order (dependencies first); detection before install makes
-  everything idempotent; msiexec exit 3010 maps to REBOOT_REQUIRED.
+Blank mode sends no template or stale guest-automation state. The provider creates a new
+VM with empty virtual disks, attaches the requested virtual network, and leaves the VM
+powered off. InfraOps does not currently attach installation media, so the OS and VMware
+Tools must be installed before guest networking, certificates or applications can run.
 
-## Errors, retries, rollback
+## Certificate registration
 
-Every failure produces the triple **human message / reason / recommended action** plus a
-preserved technical detail (admin-only in the UI). Example:
+Administrators can retain the existing pasted-PEM method or choose a local public X.509
+certificate file. Supported uploads are PEM-encoded `.pem`, `.crt` and `.cer` files up to
+100 KB. Private-key and PKCS#12 files are rejected. The authenticated registration API
+parses the certificate and computes its fingerprint and validity dates server-side.
 
-> Network Configuration Failed — The VM was created successfully, but Windows networking
-> could not be configured. Reason: the configuration command exited with code 1603.
-> Recommended action: Verify VMware Tools status and retry the Network Configuration stage.
+## Execution sequence
 
-* **Retry** resets failed (or cancelled) stages to PENDING and requeues; succeeded stages
-  are skipped, so cloning never repeats.
-* **Rollback is conservative**: a post-clone failure keeps the VM and marks the job
-  PARTIALLY_COMPLETED. Deletion is never automatic.
-* **Cancel** stops at the next stage boundary; queued jobs cancel immediately.
+The creation stage is source-aware: it clones the selected template or creates a blank VM.
+Both paths revalidate placement, duplicate names and capacity immediately before mutation.
+Template deployments then configure hardware, networking and supported guest automation.
+Blank deployments configure virtual hardware/network only and skip guest-dependent stages.
 
-## Final result
+Template guest networking uses PowerShell built from validated values. Certificates are
+probed by SHA-256 thumbprint, transferred into the managed guest temp directory, imported
+with `certutil`, and re-probed. Application dependencies are installed in topological order.
 
-The final-validation stage builds a grouped checklist (VM / Network / Certificates /
-Applications) stored as step artifacts and rendered as the completion card, alongside
-duration and assigned IP.
+## Errors, retries and rollback
+
+Every failure produces a human message, reason and recommended action plus technical detail
+that is visible only to administrators. Retrying preserves successful stages and reuses an
+already-created VM rather than creating it again. A post-creation failure keeps the VM and
+marks the job partially completed; deletion is never automatic.
+
+The final-validation stage creates a grouped checklist in the job artifacts. A template VM
+must be powered on with VMware Tools running; a blank VM must exist and remain powered off
+for OS installation.

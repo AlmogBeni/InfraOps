@@ -55,6 +55,22 @@ class CloneSpec:
 
 
 @dataclass(frozen=True)
+class BlankVmSpec:
+    vm_name: str
+    datacenter_id: str
+    description: str = ""
+    cluster_id: str = ""
+    host_id: str | None = None
+    resource_pool_id: str | None = None
+    datastore_id: str | None = None
+    cpu: int = 2
+    memory_mb: int = 4096
+    disks: tuple[DiskSpec, ...] = ()
+    firmware: FirmwareType = FirmwareType.EFI
+    secure_boot: bool = False
+
+
+@dataclass(frozen=True)
 class VmRef:
     id: str
     name: str
@@ -122,6 +138,9 @@ class VMwareService(ABC):
 
     @abstractmethod
     async def clone_from_template(self, target: VCenterTarget, spec: CloneSpec) -> VmRef: ...
+
+    @abstractmethod
+    async def create_blank_vm(self, target: VCenterTarget, spec: BlankVmSpec) -> VmRef: ...
 
     @abstractmethod
     async def configure_hardware(

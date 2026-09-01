@@ -11,15 +11,15 @@ import datetime as dt
 
 import pytest
 
+from app.schemas.provisioning import AdapterType, DiskProvisioning, DiskSpec
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
 from app.services.guest.mock import MockGuestOperations, mock_guest_state, reset_mock_guests
-from app.services.vmware.base import CloneSpec
+from app.services.vmware.base import BlankVmSpec, CloneSpec
 from app.services.vmware.mock import (
     DEFAULT_MOCK_VCENTER_ID,
     MockVMwareService,
     reset_mock_estates,
 )
-from app.schemas.provisioning import AdapterType, DiskProvisioning, DiskSpec
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +71,13 @@ class TestDiscovery:
         assert by_name["esx03.company.local"].available_for_provisioning is False
         assert by_name["esx01.company.local"].available_for_provisioning is True
 
+    async def test_templates_scoped_to_datacenter(self, target):
+        service = MockVMwareService()
+        primary = await service.get_templates(target, "datacenter-21")
+        lab = await service.get_templates(target, "datacenter-22")
+        assert {template.id for template in primary} == {"vm-61", "vm-62"}
+        assert {template.id for template in lab} == {"vm-63"}
+
     async def test_duplicate_names_detected(self, target):
         service = MockVMwareService()
         assert await service.vm_exists(target, "APP-PROD-004") is True
@@ -104,6 +111,23 @@ class TestLifecycle:
         with pytest.raises(InfraOperationError) as excinfo:
             await service.clone_from_template(target, spec)
         assert "already exists" in excinfo.value.human_message
+
+    async def test_create_blank_vm_without_template(self, target):
+        service = MockVMwareService()
+        spec = BlankVmSpec(
+            vm_name="BLANK-VM-001",
+            datacenter_id="datacenter-21",
+            cluster_id="domain-c7",
+            host_id="host-11",
+            cpu=2,
+            memory_mb=8192,
+            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
+        )
+        ref = await service.create_blank_vm(target, spec)
+        info = await service.get_vm_info(target, ref.name)
+        assert info is not None
+        assert info.power_state == "poweredOff"
+        assert info.tools_status is None
 
     async def test_tools_become_ready_after_power_on(self, target):
         service = MockVMwareService()
