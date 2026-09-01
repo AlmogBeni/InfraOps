@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run typecheck && npm run bundle",
+    "typecheck": "tsc --noEmit --pretty false -p tsconfig.json",
+    "bundle": "vite build",
     "preview": "vite preview --port 8080",
     "test": "vitest run"
   },
