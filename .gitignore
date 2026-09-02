@@ -20,7 +20,9 @@ dist/
 .env.local
 .env.*.local
 *.pem.key
-secrets/
+# Runtime secret material belongs only in the repository-root directory.
+# Do not ignore backend/app/secrets: it is application source code.
+/secrets/
 
 # Databases / volumes
 postgres-data/
