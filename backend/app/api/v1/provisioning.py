@@ -27,6 +27,7 @@ from app.schemas.provisioning import (
     IpConflictReport,
     PreflightReport,
     ProvisioningRequest,
+    ProvisioningSubmissionRequest,
 )
 from app.services.network.conflict import (
     DnsForwardProvider,
@@ -71,6 +72,9 @@ def _normalized_request_payload(payload: dict | None) -> dict | None:
         return None
 
     candidate = copy.deepcopy(payload)
+    # Missing markers identify stored jobs written under the historical rule
+    # where guest.hostname, rather than vm.name, controlled AD/DNS identity.
+    candidate.setdefault("identity_policy_version", "v1")
     guest = candidate.get("guest")
     if isinstance(guest, dict):
         guest.setdefault("iso_id", None)
@@ -129,7 +133,7 @@ async def _get_job(db, job_id: uuid.UUID) -> ProvisioningJob:
 
 @router.post("/validate", response_model=PreflightReport)
 async def validate_provisioning_request(
-    payload: ProvisioningRequest,
+    payload: ProvisioningSubmissionRequest,
     db: DbSession,
     source_ip: ClientIp,
     user=require(Permission.PROVISIONING_VALIDATE),
@@ -193,7 +197,7 @@ async def check_ip_conflict(
 
 @router.post("/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
 async def submit_job(
-    payload: ProvisioningRequest,
+    payload: ProvisioningSubmissionRequest,
     response: Response,
     db: DbSession,
     source_ip: ClientIp,

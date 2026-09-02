@@ -4,12 +4,18 @@ import { Alert, Badge } from '@/components/ui/feedback'
 import { Checkbox, FormRow, Input, Select } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useTemplates } from '@/features/vm-provisioning/hooks'
+import { deriveGuestIdentity } from '@/features/vm-provisioning/identity'
 
 export function OsStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
   const data = wizard.data
   const templates = useTemplates(data.vcenter_id, data.datacenter_id, data.source_type === 'template')
   const selectedTemplate = templates.data?.find((template) => template.id === data.template_id)
+  const identity = deriveGuestIdentity(
+    data.vm_name,
+    data.hostname,
+    data.domain_join.enabled ? data.domain_join.domain : null,
+  )
 
   if (data.source_type === 'blank') {
     return (
@@ -73,12 +79,20 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
           </div>
         </div>
         <div className="console-group-body grid grid-cols-1 gap-x-4 md:grid-cols-2">
-          <FormRow label="Computer name" htmlFor="hostname" hint="Defaults to the VM inventory name." error={wizard.errors.hostname}>
+          <FormRow
+            label="Computer name"
+            htmlFor="hostname"
+            hint={data.domain_join.enabled
+              ? 'Domain-joined guests use the VM inventory name as the short Windows computer name.'
+              : 'Defaults to the VM inventory name.'}
+            error={wizard.errors.hostname}
+          >
             <Input
               id="hostname"
               className="font-mono"
               placeholder={data.vm_name || 'SERVER-PROD-001'}
-              value={data.hostname}
+              value={data.domain_join.enabled ? identity.computerName : data.hostname}
+              disabled={data.domain_join.enabled}
               onChange={(event) => wizard.update({ hostname: event.target.value.toUpperCase() })}
             />
           </FormRow>
@@ -105,7 +119,7 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
           {data.domain_join.enabled && (
             <div className="grid grid-cols-1 gap-x-4 border-t border-slate-200 pt-4 md:grid-cols-2">
               <FormRow label="Domain" htmlFor="join-domain" required error={wizard.errors['domain_join.domain']}>
-                <Input id="join-domain" placeholder="ad.company.local" value={data.domain_join.domain} onChange={(event) => wizard.update({ domain_join: { ...data.domain_join, domain: event.target.value } })} />
+                <Input id="join-domain" placeholder="ad.company.local" value={data.domain_join.domain} onChange={(event) => wizard.update({ domain_join: { ...data.domain_join, domain: event.target.value.toLowerCase() } })} />
               </FormRow>
               <FormRow label="Organizational unit (DN)" htmlFor="join-ou">
                 <Input id="join-ou" placeholder="OU=Servers,DC=ad,DC=company,DC=local" value={data.domain_join.ou} onChange={(event) => wizard.update({ domain_join: { ...data.domain_join, ou: event.target.value } })} />
@@ -119,6 +133,18 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
                   <option value="domain-join">domain-join</option>
                 </Select>
               </FormRow>
+              <div className="md:col-span-2">
+                <Alert tone="info" title="Effective fully qualified DNS name">
+                  {identity.fqdn ? (
+                    <>
+                      <span className="font-mono font-semibold">{identity.fqdn}</span>
+                      {' '}uses the short Windows computer name <span className="font-mono">{identity.computerName}</span>.
+                    </>
+                  ) : (
+                    'Enter the Active Directory domain to preview the resulting FQDN.'
+                  )}
+                </Alert>
+              </div>
             </div>
           )}
         </div>

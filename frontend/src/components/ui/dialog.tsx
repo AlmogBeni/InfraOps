@@ -20,21 +20,32 @@ export function Dialog({
 }) {
   const titleId = useId()
   const panelRef = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     if (!open) return
     const previous = document.activeElement as HTMLElement | null
     const panel = panelRef.current
-    const focusable = panel?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    )
-    focusable?.[0]?.focus()
+    const focusableSelector =
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    const getFocusable = () => panelRef.current?.querySelectorAll<HTMLElement>(focusableSelector)
+    const initialFocus = panel?.querySelector<HTMLElement>('[autofocus]')
+      ?? panel?.querySelector<HTMLElement>(
+        'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]):not([data-dialog-close]), a[href], [tabindex]:not([tabindex="-1"])',
+      )
+      ?? panel?.querySelector<HTMLElement>(focusableSelector)
+    initialFocus?.focus()
 
     function onKey(event: KeyboardEvent) {
       if (event.key === 'Escape') {
-        onClose()
+        onCloseRef.current()
         return
       }
+      const focusable = getFocusable()
       if (event.key !== 'Tab' || !focusable?.length) return
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
@@ -53,7 +64,7 @@ export function Dialog({
       document.body.style.overflow = ''
       previous?.focus()
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
@@ -72,7 +83,7 @@ export function Dialog({
       >
         <header className="flex items-center justify-between border-b border-[#dce4dd] bg-[linear-gradient(135deg,#fbfcf9_0%,#eef5ef_100%)] px-5 py-4">
           <h2 id={titleId} className="text-base font-semibold tracking-[-0.02em] text-[#1b2420]">{title}</h2>
-          <button type="button" onClick={onClose} aria-label="Close dialog" className="rounded-lg p-1.5 text-[#758079] transition-colors hover:bg-[#e9ede7] hover:text-[#202923]">
+          <button type="button" data-dialog-close onClick={onClose} aria-label="Close dialog" className="rounded-lg p-1.5 text-[#758079] transition-colors hover:bg-[#e9ede7] hover:text-[#202923]">
             <X className="h-4 w-4" />
           </button>
         </header>

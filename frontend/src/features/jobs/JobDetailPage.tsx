@@ -30,6 +30,7 @@ import {
 import { LogViewer } from '@/components/ui/log-viewer'
 import { ConsolePanel, DataPoint, PageHeader, PanelHeader } from '@/components/ui/page'
 import { useJobEvents } from '@/features/jobs/useJobEvents'
+import { derivePersistedGuestIdentity } from '@/features/vm-provisioning/identity'
 import { api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import {
@@ -265,6 +266,11 @@ function RequestSnapshot({
     : request.guest.iso_id
       ? labels.iso
       : 'No ISO mounted'
+  const identity = derivePersistedGuestIdentity(
+    request.vm.name,
+    request.guest.hostname,
+    request.guest.domain_join?.domain,
+  )
   const networkAddress = request.network.mode === 'STATIC' && request.network.ipv4
     ? `${request.network.ipv4.address}/${request.network.ipv4.prefix}`
     : 'Assigned automatically by DHCP'
@@ -297,7 +303,11 @@ function RequestSnapshot({
         <SnapshotSection icon={MonitorCog} title="Source and guest" summary={sourceLabel}>
           <DetailLine label="Source" value={request.source_type === 'template' ? 'OVF / OVA deployment' : 'Blank virtual machine'} />
           <DetailLine label={request.guest.template_id ? 'Template' : 'Installation media'} value={sourceLabel} />
-          <DetailLine label="Guest hostname" value={request.guest.hostname ?? (request.source_type === 'blank' ? 'Configured during OS installation' : 'Uses the VM name')} />
+          <DetailLine
+            label="Windows computer name"
+            value={request.source_type === 'blank' ? 'Configured during OS installation' : identity.computerName}
+          />
+          <DetailLine label="Fully qualified DNS name" value={identity.fqdn ?? 'Not domain joined'} />
           <DetailLine label="Time zone" value={request.guest.timezone ?? (request.source_type === 'blank' ? 'Configured during OS installation' : 'Platform default')} />
         </SnapshotSection>
 

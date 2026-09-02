@@ -7,7 +7,6 @@ import {
   ChevronRight,
   Clock3,
   RefreshCw,
-  Rocket,
   Server,
   ShieldCheck,
   Timer,
@@ -94,27 +93,27 @@ function serviceDescription(component: string, state: ServiceState): string {
   const normalized = component.trim().toLowerCase()
   if (normalized.startsWith('secrets provider')) {
     return state === 'operational'
-      ? 'Credential lookups are responding normally.'
-      : 'Credential lookups require administrator attention.'
+      ? 'Credential lookups are available.'
+      : 'Credential lookups require attention.'
   }
   if (normalized === 'application repository') {
     return state === 'operational'
-      ? 'Approved software is available for deployments.'
-      : 'The approved software catalog needs attention.'
+      ? 'Application inventory is available.'
+      : 'Application inventory requires attention.'
   }
   if (normalized === 'certificate repository') {
     return state === 'operational'
-      ? 'Trust packages are available for deployments.'
-      : 'The certificate catalog needs attention.'
+      ? 'Certificate inventory is available.'
+      : 'Certificate inventory requires attention.'
   }
   if (normalized.startsWith('vcenter ')) {
-    if (state === 'operational') return 'Inventory and deployment operations are responding.'
-    if (state === 'unavailable') return 'The inventory connection is unavailable.'
-    return 'The inventory connection is configured but not fully ready.'
+    if (state === 'operational') return 'Inventory connection is available.'
+    if (state === 'unavailable') return 'Inventory connection is unavailable.'
+    return 'Inventory connection requires attention.'
   }
   return state === 'operational'
-    ? 'This control-plane service is responding normally.'
-    : 'This control-plane service requires review.'
+    ? 'Service is available.'
+    : 'Service requires attention.'
 }
 
 function jobActivity(job: JobOut): string {
@@ -146,31 +145,31 @@ function MetricCard({
   value,
   detail,
   icon: Icon,
-  accent = 'brand',
+  tone = 'neutral',
 }: {
   label: string
   value: ReactNode
   detail: string
   icon: typeof Activity
-  accent?: 'brand' | 'lime' | 'amber' | 'red'
+  tone?: 'neutral' | 'success' | 'warning' | 'danger'
 }) {
   const iconClasses = {
-    brand: 'bg-brand-50 text-brand-700',
-    lime: 'bg-[#f1f7cf] text-[#56661f]',
-    amber: 'bg-amber-50 text-amber-700',
-    red: 'bg-red-50 text-red-700',
+    neutral: 'bg-[#eef3ef] text-brand-700',
+    success: 'bg-emerald-50 text-emerald-700',
+    warning: 'bg-amber-50 text-amber-700',
+    danger: 'bg-red-50 text-red-700',
   }
 
   return (
-    <div className="dashboard-metric-card group rounded-2xl border border-[#d8ddd7] bg-white p-5 shadow-[var(--ui-shadow)]">
+    <div className="rounded-xl border border-[#d8ddd7] bg-white p-4 shadow-[0_1px_2px_rgba(23,32,28,0.04)]">
       <div className="flex items-start justify-between gap-4">
-        <dt className="text-xs font-semibold text-[#68736d]">{label}</dt>
-        <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-transform duration-300 group-hover:-rotate-3 group-hover:scale-110', iconClasses[accent])}>
+        <dt className="text-[11px] font-semibold text-[#68736d]">{label}</dt>
+        <span className={cn('grid h-8 w-8 shrink-0 place-items-center rounded-lg', iconClasses[tone])}>
           <Icon className="h-4 w-4" aria-hidden />
         </span>
       </div>
-      <dd className="mt-5 text-3xl font-semibold tabular-nums tracking-[-0.04em] text-[#17201c]">{value}</dd>
-      <dd className="mt-2 text-xs leading-5 text-[#7a847e]">{detail}</dd>
+      <dd className="mt-3 text-2xl font-semibold tabular-nums tracking-[-0.035em] text-[#17201c]">{value}</dd>
+      <dd className="mt-1.5 text-[11px] leading-4 text-[#7a847e]">{detail}</dd>
     </div>
   )
 }
@@ -253,7 +252,7 @@ function RecentDeployments({ jobs, canProvision }: { jobs: JobOut[]; canProvisio
                 <span className="block truncate text-xs font-medium text-[#465149]">{jobActivity(job)}</span>
                 {job.status === 'RUNNING' && (
                   <span className="mt-2 block h-1.5 w-full max-w-32 overflow-hidden rounded-full bg-[#e3e7e2]" aria-hidden>
-                    <span className="dashboard-progress-fill block h-full rounded-full transition-[width] duration-700 ease-out" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
+                    <span className="block h-full rounded-full bg-[#e56b3f] transition-[width] duration-700 ease-out" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
                   </span>
                 )}
               </td>
@@ -285,13 +284,13 @@ function DashboardLoading() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Control plane"
-        title="Operations overview"
-        description="A live view of deployment throughput, active work, and service readiness."
+        eyebrow="Operations"
+        title="Dashboard"
+        description="Deployment activity and infrastructure service health."
       />
       <LoadingState
-        title="Loading your operations workspace"
-        description="Gathering deployment activity, monthly performance, and control-plane status."
+        title="Loading dashboard"
+        description="Retrieving deployment and service status."
       />
     </div>
   )
@@ -299,7 +298,7 @@ function DashboardLoading() {
 
 export function DashboardPage() {
   const navigate = useNavigate()
-  const { hasPermission } = useAuth()
+  const { hasPermission, hasRole } = useAuth()
   const dashboard = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => api.dashboard(),
@@ -312,13 +311,13 @@ export function DashboardPage() {
     return (
       <div className="space-y-6">
         <PageHeader
-          eyebrow="Control plane"
-          title="Operations overview"
-          description="A live view of deployment throughput, active work, and service readiness."
+          eyebrow="Operations"
+          title="Dashboard"
+          description="Deployment activity and infrastructure service health."
         />
         <EmptyState
           title="Operations data could not be loaded"
-          description="The control plane did not return a usable response. Try again in a moment."
+          description="Dashboard data is currently unavailable. Try again."
           action={(
             <Button variant="secondary" loading={dashboard.isFetching} onClick={() => void dashboard.refetch()}>
               <RefreshCw className="h-4 w-4" aria-hidden /> Try again
@@ -336,27 +335,25 @@ export function DashboardPage() {
   const unavailableServices = serviceStates.filter((state) => state === 'unavailable').length
   const attentionServices = serviceStates.filter((state) => state !== 'operational').length
   const allOperational = health.length > 0 && attentionServices === 0
-  const estateTitle = health.length === 0
-    ? 'Service status is not available'
+  const serviceSummary = health.length === 0
+    ? 'No service checks reported'
     : allOperational
-      ? 'The control plane is ready'
+      ? 'All monitored services operational'
       : unavailableServices > 0
-        ? 'Service interruption detected'
-        : 'Some services need attention'
-  const estateDescription = health.length === 0
-    ? 'No service checks were included in the latest response.'
-    : allOperational
-      ? 'Inventory, credentials, and deployment catalogs are responding normally.'
-      : 'Review the service panel before starting infrastructure changes.'
+        ? `${unavailableServices} service${unavailableServices === 1 ? '' : 's'} unavailable`
+        : `${attentionServices} service${attentionServices === 1 ? '' : 's'} require attention`
   const deliveredLabel = new Intl.NumberFormat().format(stats.vms_provisioned_this_month)
   const failedLabel = new Intl.NumberFormat().format(stats.failed_jobs)
+  const refreshedAt = dashboard.dataUpdatedAt
+    ? formatDateTime(new Date(dashboard.dataUpdatedAt).toISOString())
+    : 'Not available'
 
   return (
-    <div className="space-y-7">
+    <div className="space-y-6">
       <PageHeader
-        eyebrow="Control plane"
-        title="Operations overview"
-        description="Monitor deployment throughput, active work, and the services that keep your virtual estate moving."
+        eyebrow="Operations"
+        title="Dashboard"
+        description="Deployment activity and infrastructure service health."
         actions={(
           <>
             <Button
@@ -377,99 +374,78 @@ export function DashboardPage() {
         meta={(
           <>
             <span className="inline-flex items-center gap-2">
-              <span className="dashboard-live-dot h-2 w-2 rounded-full bg-emerald-500" aria-hidden /> Live refresh every 30 seconds
+              <span className="dashboard-live-dot h-2 w-2 rounded-full bg-emerald-500" aria-hidden /> Auto-refresh: 30 seconds
             </span>
             <span role="status" aria-live="polite">
-              {dashboard.isFetching ? 'Synchronizing the latest status…' : 'Latest status is in view'}
+              {dashboard.isFetching ? 'Refreshing…' : `Last updated ${refreshedAt}`}
             </span>
           </>
         )}
       />
 
-      <section
-        aria-labelledby="estate-readiness-title"
-        className="dashboard-command-surface relative overflow-hidden rounded-3xl border border-[#303934] bg-[#202823] text-white shadow-[0_20px_48px_rgba(23,32,28,0.16)]"
-      >
-        <div className="dashboard-ambient-orb pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-[#d8f06a]/10 blur-3xl" aria-hidden />
-        <div className="relative grid lg:grid-cols-[minmax(0,1.55fr)_repeat(3,minmax(150px,0.55fr))]">
-          <div className="border-b border-white/10 p-6 sm:p-7 lg:border-b-0 lg:border-r">
-            <div className="flex items-start gap-4">
-              <span className={cn(
-                'grid h-12 w-12 shrink-0 place-items-center rounded-2xl',
-                allOperational ? 'bg-[#d8f06a] text-[#202823]' : 'bg-[#e56b3f] text-white',
-              )}>
-                {allOperational
-                  ? <ShieldCheck className="h-6 w-6" aria-hidden />
-                  : <AlertTriangle className="h-6 w-6" aria-hidden />}
-              </span>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Estate readiness</p>
-                <h2 id="estate-readiness-title" className="mt-2 text-2xl font-semibold tracking-[-0.03em]">{estateTitle}</h2>
-                <p className="mt-2 max-w-xl text-sm leading-6 text-white/60">{estateDescription}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="border-b border-white/10 px-6 py-5 lg:border-b-0 lg:border-r">
-            <p className="text-[10px] font-bold uppercase tracking-[0.13em] text-white/40">Active work</p>
-            <p className="mt-2 text-3xl font-semibold tabular-nums tracking-[-0.04em]">{stats.active_jobs}</p>
-            <p className="mt-1 text-xs text-white/50">Queued or running deployments</p>
-          </div>
-          <div className="border-b border-white/10 px-6 py-5 lg:border-b-0 lg:border-r">
-            <p className="text-[10px] font-bold uppercase tracking-[0.13em] text-white/40">Services online</p>
-            <p className="mt-2 text-3xl font-semibold tabular-nums tracking-[-0.04em]">
-              {operationalServices}<span className="ml-1 text-base font-medium text-white/35">/ {health.length}</span>
+      <section className="flex flex-col gap-4 rounded-xl border border-[#d2dad3] bg-white px-4 py-4 shadow-[0_1px_2px_rgba(23,32,28,0.04)] sm:flex-row sm:items-center sm:justify-between" aria-labelledby="service-summary-title">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className={cn(
+            'grid h-9 w-9 shrink-0 place-items-center rounded-lg',
+            allOperational
+              ? 'bg-emerald-50 text-emerald-700'
+              : unavailableServices > 0
+                ? 'bg-red-50 text-red-700'
+                : 'bg-amber-50 text-amber-800',
+          )}>
+            {allOperational
+              ? <ShieldCheck className="h-[18px] w-[18px]" aria-hidden />
+              : <AlertTriangle className="h-[18px] w-[18px]" aria-hidden />}
+          </span>
+          <div className="min-w-0">
+            <h2 id="service-summary-title" className="text-sm font-semibold text-[#202923]">{serviceSummary}</h2>
+            <p className="mt-1 text-xs text-[#68736d]">
+              {health.length > 0 ? `${operationalServices} of ${health.length} checks passing.` : 'Refresh to request current service status.'}
             </p>
-            <p className="mt-1 text-xs text-white/50">Passing readiness checks</p>
-          </div>
-          <div className="px-6 py-5">
-            <p className="text-[10px] font-bold uppercase tracking-[0.13em] text-white/40">Attention queue</p>
-            <p className={cn('mt-2 text-3xl font-semibold tabular-nums tracking-[-0.04em]', attentionServices > 0 && 'text-[#ffb394]')}>
-              {attentionServices}
-            </p>
-            <p className="mt-1 text-xs text-white/50">Service checks to review</p>
           </div>
         </div>
+        {hasRole('administrator') && (
+          <Link to="/admin/vmware" className="shrink-0 text-xs font-semibold text-brand-700 hover:underline">
+            Review infrastructure connections
+          </Link>
+        )}
       </section>
 
-      <section aria-labelledby="monthly-performance-title" className="space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 id="monthly-performance-title" className="text-lg font-semibold tracking-[-0.025em] text-[#202923]">Monthly performance</h2>
-            <p className="mt-1 text-xs text-[#758079]">Completed deployment outcomes since the start of this month.</p>
-          </div>
+      <section aria-labelledby="dashboard-metrics-title" className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="dashboard-metrics-title" className="text-sm font-semibold text-[#202923]">Current metrics</h2>
           <Link to="/jobs" className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-700 hover:underline">
-            Review all deployments <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+            View all deployments <ArrowRight className="h-3.5 w-3.5" aria-hidden />
           </Link>
         </div>
-        <dl className="dashboard-metrics grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <MetricCard label="Active deployments" value={stats.active_jobs} detail="Queued or running" icon={Activity} />
+          <MetricCard label="VMs provisioned" value={deliveredLabel} detail="This month" icon={Server} />
           <MetricCard
-            label="Virtual machines delivered"
-            value={deliveredLabel}
-            detail="Completed or partially completed requests"
-            icon={Rocket}
-            accent="brand"
-          />
-          <MetricCard
-            label="Successful outcomes"
+            label="Success rate"
             value={stats.success_rate_percent != null ? `${stats.success_rate_percent}%` : 'No data'}
-            detail="Share of finished deployments without failure"
+            detail="Completed deployments"
             icon={TrendingUp}
-            accent="lime"
+            tone={stats.success_rate_percent == null
+              ? 'neutral'
+              : stats.success_rate_percent >= 95
+                ? 'success'
+                : stats.success_rate_percent >= 80
+                  ? 'warning'
+                  : 'danger'}
           />
           <MetricCard
-            label="Average delivery time"
+            label="Average duration"
             value={stats.average_duration_seconds != null ? formatDuration(stats.average_duration_seconds) : 'No data'}
-            detail="Average end-to-end time for completed work"
+            detail="Completed deployments"
             icon={Timer}
-            accent="amber"
           />
           <MetricCard
             label="Failed deployments"
             value={failedLabel}
-            detail={stats.failed_jobs === 0 ? 'No failed deployments this month' : 'Deployments requiring operator review'}
+            detail="This month"
             icon={XCircle}
-            accent={stats.failed_jobs === 0 ? 'brand' : 'red'}
+            tone={stats.failed_jobs === 0 ? 'neutral' : 'danger'}
           />
         </dl>
       </section>
@@ -482,10 +458,10 @@ export function DashboardPage() {
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e2e6e1] px-5 py-4">
             <div>
               <h2 id="recent-deployments-title" className="text-base font-semibold tracking-[-0.02em] text-[#202923]">Recent deployments</h2>
-              <p className="mt-1 text-xs leading-5 text-[#758079]">The latest virtual machine work across your operator team.</p>
+              <p className="mt-1 text-xs leading-5 text-[#758079]">Latest VM deployment jobs.</p>
             </div>
             <Link to="/jobs" className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-brand-700 hover:bg-brand-50">
-              Open deployment queue <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+              View queue <ArrowRight className="h-3.5 w-3.5" aria-hidden />
             </Link>
           </div>
           <RecentDeployments jobs={recentJobs} canProvision={canProvision} />
@@ -499,10 +475,10 @@ export function DashboardPage() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 id="service-status-title" className="text-base font-semibold tracking-[-0.02em] text-[#202923]">System status</h2>
-                <p className="mt-1 text-xs leading-5 text-[#758079]">Services required for safe deployments.</p>
+                <p className="mt-1 text-xs leading-5 text-[#758079]">Current dependency checks.</p>
               </div>
-              <Badge tone={allOperational ? 'success' : attentionServices > 0 ? 'warning' : 'neutral'}>
-                {allOperational ? 'Ready' : attentionServices > 0 ? `${attentionServices} to review` : 'No checks'}
+              <Badge tone={allOperational ? 'success' : unavailableServices > 0 ? 'danger' : attentionServices > 0 ? 'warning' : 'neutral'}>
+                {allOperational ? 'Operational' : attentionServices > 0 ? `${attentionServices} need attention` : 'No checks'}
               </Badge>
             </div>
           </div>
@@ -511,7 +487,7 @@ export function DashboardPage() {
             <div className="p-5">
               <EmptyState
                 title="No service checks were reported"
-                description="Refresh the page or ask an administrator to inspect control-plane readiness."
+                description="Refresh the dashboard to request current status."
               />
             </div>
           ) : (
@@ -524,7 +500,7 @@ export function DashboardPage() {
 
           <div className="flex items-center gap-2 border-t border-[#e2e6e1] bg-[#f8f9f6] px-5 py-3 text-[11px] leading-5 text-[#68736d]">
             <Clock3 className="h-3.5 w-3.5 shrink-0 text-brand-700" aria-hidden />
-            Readiness checks refresh with the operations overview.
+            Service checks refresh every 30 seconds.
           </div>
         </section>
       </div>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
 from dataclasses import dataclass, field
 
@@ -74,7 +75,11 @@ class JobRunContext:
 async def load_request_payload(job: ProvisioningJob) -> ProvisioningRequest:
     if job.request is None:
         raise RuntimeError(f"Job {job.id} has no stored provisioning request.")
-    return ProvisioningRequest.model_validate(job.request.payload)
+    payload = copy.deepcopy(job.request.payload)
+    # Jobs written before identity policy versioning used guest.hostname as
+    # their Windows/AD identity. Never reinterpret those rows with v2 rules.
+    payload.setdefault("identity_policy_version", "v1")
+    return ProvisioningRequest.model_validate(payload)
 
 
 async def build_vcenter_target(db: AsyncSession, vcenter_id: uuid.UUID) -> VCenterTarget:

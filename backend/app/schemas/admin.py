@@ -7,10 +7,13 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.secret_references import SECRET_REFERENCE_PATTERN
+
 HOSTNAME_PATTERN = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-\.]{0,251}[a-zA-Z0-9])?)$"
 )
-SECRET_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.\-]{1,148}$")
+# Backward-compatible name retained for schema consumers.
+SECRET_NAME_PATTERN = SECRET_REFERENCE_PATTERN
 
 
 class VCenterConnectionCreate(BaseModel):

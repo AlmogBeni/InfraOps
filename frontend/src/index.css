@@ -74,31 +74,8 @@
 
   .animate-panel-reveal { animation: ui-fade-in-up 220ms cubic-bezier(0.22, 1, 0.36, 1); }
   .animate-row-enter { animation: ui-row-rise 180ms cubic-bezier(0.22, 1, 0.36, 1); }
-  .dashboard-command-surface { isolation: isolate; }
-  .dashboard-command-surface::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    background: linear-gradient(115deg, transparent 25%, rgba(216, 240, 106, 0.055) 48%, transparent 70%);
-    background-size: 220% 100%;
-    animation: ui-command-sheen 9s ease-in-out infinite;
-  }
   .dashboard-ambient-orb { animation: ui-orb-drift 8s ease-in-out infinite alternate; }
   .dashboard-live-dot { animation: ui-live-pulse 2.2s ease-out infinite; }
-  .dashboard-progress-fill {
-    background: linear-gradient(90deg, #d85f38 0%, #f18a58 46%, #d8f06a 58%, #e56b3f 100%);
-    background-size: 220% 100%;
-    animation: ui-progress-flow 2.8s linear infinite;
-  }
-  .dashboard-metrics > * { animation: ui-fade-in-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-  .dashboard-metrics > *:nth-child(2) { animation-delay: 70ms; }
-  .dashboard-metrics > *:nth-child(3) { animation-delay: 140ms; }
-  .dashboard-metrics > *:nth-child(4) { animation-delay: 210ms; }
-  .dashboard-metric-card { @apply transition-[transform,border-color,box-shadow] duration-300; }
-  .dashboard-metric-card:hover {
-    @apply -translate-y-1 border-[#bdcbbf] shadow-[0_2px_4px_rgba(23,32,28,0.04),0_20px_44px_rgba(23,79,64,0.11)];
-  }
   .loading-sheen {
     background: linear-gradient(100deg, #f1f3ef 0%, #fafbf8 45%, #f1f3ef 60%, #fafbf8 100%);
     background-size: 200% 100%;
@@ -123,10 +100,6 @@
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }
 }
-@keyframes ui-command-sheen {
-  0%, 30% { background-position: 110% 0; }
-  70%, 100% { background-position: -110% 0; }
-}
 @keyframes ui-orb-drift {
   from { transform: translate3d(0, 0, 0) scale(1); }
   to { transform: translate3d(-24px, 18px, 0) scale(1.12); }
@@ -134,10 +107,6 @@
 @keyframes ui-live-pulse {
   0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); }
   70%, 100% { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); }
-}
-@keyframes ui-progress-flow {
-  from { background-position: 100% 0; }
-  to { background-position: -120% 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

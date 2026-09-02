@@ -55,6 +55,30 @@ class StageOutcome:
     artifacts: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class WindowsIdentityState:
+    name: str
+    domain: str
+    part_of_domain: bool
+    active_name: str
+    pending_name: str
+    pending_domain_join: bool
+
+    @property
+    def has_pending_rename(self) -> bool:
+        return bool(
+            self.active_name
+            and self.pending_name
+            and self.active_name.casefold() != self.pending_name.casefold()
+        )
+
+    @property
+    def fqdn(self) -> str | None:
+        if not self.part_of_domain or not self.name or not self.domain:
+            return None
+        return f"{self.name}.{self.domain}".lower()
+
+
 StageHandler = Callable[[JobRunContext], Awaitable[StageOutcome]]
 
 
@@ -91,12 +115,140 @@ def build_rename_script(new_name: str) -> str:
     return f"Rename-Computer -NewName {ps_single_quote(new_name)} -Force -ErrorAction Stop | Out-Null; 'RENAMED'"
 
 
-def build_domain_join_script(domain: str, username: str, password: str, ou: str | None) -> str:
+def build_windows_identity_probe_script() -> str:
+    return (
+        "$cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop; "
+        "$active = (Get-ItemProperty -LiteralPath "
+        "'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\"
+        "ActiveComputerName' -ErrorAction SilentlyContinue).ComputerName; "
+        "$pending = (Get-ItemProperty -LiteralPath "
+        "'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\"
+        "ComputerName' -ErrorAction SilentlyContinue).ComputerName; "
+        "$netlogon = 'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Netlogon'; "
+        "$pendingJoin = ((Test-Path -LiteralPath ($netlogon + '\\JoinDomain')) -or "
+        "(Test-Path -LiteralPath ($netlogon + '\\AvoidSpnSet'))); "
+        "[pscustomobject]@{Name=[string]$cs.Name;Domain=[string]$cs.Domain;"
+        "PartOfDomain=[bool]$cs.PartOfDomain;ActiveName=[string]$active;"
+        "PendingName=[string]$pending;PendingDomainJoin=[bool]$pendingJoin} | "
+        "ConvertTo-Json -Compress"
+    )
+
+
+def parse_windows_identity_state(stdout: str) -> WindowsIdentityState:
+    payload = None
+    for line in reversed([entry.strip() for entry in stdout.splitlines() if entry.strip()]):
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict) and "PartOfDomain" in candidate:
+            payload = candidate
+            break
+    if payload is None:
+        raise ValueError("The Windows identity probe did not return a JSON object.")
+
+    raw_membership = payload.get("PartOfDomain")
+    if isinstance(raw_membership, bool):
+        part_of_domain = raw_membership
+    elif isinstance(raw_membership, str) and raw_membership.casefold() in {"true", "false"}:
+        part_of_domain = raw_membership.casefold() == "true"
+    else:
+        raise ValueError("The Windows identity probe returned an invalid PartOfDomain value.")
+
+    name = str(payload.get("Name") or "").strip()
+    domain = str(payload.get("Domain") or "").strip().rstrip(".")
+    if not name or not domain:
+        raise ValueError("The Windows identity probe omitted Name or Domain.")
+    active_name = str(payload.get("ActiveName") or name).strip()
+    pending_name = str(payload.get("PendingName") or active_name).strip()
+    raw_pending_join = payload.get("PendingDomainJoin", False)
+    if isinstance(raw_pending_join, bool):
+        pending_domain_join = raw_pending_join
+    elif isinstance(raw_pending_join, str) and raw_pending_join.casefold() in {"true", "false"}:
+        pending_domain_join = raw_pending_join.casefold() == "true"
+    else:
+        raise ValueError("The Windows identity probe returned an invalid PendingDomainJoin value.")
+    return WindowsIdentityState(
+        name=name,
+        domain=domain,
+        part_of_domain=part_of_domain,
+        active_name=active_name,
+        pending_name=pending_name,
+        pending_domain_join=pending_domain_join,
+    )
+
+
+def windows_identity_matches(
+    state: WindowsIdentityState,
+    *,
+    computer_name: str,
+    domain: str,
+) -> bool:
+    return (
+        state.part_of_domain
+        and state.name.casefold() == computer_name.casefold()
+        and state.domain.casefold() == domain.rstrip(".").casefold()
+        and not state.has_pending_rename
+        and not state.pending_domain_join
+    )
+
+
+def windows_identity_detail(state: WindowsIdentityState) -> str:
+    membership = "domain member" if state.part_of_domain else "not domain joined"
+    return (
+        f"Name={state.name}, Domain={state.domain}, PartOfDomain={state.part_of_domain}, "
+        f"ActiveName={state.active_name}, PendingName={state.pending_name}, "
+        f"PendingDomainJoin={state.pending_domain_join} ({membership})"
+    )
+
+
+async def probe_windows_identity(
+    ctx: JobRunContext,
+    credentials,
+    *,
+    operation: str,
+) -> WindowsIdentityState:
+    result = await ctx.guest_ops.run_program(
+        ctx.target,
+        ctx.vm_name,
+        credentials,
+        POWERSHELL_PATH,
+        f"-NoProfile -NonInteractive -Command {build_windows_identity_probe_script()}",
+        60,
+    )
+    if not result.succeeded:
+        raise InfraOperationError(
+            "The Windows computer identity could not be read safely.",
+            reason=f"The identity probe failed before {operation}.",
+            recommended_action="Verify VMware Tools and local administrator access, then retry.",
+            technical_detail=(result.stdout + "\n" + result.stderr)[-1500:],
+            retryable=True,
+        )
+    try:
+        return parse_windows_identity_state(result.stdout)
+    except ValueError as exc:
+        raise InfraOperationError(
+            "The Windows computer identity could not be interpreted safely.",
+            reason=str(exc),
+            recommended_action="Retry after confirming the guest reports its Windows name and domain state.",
+            technical_detail=result.stdout[-1500:],
+            retryable=True,
+        ) from exc
+
+
+def build_domain_join_script(
+    domain: str,
+    username: str,
+    password: str,
+    ou: str | None,
+    new_name: str,
+) -> str:
     ou_clause = f" -OUPath {ps_single_quote(ou)}" if ou else ""
     return (
         f"$secpw = ConvertTo-SecureString {ps_single_quote(password)} -AsPlainText -Force; "
         f"$cred = New-Object System.Management.Automation.PSCredential({ps_single_quote(username)}, $secpw); "
-        f"Add-Computer -DomainName {ps_single_quote(domain)}{ou_clause} -Credential $cred "
+        f"Add-Computer -DomainName {ps_single_quote(domain)} "
+        f"-NewName {ps_single_quote(new_name)}{ou_clause} -Credential $cred "
         "-Force -ErrorAction Stop | Out-Null; 'DOMAIN-JOINED'"
     )
 
@@ -458,6 +610,8 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
         datacenter_name=ctx.job.datacenter_name,
         result="success",
         details={
+            "computer_name": r.effective_computer_name or None,
+            "requested_fqdn": r.effective_fqdn,
             "source_type": r.source_type.value,
             "template_id": r.guest.template_id,
             "iso_id": r.guest.iso_id,
@@ -642,8 +796,26 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
     skipped = _blank_guest_skip(ctx, "Hostname configuration")
     if skipped:
         return skipped
+    # Rename-Computer accepts only the short Windows computer name. The DNS
+    # suffix is established by Add-Computer during the following domain join.
+    desired = ctx.request.effective_computer_name.upper()
+    identity_artifacts = {"hostname": desired, "computer_name": desired}
+    if ctx.request.effective_fqdn:
+        identity_artifacts["requested_fqdn"] = ctx.request.effective_fqdn
+    if (
+        ctx.request.source_type != VmSourceType.BLANK
+        and ctx.request.guest.domain_join is not None
+    ):
+        return StageOutcome(
+            status="SKIPPED",
+            output=(
+                f"Windows computer name '{desired}' will be applied atomically "
+                "with the Active Directory join."
+            ),
+            artifacts=identity_artifacts,
+        )
+
     credentials = await ctx.resolve_guest_credentials()
-    desired = (ctx.request.guest.hostname or ctx.vm_name).upper()
 
     probe = await ctx.guest_ops.run_program(
         ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
@@ -651,7 +823,11 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
     )
     current = (probe.stdout or "").strip().upper().splitlines()[-1] if probe.stdout else ""
     if probe.succeeded and current == desired:
-        return StageOutcome(status="SKIPPED", output=f"Hostname already set to '{desired}'.")
+        return StageOutcome(
+            status="SKIPPED",
+            output=f"Windows computer name already set to '{desired}'.",
+            artifacts=identity_artifacts,
+        )
 
     result = await ctx.guest_ops.run_program(
         ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
@@ -659,7 +835,7 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
     )
     if not result.succeeded:
         raise InfraOperationError(
-            f"The guest hostname could not be changed to '{desired}'.",
+            f"The Windows computer name could not be changed to '{desired}'.",
             reason=f"Rename-Computer exited with code {result.exit_code}.",
             recommended_action="Retry the hostname stage; verify local administrator permissions.",
             technical_detail=result.stdout[-1000:],
@@ -667,8 +843,8 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
         )
     ctx.hostname_changed = True
     return StageOutcome(
-        output=f"Hostname changed '{current or '?'}' → '{desired}' (applies at reboot).",
-        artifacts={"hostname": desired},
+        output=f"Windows computer name changed '{current or '?'}' → '{desired}' (applies at reboot).",
+        artifacts=identity_artifacts,
     )
 
 
@@ -679,12 +855,71 @@ async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
     join = ctx.request.guest.domain_join
     if join is None:
         return StageOutcome(status="SKIPPED", output="Domain join not requested.")
+    credentials = await ctx.resolve_guest_credentials()
+    desired_name = ctx.request.effective_computer_name.upper()
+    observed = await probe_windows_identity(
+        ctx,
+        credentials,
+        operation="attempting an Active Directory join",
+    )
+    inconsistent_active_name = bool(
+        observed.active_name
+        and observed.name.casefold() != observed.active_name.casefold()
+    )
+    if observed.has_pending_rename or observed.pending_domain_join or inconsistent_active_name:
+        raise InfraOperationError(
+            "A pending Windows identity change must be resolved before domain join.",
+            reason=windows_identity_detail(observed),
+            recommended_action=(
+                "Restart the guest, confirm its active computer name and domain, then retry the "
+                "domain-join stage. "
+                "InfraOps did not make another Active Directory change."
+            ),
+            retryable=True,
+        )
+    if windows_identity_matches(
+        observed,
+        computer_name=desired_name,
+        domain=join.domain,
+    ):
+        ctx.reboot_required = False
+        return StageOutcome(
+            status="SKIPPED",
+            output=(
+                f"Windows already reports the verified domain identity '{observed.fqdn}'; "
+                "no Active Directory change was made."
+            ),
+            artifacts={
+                "computer_name": observed.name.upper(),
+                "domain": observed.domain.lower(),
+                "fqdn": observed.fqdn,
+                "identity_verified": True,
+                "joined": True,
+                "reboot_required": False,
+            },
+        )
+    if observed.part_of_domain:
+        raise InfraOperationError(
+            "The guest is already joined with a different Windows domain identity.",
+            reason=windows_identity_detail(observed),
+            recommended_action=(
+                "Resolve the existing domain membership manually before retrying. "
+                "InfraOps will not move or rename an unexpected domain member automatically."
+            ),
+            retryable=False,
+        )
+
     base = join.credential_secret_ref
     username = await ctx.secrets.get_secret(f"{base}/username")
     password = await ctx.secrets.get_secret(f"{base}/password")
-    credentials = await ctx.resolve_guest_credentials()
 
-    script = build_domain_join_script(join.domain, username, password, join.ou)
+    script = build_domain_join_script(
+        join.domain,
+        username,
+        password,
+        join.ou,
+        desired_name,
+    )
     timeout = await effective_timeout_seconds(ctx, "join_domain")
     result = await ctx.guest_ops.run_program(
         ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
@@ -698,13 +933,27 @@ async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
                 "Verify the domain-join account, OU path and network path to a domain "
                 "controller, then retry the domain join stage."
             ),
-            technical_detail=(result.stdout[-1500:] or "").replace(password, "[REDACTED]"),
+            technical_detail=(result.stdout + "\n" + result.stderr)[-1500:].replace(
+                password, "[REDACTED]"
+            ),
             retryable=True,
         )
     ctx.reboot_required = True
     return StageOutcome(
-        output=f"Joined domain '{join.domain}'" + (f" (OU: {join.ou})" if join.ou else "") + ".",
-        artifacts={"domain": join.domain, "joined": True},
+        output=(
+            f"Active Directory accepted Windows computer name '{desired_name}' "
+            f"for domain '{join.domain}'"
+            + (f" (OU: {join.ou})" if join.ou else "")
+            + "; reboot is required before the resulting DNS identity can be verified."
+        ),
+        artifacts={
+            "computer_name": desired_name,
+            "domain": join.domain,
+            "identity_verified": False,
+            "joined": True,
+            "reboot_required": True,
+            "requested_fqdn": ctx.request.effective_fqdn,
+        },
     )
 
 
@@ -714,8 +963,11 @@ async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
         return skipped
     steps = ctx.steps_by_key
     join_step = steps.get("join_domain")
-    joined = bool((join_step.artifacts or {}).get("joined")) if join_step else False
-    if not (ctx.hostname_changed or joined):
+    join_artifacts = (join_step.artifacts or {}) if join_step else {}
+    joined_requires_reboot = bool(
+        join_artifacts.get("joined") and join_artifacts.get("reboot_required", True)
+    )
+    if not (ctx.hostname_changed or joined_requires_reboot):
         return StageOutcome(status="SKIPPED", output="No pending changes require a reboot.")
 
     credentials = await ctx.resolve_guest_credentials()
@@ -960,6 +1212,15 @@ async def stage_validate_applications(ctx: JobRunContext) -> StageOutcome:
 
 async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     checklist: list[dict] = []
+    observed_computer_name = (
+        ctx.request.effective_computer_name
+        if (
+            ctx.request.source_type != VmSourceType.BLANK
+            and ctx.request.guest.domain_join is None
+        )
+        else None
+    )
+    observed_fqdn = None
 
     def add(group: str, label: str, ok: bool, detail: str = "") -> None:
         checklist.append({"group": group, "label": label, "status": "PASS" if ok else "FAIL",
@@ -1001,6 +1262,38 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
         add("Network", "DHCP address acquired", bool(info and info.ip_addresses),
             ", ".join(info.ip_addresses) if info else "")
 
+    if (
+        ctx.request.source_type != VmSourceType.BLANK
+        and ctx.request.guest.domain_join is not None
+    ):
+        credentials = await ctx.resolve_guest_credentials()
+        identity = await probe_windows_identity(
+            ctx,
+            credentials,
+            operation="performing post-reboot validation",
+        )
+        identity_matches = windows_identity_matches(
+            identity,
+            computer_name=ctx.request.effective_computer_name,
+            domain=ctx.request.guest.domain_join.domain,
+        )
+        if identity_matches:
+            observed_computer_name = identity.name.upper()
+            observed_fqdn = identity.fqdn
+            add(
+                "Identity",
+                f"Observed domain identity {observed_fqdn}",
+                True,
+                windows_identity_detail(identity),
+            )
+        else:
+            add(
+                "Identity",
+                "Observed Windows identity matches the requested computer and domain",
+                False,
+                windows_identity_detail(identity),
+            )
+
     cert_step = ctx.steps_by_key.get("validate_certificates")
     verified = ((cert_step.artifacts or {}).get("verified") if cert_step else None) or []
     for name in verified:
@@ -1031,6 +1324,8 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
             "checklist": checklist,
             "summary": {
                 "vm_name": ctx.vm_name,
+                "computer_name": observed_computer_name,
+                "fqdn": observed_fqdn,
                 "ip_address": (info.ip_addresses[0] if info and info.ip_addresses else None),
                 "finished_at": dt.datetime.now(dt.UTC).isoformat(),
             },

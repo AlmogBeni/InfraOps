@@ -3,11 +3,18 @@
 
 import { z } from 'zod'
 
+import { deriveGuestIdentity, normalizeDomain } from '@/features/vm-provisioning/identity'
 import { maskToPrefix } from '@/lib/utils'
 import type { ProvisioningRequest } from '@/types/api'
 
 export const VM_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9\-.]{0,61}[A-Za-z0-9])?$/
+const WINDOWS_COMPUTER_NAME_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/
+const DNS_DOMAIN_REGEX = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i
 const IPV4_REGEX = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+
+function isWindowsComputerName(value: string): boolean {
+  return WINDOWS_COMPUTER_NAME_REGEX.test(value) && !/^\d+$/.test(value)
+}
 
 export interface DiskDraft {
   size_gb: number
@@ -20,6 +27,36 @@ export interface DomainJoinDraft {
   domain: string
   ou: string
   credential_secret_ref: string
+}
+
+function validateDomainIdentity(
+  vmName: string,
+  join: DomainJoinDraft,
+  context: z.RefinementCtx,
+) {
+  if (!join.enabled) return
+  const domain = normalizeDomain(join.domain)
+  if (!DNS_DOMAIN_REGEX.test(domain)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['domain_join', 'domain'],
+      message: 'Enter a valid DNS domain, for example corp.example.com.',
+    })
+  }
+  if (domain.split('.').some((label) => label.length > 63)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['domain_join', 'domain'],
+      message: 'Each DNS domain label must not exceed 63 characters.',
+    })
+  }
+  if (`${vmName}.${domain}`.length > 253) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['domain_join', 'domain'],
+      message: 'The resulting fully qualified DNS name must not exceed 253 characters.',
+    })
+  }
 }
 
 export type VmSourceType = 'blank' | 'template'
@@ -220,13 +257,15 @@ export const stepSchemas = {
       })
     }
     if (value.source_type === 'template') {
-      const hostname = value.hostname || value.vm_name
-      if (!VM_NAME_REGEX.test(hostname)) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ['hostname'], message: 'Enter a valid guest hostname.' })
+      const hostname = value.domain_join.enabled ? value.vm_name : (value.hostname || value.vm_name)
+      if (!isWindowsComputerName(hostname)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [value.domain_join.enabled ? 'vm_name' : 'hostname'],
+          message: 'Enter a valid short Windows computer name (letters, numbers and hyphens only).',
+        })
       }
-      if (value.domain_join.enabled && value.domain_join.domain.length < 3) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ['domain_join', 'domain'], message: 'Domain is required when joining.' })
-      }
+      validateDomainIdentity(value.vm_name, value.domain_join, context)
       if (value.domain_join.enabled && value.domain_join.credential_secret_ref.length < 2) {
         context.addIssue({ code: z.ZodIssueCode.custom, path: ['domain_join', 'credential_secret_ref'], message: 'Select the domain-join credential reference.' })
       }
@@ -251,7 +290,8 @@ export const stepSchemas = {
     dns_primary: ipv4('Enter a valid IPv4 DNS server.'),
   }),
   os: z.object({
-    hostname: z.string().regex(VM_NAME_REGEX, 'Invalid hostname.'),
+    vm_name: z.string(),
+    hostname: z.string(),
     domain_join: z
       .object({
         enabled: z.boolean(),
@@ -267,6 +307,16 @@ export const stepSchemas = {
         message: 'Select the domain-join credential reference.',
         path: ['credential_secret_ref'],
       }),
+  }).superRefine((value, context) => {
+    const computerName = value.domain_join.enabled ? value.vm_name : value.hostname
+    if (!isWindowsComputerName(computerName)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [value.domain_join.enabled ? 'vm_name' : 'hostname'],
+        message: 'Enter a valid short Windows computer name (letters, numbers and hyphens only).',
+      })
+    }
+    validateDomainIdentity(value.vm_name, value.domain_join, context)
   }),
 } satisfies Record<string, z.ZodTypeAny>
 
@@ -320,7 +370,14 @@ export function validateStep(step: StepKey, data: WizardData): Record<string, st
       dns_primary: fromTemplate && data.ip_mode === 'STATIC' ? data.dns_primary : '0.0.0.0',
     },
     os: {
-      hostname: fromTemplate ? (data.hostname || data.vm_name) : (data.vm_name || 'blank-vm'),
+      vm_name: data.vm_name,
+      hostname: fromTemplate
+        ? deriveGuestIdentity(
+            data.vm_name,
+            data.hostname,
+            data.domain_join.enabled ? data.domain_join.domain : null,
+          ).computerName
+        : (data.vm_name || 'blank-vm'),
       domain_join: fromTemplate ? data.domain_join : { ...data.domain_join, enabled: false },
     },
   }[step]
@@ -348,8 +405,14 @@ function collectDns(data: WizardData): string[] {
 export function buildRequest(data: WizardData): ProvisioningRequest {
   if (!data.source_type) throw new Error('A VM source must be selected before building the request.')
   const fromTemplate = data.source_type === 'template'
+  const identity = deriveGuestIdentity(
+    data.vm_name,
+    data.hostname,
+    fromTemplate && data.domain_join.enabled ? data.domain_join.domain : null,
+  )
   return {
     source_type: data.source_type,
+    identity_policy_version: 'v2',
     vm: { name: data.vm_name, description: data.description },
     compute: {
       vcenter_id: data.vcenter_id,
@@ -372,12 +435,12 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
     guest: {
       template_id: fromTemplate ? data.template_id : null,
       iso_id: fromTemplate ? null : data.iso_id,
-      hostname: fromTemplate ? (data.hostname || data.vm_name) : null,
+      hostname: fromTemplate ? identity.computerName : null,
       timezone: fromTemplate ? (data.timezone || null) : null,
       domain_join:
         fromTemplate && data.domain_join.enabled
           ? {
-              domain: data.domain_join.domain,
+              domain: normalizeDomain(data.domain_join.domain),
               ou: data.domain_join.ou || null,
               credential_secret_ref: data.domain_join.credential_secret_ref,
             }

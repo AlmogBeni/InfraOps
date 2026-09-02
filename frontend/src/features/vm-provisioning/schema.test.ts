@@ -71,6 +71,46 @@ describe('validateStep', () => {
     expect(validateStep('network', data)).toEqual({})
   })
 
+  it('requires the VM name to be a valid short Windows name for domain join', () => {
+    const data = validData()
+    data.vm_name = 'server.prod'
+    data.domain_join = {
+      enabled: true,
+      domain: 'corp.example.com',
+      ou: '',
+      credential_secret_ref: 'domain-join',
+    }
+
+    expect(validateStep('configuration', data).vm_name).toContain('Windows computer name')
+    expect(validateStep('os', data).vm_name).toContain('Windows computer name')
+  })
+
+  it('accepts a 63-character DNS domain label', () => {
+    const data = validData()
+    data.domain_join = {
+      enabled: true,
+      domain: `${'a'.repeat(63)}.example.com`,
+      ou: '',
+      credential_secret_ref: 'domain-join',
+    }
+
+    expect(validateStep('configuration', data)['domain_join.domain']).toBeUndefined()
+    expect(validateStep('os', data)['domain_join.domain']).toBeUndefined()
+  })
+
+  it('rejects a DNS domain label longer than 63 characters', () => {
+    const data = validData()
+    data.domain_join = {
+      enabled: true,
+      domain: `${'a'.repeat(64)}.example.com`,
+      ou: '',
+      credential_secret_ref: 'domain-join',
+    }
+
+    expect(validateStep('configuration', data)['domain_join.domain']).toContain('63 characters')
+    expect(validateStep('os', data)['domain_join.domain']).toContain('63 characters')
+  })
+
   it('requires a template only for template mode', () => {
     const template = validData()
     template.template_id = ''
@@ -115,6 +155,7 @@ describe('buildRequest', () => {
     data.dns_extra = '10.20.1.12, 10.20.1.13'
 
     const payload = buildRequest(data)
+    expect(payload.identity_policy_version).toBe('v2')
     expect(payload.hardware.memory_mb).toBe(16384)
     expect(payload.network.ipv4?.dns_servers).toEqual([
       '10.20.1.10',
@@ -142,8 +183,12 @@ describe('buildRequest', () => {
     expect(payload.guest.domain_join).toBeNull()
 
     const data = validData()
-    data.domain_join = { enabled: true, domain: 'ad.company.local', ou: '', credential_secret_ref: 'domain-join' }
-    expect(buildRequest(data).guest.domain_join?.domain).toBe('ad.company.local')
+    data.vm_name = 'srvildc55'
+    data.hostname = 'IGNORED-CUSTOM-NAME'
+    data.domain_join = { enabled: true, domain: ' Corp.DeltaGalil.com. ', ou: '', credential_secret_ref: 'domain-join' }
+    const joined = buildRequest(data)
+    expect(joined.guest.hostname).toBe('SRVILDC55')
+    expect(joined.guest.domain_join?.domain).toBe('corp.deltagalil.com')
   })
 
   it('maps manual host placement', () => {

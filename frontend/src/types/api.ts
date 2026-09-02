@@ -161,6 +161,7 @@ export interface DomainJoinSpec {
 
 export interface ProvisioningRequest {
   source_type: 'blank' | 'template'
+  identity_policy_version: 'v1' | 'v2'
   vm: { name: string; description: string }
   compute: {
     vcenter_id: string

@@ -215,7 +215,16 @@ class ProvisioningPipeline:
             datacenter_id=ctx.request.compute.datacenter_id,
             datacenter_name=ctx.job.datacenter_name,
             result="success",
-            details={"duration_seconds": ctx.job.duration_seconds},
+            details={
+                "computer_name": summary_artifact.get("computer_name"),
+                "duration_seconds": ctx.job.duration_seconds,
+                "fqdn": summary_artifact.get("fqdn"),
+            },
+            detail_text=(
+                f"Provisioned '{summary_artifact['fqdn']}' successfully."
+                if summary_artifact.get("fqdn")
+                else f"Provisioned '{ctx.vm_name}' successfully."
+            ),
         )
         await ctx.db.commit()
         await self._publisher.publish_stage(

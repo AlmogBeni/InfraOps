@@ -11,7 +11,7 @@ from app.core.logging import get_logger
 from app.models.jobs import TERMINAL_JOB_STATUSES, JobStatus, ProvisioningJob, StepStatus
 from app.models.user import User
 from app.repositories.jobs import JobRepository
-from app.schemas.provisioning import ProvisioningRequest
+from app.schemas.provisioning import IdentityPolicyVersion, ProvisioningRequest
 from app.workers.events import JobEventPublisher
 from app.workers.state_machine import STAGES_BY_KEY
 
@@ -34,6 +34,13 @@ async def submit_provisioning(
     Duplicate protection: identical idempotency keys return the original job;
     concurrent active jobs for the same VM name are rejected.
     """
+    if request.identity_policy_version != IdentityPolicyVersion.V2:
+        raise DomainValidationError(
+            "Identity policy v1 is reserved for stored legacy jobs; "
+            "new provisioning submissions must use v2.",
+            details={"identity_policy_version": request.identity_policy_version.value},
+        )
+
     repo = JobRepository(db)
 
     if idempotency_key:
@@ -69,7 +76,14 @@ async def submit_provisioning(
             "cluster_id": request.compute.cluster_id,
             "template_id": request.guest.template_id,
             "network_mode": request.network.mode.value,
+            "computer_name": request.effective_computer_name or None,
+            "requested_fqdn": request.effective_fqdn,
         },
+        detail_text=(
+            f"Provisioning request queued for '{request.effective_fqdn}'."
+            if request.effective_fqdn
+            else f"Provisioning request queued for '{request.vm.name}'."
+        ),
     )
     await db.flush()
     await _api_publisher.publish_stage(

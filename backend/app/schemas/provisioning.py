@@ -12,8 +12,11 @@ from __future__ import annotations
 import enum
 import ipaddress
 import re
+from typing import Literal
 
-from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
+from pydantic import UUID4, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.schemas.secret_references import SECRET_REFERENCE_PATTERN
 
 # ── Shared enumerations ──────────────────────────────────────────────────────
 
@@ -43,7 +46,17 @@ class VmSourceType(enum.StrEnum):
     TEMPLATE = "template"
 
 
+class IdentityPolicyVersion(enum.StrEnum):
+    """Controls how a request derives the Windows/AD computer identity."""
+
+    V1 = "v1"
+    V2 = "v2"
+
+
 VM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9\-.]{0,61}[A-Za-z0-9])?$")
+WINDOWS_COMPUTER_NAME_PATTERN = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
 DNS_DOMAIN_PATTERN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$", re.IGNORECASE)
 GUID_PATTERN = re.compile(
     r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$"
@@ -117,7 +130,16 @@ class DomainJoinSpec(BaseModel):
 
     domain: str = Field(min_length=3, max_length=255, pattern=DNS_DOMAIN_PATTERN.pattern)
     ou: str | None = Field(default=None, max_length=400)
+    # v1 stored jobs can contain pre-version reference names. The enclosing
+    # request applies the strict provider-path grammar conditionally for v2.
     credential_secret_ref: str = Field(min_length=2, max_length=150)
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _normalize_domain(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().rstrip(".").lower()
+        return value
 
 
 class GuestSpec(BaseModel):
@@ -201,6 +223,10 @@ class ProvisioningRequest(BaseModel):
     # Defaults to template for compatibility with requests created before
     # source selection became an explicit part of the contract.
     source_type: VmSourceType = VmSourceType.TEMPLATE
+    # New submissions use the VM name as the single Windows/AD identity.
+    # Stored payload readers explicitly mark pre-policy jobs as v1 so their
+    # historical guest.hostname value remains authoritative.
+    identity_policy_version: IdentityPolicyVersion = IdentityPolicyVersion.V2
     vm: VmSpec
     compute: ComputeSpec
     hardware: HardwareSpec
@@ -226,13 +252,94 @@ class ProvisioningRequest(BaseModel):
                 raise ValueError(
                     "Certificates and applications cannot be installed on a blank VM without an operating system."
                 )
-        elif not self.guest.hostname:
-            self.guest.hostname = self.vm.name
+        else:
+            short_name = (
+                (
+                    self.guest.hostname or self.vm.name
+                    if self.identity_policy_version == IdentityPolicyVersion.V1
+                    else self.vm.name
+                )
+                if self.guest.domain_join is not None
+                else (self.guest.hostname or self.vm.name)
+            )
+            if self.identity_policy_version == IdentityPolicyVersion.V2 and (
+                not WINDOWS_COMPUTER_NAME_PATTERN.fullmatch(short_name)
+                or short_name.isdigit()
+            ):
+                field = (
+                    "guest.hostname"
+                    if (
+                        self.guest.domain_join is None
+                        or self.identity_policy_version == IdentityPolicyVersion.V1
+                    )
+                    else "vm.name"
+                )
+                raise ValueError(
+                    f"{field} must be a valid Windows computer name "
+                    "(letters, numbers and hyphens only; not all-numeric; maximum 63 characters)."
+                )
+            if self.guest.domain_join is not None:
+                if (
+                    self.identity_policy_version == IdentityPolicyVersion.V2
+                    and not SECRET_REFERENCE_PATTERN.fullmatch(
+                        self.guest.domain_join.credential_secret_ref
+                    )
+                ):
+                    raise ValueError(
+                        "guest.domain_join.credential_secret_ref must be a safe lowercase, "
+                        "slash-separated secret reference."
+                    )
+                if (
+                    self.identity_policy_version == IdentityPolicyVersion.V2
+                    and any(
+                        len(label) > 63
+                        for label in self.guest.domain_join.domain.split(".")
+                    )
+                ):
+                    raise ValueError(
+                        "Each DNS domain label must not exceed 63 characters."
+                    )
+                if (
+                    self.identity_policy_version == IdentityPolicyVersion.V2
+                    and len(f"{short_name}.{self.guest.domain_join.domain}") > 253
+                ):
+                    raise ValueError("The resulting domain-joined FQDN must not exceed 253 characters.")
+            # v1 payloads retain their historical hostname verbatim. v2 and
+            # non-domain requests persist the normalized name supplied to Windows.
+            if (
+                self.guest.domain_join is None
+                or self.identity_policy_version == IdentityPolicyVersion.V2
+            ):
+                self.guest.hostname = short_name.upper()
         return self
+
+    @property
+    def effective_computer_name(self) -> str:
+        """Short Windows name passed to Rename-Computer, never an FQDN."""
+        if self.source_type == VmSourceType.BLANK:
+            return ""
+        if self.guest.domain_join is not None:
+            if self.identity_policy_version == IdentityPolicyVersion.V1:
+                return (self.guest.hostname or self.vm.name).upper()
+            return self.vm.name.upper()
+        return (self.guest.hostname or self.vm.name).upper()
+
+    @property
+    def effective_fqdn(self) -> str | None:
+        """Canonical DNS identity created by joining the short VM name to AD."""
+        if self.source_type == VmSourceType.BLANK or self.guest.domain_join is None:
+            return None
+        return f"{self.effective_computer_name}.{self.guest.domain_join.domain}".lower()
 
     @property
     def total_disk_gb(self) -> int:
         return sum(disk.size_gb for disk in self.hardware.disks)
+
+
+class ProvisioningSubmissionRequest(ProvisioningRequest):
+    """Public validation/submission body; historical v1 is read-only."""
+
+    identity_policy_version: Literal[IdentityPolicyVersion.V2] = IdentityPolicyVersion.V2
 
 
 # ── Dry-run / preflight ──────────────────────────────────────────────────────

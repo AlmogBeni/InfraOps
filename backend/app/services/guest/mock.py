@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import re
 
 from app.core.logging import get_logger
@@ -34,6 +35,10 @@ class _MockGuestState:
         self.installed_apps: set[str] = set()
         self.executed_commands: list[str] = []
         self.hostname: str | None = None
+        self.pending_hostname: str | None = None
+        self.domain: str = "WORKGROUP"
+        self.pending_domain: str | None = None
+        self.part_of_domain: bool = False
         self.ip_address: str | None = None
         self.reboot_pending: bool = False
         self.files: dict[str, bytes] = {}
@@ -131,12 +136,41 @@ class MockGuestOperations(GuestOperations):
             return "GW-REACHABLE" if "test-connection" in lowered else "DNS-OK"
 
         # Hostname / domain operations.
+        if "win32_computersystem" in lowered and "partofdomain" in lowered:
+            active_name = state.hostname or vm_name.upper()
+            return json.dumps(
+                {
+                    "Name": active_name,
+                    "Domain": state.domain,
+                    "PartOfDomain": state.part_of_domain,
+                    "ActiveName": active_name,
+                    "PendingName": state.pending_hostname or active_name,
+                    "PendingDomainJoin": state.pending_domain is not None,
+                },
+                separators=(",", ":"),
+            )
         if "rename-computer" in lowered:
-            state.hostname = vm_name.lower()
+            name_match = re.search(r"-newname\s+'([^']+)'", arguments, re.IGNORECASE)
+            state.pending_hostname = (name_match.group(1) if name_match else vm_name).upper()
+            state.reboot_pending = True
             return "RENAMED"
         if "add-computer" in lowered:
+            name_match = re.search(r"-newname\s+'([^']+)'", arguments, re.IGNORECASE)
+            domain_match = re.search(r"-domainname\s+'([^']+)'", arguments, re.IGNORECASE)
+            state.pending_hostname = (name_match.group(1) if name_match else vm_name).upper()
+            state.pending_domain = (
+                domain_match.group(1).lower() if domain_match else "mock.example.test"
+            )
+            state.reboot_pending = True
             return "DOMAIN-JOINED"
         if "restart-computer" in lowered or "shutdown" in lowered:
+            if state.pending_hostname:
+                state.hostname = state.pending_hostname
+                state.pending_hostname = None
+            if state.pending_domain:
+                state.domain = state.pending_domain
+                state.pending_domain = None
+                state.part_of_domain = True
             state.reboot_pending = False
             return "MOCK: guest restarting"
 

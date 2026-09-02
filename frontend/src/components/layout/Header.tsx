@@ -3,7 +3,6 @@ import {
   ChevronDown,
   ClipboardList,
   FileClock,
-  FileArchive,
   Gauge,
   LogOut,
   Plus,
@@ -19,7 +18,6 @@ import { cn } from '@/lib/utils'
 const PRIMARY_LINKS = [
   { to: '/', label: 'Overview', icon: Gauge, end: true },
   { to: '/provisioning/new', label: 'Create VM', icon: Plus, end: false },
-  { to: '/templates', label: 'Templates', icon: FileArchive, end: false },
   { to: '/jobs', label: 'Deployments', icon: ClipboardList, end: false },
   { to: '/logs', label: 'Logs', icon: ScrollText, end: false },
   { to: '/audit', label: 'Audit', icon: FileClock, end: false },
@@ -63,7 +61,6 @@ export function Header() {
             if (link.to === '/provisioning/new') return hasPermission('provisioning.submit')
             if (link.to === '/jobs') return hasPermission('jobs.read')
             if (link.to === '/logs') return hasPermission('jobs.read')
-            if (link.to === '/templates') return hasPermission('infrastructure.read')
             if (link.to === '/audit') return hasPermission('audit.read')
             return true
           }).map((link) => (

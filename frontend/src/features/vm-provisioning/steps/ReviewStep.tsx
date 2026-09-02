@@ -30,6 +30,7 @@ import {
   useTemplates,
   useVcenters,
 } from '@/features/vm-provisioning/hooks'
+import { guestIdentityReviewRows } from '@/features/vm-provisioning/identity'
 import { api } from '@/lib/api'
 import { displayValue } from '@/lib/utils'
 import type { PreflightReport } from '@/types/api'
@@ -81,6 +82,11 @@ function SummarySection({
 export function ReviewStep() {
   const wizard = useWizard()
   const data = wizard.data
+  const identityRows = guestIdentityReviewRows(
+    data.vm_name,
+    data.hostname,
+    data.domain_join.enabled ? data.domain_join.domain : null,
+  )
   const payload = wizard.requestPayload()
   const vcenters = useVcenters()
   const datacenters = useDatacenters(data.vcenter_id)
@@ -365,8 +371,7 @@ export function ReviewStep() {
           rows={data.source_type === 'blank'
             ? [['Post-deployment state', data.iso_id ? 'Powered off with the selected ISO mounted' : 'Powered off with no ISO mounted']]
             : [
-                ['Computer name', data.hostname || data.vm_name],
-                ['Domain membership', data.domain_join.enabled ? data.domain_join.domain : 'No domain join'],
+                ...identityRows.map(({ label, value }) => [label, value] as [string, ReactNode]),
                 ['Certificate packages', data.certificate_package_ids.length ? data.certificate_package_ids.map((id) => nameOf(packages, id)).join(', ') : 'None selected'],
                 ['Applications', data.application_ids.length ? data.application_ids.map((id) => nameOf(applications, id)).join(', ') : 'None selected'],
               ]}

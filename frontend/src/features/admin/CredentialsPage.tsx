@@ -7,6 +7,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
 import { FormRow, Input, Select } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
+import { isValidSecretReference, SECRET_REFERENCE_HINT } from '@/features/admin/secret-reference'
 import { api } from '@/lib/api'
 import { displayValue, formatDateTime } from '@/lib/utils'
 import type { SecretReferenceOut } from '@/types/api'
@@ -41,9 +42,13 @@ export function CredentialsPage() {
   const [actionError, setActionError] = useState<string | null>(null)
 
   const credentials = useQuery({ queryKey: ['admin-credentials'], queryFn: () => api.admin.credentials() })
+  const normalizedReferenceName = form.name.trim()
+  const referenceNameError = form.name.length > 0 && !isValidSecretReference(normalizedReferenceName)
+    ? 'Enter a valid secret reference from 2 to 150 characters.'
+    : null
 
   const create = useMutation({
-    mutationFn: () => api.admin.createCredential(form),
+    mutationFn: () => api.admin.createCredential({ ...form, name: normalizedReferenceName }),
     onSuccess: () => {
       setDialogOpen(false)
       setForm({ name: '', provider: 'env', description: '' })
@@ -187,7 +192,7 @@ export function CredentialsPage() {
         footer={(
           <>
             <Button variant="secondary" disabled={create.isPending} onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button loading={create.isPending} disabled={!form.name.trim()} onClick={() => create.mutate()}>Create reference</Button>
+            <Button loading={create.isPending} disabled={!isValidSecretReference(normalizedReferenceName)} onClick={() => create.mutate()}>Create reference</Button>
           </>
         )}
       >
@@ -196,13 +201,14 @@ export function CredentialsPage() {
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white text-brand-700 ring-1 ring-inset ring-brand-100"><KeyRound className="h-4 w-4" /></span>
           <div><p className="text-xs font-semibold text-brand-900">Create a safe lookup name</p><p className="mt-1 text-[11px] leading-4 text-brand-800/70">This registry stores the reference only. No username, password, token, or secret value is entered here.</p></div>
         </div>
-        <FormRow label="Reference name" htmlFor="cred-name" required hint="Lowercase letters, digits, dots, dashes and slashes.">
+        <FormRow label="Reference name" htmlFor="cred-name" required hint={SECRET_REFERENCE_HINT} error={referenceNameError ?? undefined}>
           <Input
             id="cred-name"
             placeholder="guest-local-admin"
+            maxLength={150}
             autoComplete="off"
             value={form.name}
-            onChange={(event) => { setFormError(null); setForm({ ...form, name: event.target.value }) }}
+            onChange={(event) => { setFormError(null); setForm({ ...form, name: event.target.value.toLowerCase() }) }}
           />
         </FormRow>
         <FormRow label="Secret provider" htmlFor="cred-provider">
