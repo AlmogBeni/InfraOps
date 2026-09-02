@@ -2,7 +2,7 @@ import { Check, Disc3, FileArchive, HardDrive, MapPin, RefreshCw, Search, Unplug
 import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
+import { Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { Input } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useIsos, useTemplates } from '@/features/vm-provisioning/hooks'
@@ -16,6 +16,35 @@ function ChoiceMark({ selected }: { selected: boolean }) {
     )}>
       <Check className="h-3.5 w-3.5" aria-hidden />
     </span>
+  )
+}
+
+function MediaInventoryLoading({ packageInventory = false }: { packageInventory?: boolean }) {
+  return (
+    <div className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white" role="status" aria-live="polite">
+      <div className="flex items-center gap-3 border-b border-[#e2e6e1] bg-[#f8faf6] px-5 py-4">
+        <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-50 text-brand-700">
+          <Spinner className="h-5 w-5 text-brand-700" />
+        </span>
+        <div>
+          <p className="text-sm font-semibold text-[#202923]">{packageInventory ? 'Loading deployment packages' : 'Loading ISO images'}</p>
+          <p className="mt-1 text-xs text-[#68736d]">
+            {packageInventory
+              ? 'Reading the selected vCenter Content Library.'
+              : 'Scanning accessible datastores. You can continue with no ISO while this completes.'}
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-3 p-4 sm:grid-cols-2" aria-hidden>
+        {[0, 1, 2, 3].map((item) => (
+          <div key={item} className="rounded-xl border border-[#e3e7e2] p-4">
+            <div className="loading-sheen h-3 w-2/3 rounded-full" />
+            <div className="loading-sheen mt-3 h-2.5 w-2/5 rounded-full" />
+            <div className="loading-sheen mt-5 h-2 w-full rounded-full" />
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -103,7 +132,7 @@ export function MediaStep() {
 
       {isPackage ? (
         templates.isLoading ? (
-          <LoadingState title="Loading OVF and OVA packages" description="Retrieving deployment packages from the selected vCenter library." />
+          <MediaInventoryLoading packageInventory />
         ) : templates.isError ? (
           <EmptyState
             title="Packages could not be loaded"
@@ -180,7 +209,7 @@ export function MediaStep() {
           </button>
 
           {isos.isLoading ? (
-            <LoadingState title="Loading ISO images" description="Searching storage in the selected datacenter." />
+            <MediaInventoryLoading />
           ) : isos.isError ? (
             <EmptyState
               title="ISO images could not be loaded"

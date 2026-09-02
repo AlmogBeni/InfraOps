@@ -16,14 +16,14 @@ const OPTIONS: Array<{
     value: 'blank',
     title: 'Blank virtual machine',
     description:
-      'Create an empty virtual machine, optionally mount a datacenter ISO, and configure compute, storage, and networking.',
+      'Create an empty virtual machine and optionally mount an ISO. Guest networking and domain membership are configured after OS installation.',
     detail: 'Optional ISO · installation-ready hardware · powered off',
     icon: Box,
   },
   {
     value: 'template',
     title: 'Deploy an OVF / OVA package',
-    description: 'Deploy a packaged virtual appliance from the selected vCenter Content Library into your target datacenter.',
+    description: 'Deploy a packaged virtual appliance with supported DHCP/static addressing and Active Directory domain-join automation.',
     detail: 'OVF or OVA only · repeatable appliance deployment',
     icon: Layers3,
   },
@@ -105,8 +105,8 @@ export function SourceStep() {
       )}
 
       {wizard.data.source_type === 'blank' && (
-        <Alert tone="info" title="Installation media comes next">
-          After choosing a datacenter, you can mount one of its ISO images or continue without an ISO.
+        <Alert tone="info" title="Installation media and guest setup">
+          After choosing a datacenter, you can mount one of its ISO images or continue without an ISO. Guest IP addressing and domain join remain visible in the workflow, but are applied manually after installing the OS and VMware Tools.
         </Alert>
       )}
     </section>

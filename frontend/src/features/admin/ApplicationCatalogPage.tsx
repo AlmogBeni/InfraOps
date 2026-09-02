@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
-import { Checkbox, FormRow, Input, Select, Textarea } from '@/components/ui/form-controls'
+import { Checkbox, FormRow, FormSection, Input, Select, Textarea } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
@@ -247,12 +247,20 @@ export function ApplicationCatalogPage() {
         footer={
           <>
             <Button variant="secondary" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button loading={save.isPending} onClick={() => save.mutate()}>Save</Button>
+            <Button
+              loading={save.isPending}
+              disabled={!form.name.trim() || !form.installer_path.trim() || form.timeout_seconds < 30}
+              onClick={() => save.mutate()}
+            >
+              Save
+            </Button>
           </>
         }
       >
         {formError && <div className="mb-3"><Alert tone="danger">{formError}</Alert></div>}
 
+        <div className="space-y-5">
+        <FormSection title="Application identity" description="Operator-facing catalog information and version metadata.">
         <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
           <FormRow label="Name" htmlFor="app-name" required>
             <Input id="app-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
@@ -265,7 +273,9 @@ export function ApplicationCatalogPage() {
         <FormRow label="Description" htmlFor="app-desc">
           <Input id="app-desc" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
         </FormRow>
+        </FormSection>
 
+        <FormSection title="Installer execution" description="Controlled package source and unattended command-line behavior.">
         <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-[160px_1fr]">
           <FormRow label="Installer type" htmlFor="app-type">
             <Select id="app-type" value={form.installer_type}
@@ -287,7 +297,9 @@ export function ApplicationCatalogPage() {
           <Input id="app-args" className="font-mono text-xs" value={form.install_arguments}
                  onChange={(event) => setForm({ ...form, install_arguments: event.target.value })} />
         </FormRow>
+        </FormSection>
 
+        <FormSection title="Installation detection" description="Verification rule used to decide whether the application is already installed.">
         <FormRow label="Detection method" htmlFor="app-detect">
           <Select id="app-detect" value={form.detection_method}
                   onChange={(event) => setForm({ ...form, detection_method: event.target.value as DetectionMethod })}>
@@ -336,7 +348,9 @@ export function ApplicationCatalogPage() {
                       onChange={(event) => setForm({ ...form, script: event.target.value })} />
           </FormRow>
         )}
+        </FormSection>
 
+        <FormSection title="Runtime policy" description="Execution limits, reboot handling, availability, and dependency order.">
         <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
           <FormRow label="Timeout (seconds)" htmlFor="app-timeout">
             <Input id="app-timeout" type="number" min={30} max={14400} value={form.timeout_seconds}
@@ -374,6 +388,8 @@ export function ApplicationCatalogPage() {
             </div>
           </div>
         )}
+        </FormSection>
+        </div>
       </Dialog>
     </div>
   )

@@ -74,6 +74,30 @@
 
   .animate-panel-reveal { animation: ui-fade-in-up 220ms cubic-bezier(0.22, 1, 0.36, 1); }
   .animate-row-enter { animation: ui-row-rise 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+  .ui-spinner { animation: ui-spin 780ms linear infinite; }
+  .dashboard-panel-enter { animation: ui-fade-in-up 360ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .dashboard-metric-card {
+    animation: ui-dashboard-card 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+  .dashboard-metric-card:hover {
+    transform: translateY(-2px);
+    border-color: #b8c5ba;
+    box-shadow: 0 12px 28px rgba(23, 79, 64, 0.09);
+  }
+  .dashboard-metric-card:nth-child(2) { animation-delay: 55ms; }
+  .dashboard-metric-card:nth-child(3) { animation-delay: 110ms; }
+  .dashboard-metric-card:nth-child(4) { animation-delay: 165ms; }
+  .dashboard-metric-card:nth-child(5) { animation-delay: 220ms; }
+  .dashboard-progress-fill { position: relative; overflow: hidden; }
+  .dashboard-progress-fill::after {
+    position: absolute;
+    inset: 0;
+    content: '';
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+    transform: translateX(-100%);
+    animation: ui-progress-sweep 1.8s ease-in-out infinite;
+  }
   .dashboard-ambient-orb { animation: ui-orb-drift 8s ease-in-out infinite alternate; }
   .dashboard-live-dot { animation: ui-live-pulse 2.2s ease-out infinite; }
   .loading-sheen {
@@ -96,6 +120,19 @@
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
 }
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+@keyframes ui-dashboard-card {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes ui-progress-sweep {
+  0%, 25% { transform: translateX(-100%); }
+  75%, 100% { transform: translateX(100%); }
+}
+@keyframes ui-loading-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
 @keyframes ui-loading-shimmer {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }
@@ -113,5 +150,8 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  .ui-spinner {
+    animation: ui-loading-pulse 1.2s ease-in-out infinite !important;
   }
 }

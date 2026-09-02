@@ -4,8 +4,8 @@ import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
-import { Checkbox, FormRow, Input, Select, Textarea } from '@/components/ui/form-controls'
+import { Alert, Badge, EmptyState, LoadingState, Spinner } from '@/components/ui/feedback'
+import { Checkbox, FormRow, FormSection, Input, Select, Textarea } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
 import { Table, Td, Th, Tr } from '@/components/ui/table'
 import { api } from '@/lib/api'
@@ -254,11 +254,12 @@ export function CertificatePackagesPage() {
         footer={
           <>
             <Button variant="secondary" onClick={() => setPackageDialogOpen(false)}>Cancel</Button>
-            <Button loading={createPackage.isPending} onClick={() => createPackage.mutate()}>Create</Button>
+            <Button loading={createPackage.isPending} disabled={!packageName.trim()} onClick={() => createPackage.mutate()}>Create</Button>
           </>
         }
       >
         {formError && <div className="mb-3"><Alert tone="danger">{formError}</Alert></div>}
+        <FormSection title="Package details" description="Group related trust anchors into one operator-selectable deployment package.">
         <FormRow label="Name" htmlFor="pkg-name" required>
           <Input id="pkg-name" value={packageName} onChange={(event) => setPackageName(event.target.value)} />
         </FormRow>
@@ -266,6 +267,7 @@ export function CertificatePackagesPage() {
           <Input id="pkg-desc" value={packageDescription}
                  onChange={(event) => setPackageDescription(event.target.value)} />
         </FormRow>
+        </FormSection>
       </Dialog>
 
       {/* Certificate dialog */}
@@ -288,6 +290,8 @@ export function CertificatePackagesPage() {
         }
       >
         {formError && <div className="mb-3"><Alert tone="danger">{formError}</Alert></div>}
+        <div className="space-y-5">
+        <FormSection title="Certificate identity" description="Choose the target Windows trust store and a clear operator-facing name.">
         <FormRow label="Friendly name" htmlFor="cert-name" required>
           <Input id="cert-name" value={certForm.friendly_name}
                  onChange={(event) => setCertForm({ ...certForm, friendly_name: event.target.value })} />
@@ -302,6 +306,8 @@ export function CertificatePackagesPage() {
             <option value="INTERMEDIATE">Intermediate Certification Authorities (LocalMachine\CA)</option>
           </Select>
         </FormRow>
+        </FormSection>
+        <FormSection title="Public certificate material" description="Upload a public X.509 certificate or paste its PEM representation. Private keys are never accepted.">
         <FormRow
           label="Certificate file"
           htmlFor="cert-file"
@@ -327,7 +333,7 @@ export function CertificatePackagesPage() {
                 <p className="text-xs text-slate-500">
                   {certFile.type || 'Certificate file'} · {(certFile.size / 1024).toFixed(1)} KB
                 </p>
-                {fileReading && <p className="text-xs text-slate-500">Reading and validating…</p>}
+                {fileReading && <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500"><Spinner className="h-3.5 w-3.5" /> Reading and validating…</p>}
                 {fileValidation?.valid && <p className="text-xs font-medium text-emerald-700">{fileValidation.message}</p>}
               </div>
               <div className="flex gap-1">
@@ -368,6 +374,8 @@ export function CertificatePackagesPage() {
                       setCertForm({ ...certForm, pem_body: event.target.value })
                     }} />
         </FormRow>
+        </FormSection>
+        </div>
       </Dialog>
     </div>
   )

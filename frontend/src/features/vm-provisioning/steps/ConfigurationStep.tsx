@@ -20,23 +20,31 @@ export function ConfigurationStep() {
       <HardwareStep embedded />
       <StorageStep embedded />
 
-      {data.source_type === 'template' && (
-        <details className="group overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white">
-          <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-4 marker:content-none">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-50 text-brand-700"><SlidersHorizontal className="h-4 w-4" /></span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-[#202923]">Guest customization</span>
-              <span className="mt-0.5 block text-xs text-[#68736d]">Hostname, time zone, domain membership, certificates, and approved applications.</span>
+      <div className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]">
+        <div className="flex items-center gap-3 border-b border-[#e2e6e1] bg-gradient-to-r from-[#f8faf6] to-[#eff6f0] px-5 py-4">
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-50 text-brand-700">
+            <SlidersHorizontal className="h-4 w-4" aria-hidden />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-[#202923]">Guest operating system and automation</span>
+            <span className="mt-0.5 block text-xs text-[#68736d]">
+              {data.source_type === 'template'
+                ? 'Hostname, Active Directory domain join, certificates, and approved applications.'
+                : 'Review what becomes available after the operating system and VMware Tools are installed.'}
             </span>
-            <PackageCheck className="h-4 w-4 text-[#87908a] transition-transform group-open:rotate-90" />
-          </summary>
-          <div className="space-y-8 border-t border-[#e2e6e1] bg-[#fafbf8] p-5">
-            <OsStep embedded />
-            <CertificatesStep embedded />
-            <ApplicationsStep embedded />
-          </div>
-        </details>
-      )}
+          </span>
+          <PackageCheck className="h-4 w-4 text-brand-700" aria-hidden />
+        </div>
+        <div className="space-y-8 bg-[#fafbf8] p-5">
+          <OsStep embedded />
+          {data.source_type === 'template' && (
+            <>
+              <CertificatesStep embedded />
+              <ApplicationsStep embedded />
+            </>
+          )}
+        </div>
+      </div>
     </section>
   )
 }

@@ -52,7 +52,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       {loading && (
         <span
           aria-hidden
-          className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
+          className="ui-spinner h-3.5 w-3.5 rounded-full border-2 border-current border-t-transparent"
         />
       )}
       {children}

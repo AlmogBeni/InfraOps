@@ -1,4 +1,5 @@
 import { Building2, Cpu, MemoryStick, RefreshCw, Server, Waypoints } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -12,9 +13,11 @@ import {
   useResourcePools,
   useVcenters,
 } from '@/features/vm-provisioning/hooks'
+import { api } from '@/lib/api'
 
 export function LocationStep() {
   const wizard = useWizard()
+  const queryClient = useQueryClient()
   const updateWizard = wizard.update
   const data = wizard.data
   const vcenters = useVcenters()
@@ -96,6 +99,25 @@ export function LocationStep() {
       updateWizard({ host_mode: 'manual', host_id: null })
     }
   }, [data.host_mode, noAvailableHosts, updateWizard])
+
+  useEffect(() => {
+    if (!data.vcenter_id || !data.datacenter_id) return
+
+    if (data.source_type === 'template') {
+      void queryClient.prefetchQuery({
+        queryKey: ['templates', data.vcenter_id, data.datacenter_id],
+        queryFn: () => api.templates(data.vcenter_id, data.datacenter_id),
+        staleTime: 5 * 60 * 1000,
+      })
+      return
+    }
+
+    void queryClient.prefetchQuery({
+      queryKey: ['isos', data.vcenter_id, data.datacenter_id],
+      queryFn: () => api.isos(data.vcenter_id, data.datacenter_id),
+      staleTime: 5 * 60 * 1000,
+    })
+  }, [data.datacenter_id, data.source_type, data.vcenter_id, queryClient])
 
   if (vcenters.isLoading) {
     return <LoadingState title="Loading infrastructure connections" description="Retrieving the vCenters available to your account." />

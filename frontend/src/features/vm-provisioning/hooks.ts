@@ -4,6 +4,12 @@ import { useQuery } from '@tanstack/react-query'
 
 import { api } from '@/lib/api'
 
+const MEDIA_INVENTORY_OPTIONS = {
+  staleTime: 5 * 60 * 1000,
+  gcTime: 30 * 60 * 1000,
+  refetchOnWindowFocus: false,
+} as const
+
 export function useVcenters(enabled = true) {
   return useQuery({ queryKey: ['vcenters'], queryFn: () => api.vcenters(), enabled })
 }
@@ -69,6 +75,7 @@ export function useTemplates(vcenterId: string, datacenterId: string | null, ena
     queryKey: ['templates', vcenterId, datacenterId],
     queryFn: () => api.templates(vcenterId, datacenterId ?? ''),
     enabled: Boolean(enabled && vcenterId && datacenterId),
+    ...MEDIA_INVENTORY_OPTIONS,
   })
 }
 
@@ -77,6 +84,7 @@ export function useIsos(vcenterId: string, datacenterId: string | null, enabled 
     queryKey: ['isos', vcenterId, datacenterId],
     queryFn: () => api.isos(vcenterId, datacenterId ?? ''),
     enabled: Boolean(enabled && vcenterId && datacenterId),
+    ...MEDIA_INVENTORY_OPTIONS,
   })
 }
 

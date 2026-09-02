@@ -161,7 +161,7 @@ function MetricCard({
   }
 
   return (
-    <div className="rounded-xl border border-[#d8ddd7] bg-white p-4 shadow-[0_1px_2px_rgba(23,32,28,0.04)]">
+    <div className="dashboard-metric-card rounded-xl border border-[#d8ddd7] bg-white p-4 shadow-[0_1px_2px_rgba(23,32,28,0.04)]">
       <div className="flex items-start justify-between gap-4">
         <dt className="text-[11px] font-semibold text-[#68736d]">{label}</dt>
         <span className={cn('grid h-8 w-8 shrink-0 place-items-center rounded-lg', iconClasses[tone])}>
@@ -252,7 +252,7 @@ function RecentDeployments({ jobs, canProvision }: { jobs: JobOut[]; canProvisio
                 <span className="block truncate text-xs font-medium text-[#465149]">{jobActivity(job)}</span>
                 {job.status === 'RUNNING' && (
                   <span className="mt-2 block h-1.5 w-full max-w-32 overflow-hidden rounded-full bg-[#e3e7e2]" aria-hidden>
-                    <span className="block h-full rounded-full bg-[#e56b3f] transition-[width] duration-700 ease-out" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
+                    <span className="dashboard-progress-fill block h-full rounded-full bg-[#e56b3f] transition-[width] duration-700 ease-out" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
                   </span>
                 )}
               </td>
@@ -359,10 +359,10 @@ export function DashboardPage() {
             <Button
               size="sm"
               variant="secondary"
-              loading={dashboard.isFetching}
+              disabled={dashboard.isFetching}
               onClick={() => void dashboard.refetch()}
             >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Refresh
+              <RefreshCw className={cn('h-3.5 w-3.5', dashboard.isFetching && 'ui-spinner')} aria-hidden /> Refresh
             </Button>
             {canProvision && (
               <Button size="sm" onClick={() => navigate('/provisioning/new')}>
@@ -383,7 +383,7 @@ export function DashboardPage() {
         )}
       />
 
-      <section className="flex flex-col gap-4 rounded-xl border border-[#d2dad3] bg-white px-4 py-4 shadow-[0_1px_2px_rgba(23,32,28,0.04)] sm:flex-row sm:items-center sm:justify-between" aria-labelledby="service-summary-title">
+      <section className="dashboard-panel-enter flex flex-col gap-4 rounded-xl border border-[#d2dad3] bg-white px-4 py-4 shadow-[0_1px_2px_rgba(23,32,28,0.04)] sm:flex-row sm:items-center sm:justify-between" aria-labelledby="service-summary-title">
         <div className="flex min-w-0 items-start gap-3">
           <span className={cn(
             'grid h-9 w-9 shrink-0 place-items-center rounded-lg',
@@ -453,7 +453,7 @@ export function DashboardPage() {
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(330px,0.75fr)]">
         <section
           aria-labelledby="recent-deployments-title"
-          className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]"
+          className="dashboard-panel-enter overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)] [animation-delay:140ms]"
         >
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e2e6e1] px-5 py-4">
             <div>
@@ -469,7 +469,7 @@ export function DashboardPage() {
 
         <section
           aria-labelledby="service-status-title"
-          className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]"
+          className="dashboard-panel-enter overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)] [animation-delay:210ms]"
         >
           <div className="border-b border-[#e2e6e1] bg-[#f8f9f6] px-5 py-4">
             <div className="flex items-start justify-between gap-3">

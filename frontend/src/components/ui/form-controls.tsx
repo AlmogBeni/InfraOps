@@ -68,6 +68,33 @@ export function FormRow({ label, htmlFor, hint, error, required, children, class
   )
 }
 
+export function FormSection({
+  title,
+  description,
+  icon,
+  children,
+  className,
+}: {
+  title: string
+  description?: string
+  icon?: ReactNode
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <section className={cn('overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[0_1px_2px_rgba(23,32,28,0.04)]', className)}>
+      <div className="flex items-start gap-3 border-b border-[#e1e6e1] bg-gradient-to-r from-[#fafbf8] to-[#f1f6f1] px-5 py-4">
+        {icon && <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-700">{icon}</span>}
+        <div>
+          <h3 className="text-sm font-semibold tracking-[-0.01em] text-[#202923]">{title}</h3>
+          {description && <p className="mt-1 text-xs leading-5 text-[#6b756f]">{description}</p>}
+        </div>
+      </div>
+      <div className="p-5 [&>*:last-child]:mb-0">{children}</div>
+    </section>
+  )
+}
+
 interface CheckboxProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> {
   label?: ReactNode
 }

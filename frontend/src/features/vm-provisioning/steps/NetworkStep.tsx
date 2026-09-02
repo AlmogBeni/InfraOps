@@ -118,9 +118,32 @@ export function NetworkStep() {
       </div>
 
       {data.source_type === 'blank' ? (
-        <Alert tone="info" title="No guest addressing will be submitted">
-          The selected port group is attached to the powered-off VM. Configure IP addressing after installing the OS.
-        </Alert>
+        <div className="console-group">
+          <div className="console-group-header">
+            <div>
+              <p className="console-group-title">Guest IPv4 configuration</p>
+              <p className="console-group-description">Addressing requires a running guest with VMware Tools.</p>
+            </div>
+            <Badge tone="warning">Available after OS installation</Badge>
+          </div>
+          <div className="console-group-body space-y-4">
+            <FormRow label="Addressing policy" className="mb-0">
+              <RadioGroup
+                name="blank-ip-mode"
+                columns={2}
+                value="DHCP"
+                onChange={() => undefined}
+                options={[
+                  { value: 'DHCP', label: 'DHCP', description: 'Configure inside the guest after installation.', disabled: true },
+                  { value: 'STATIC', label: 'Static IPv4', description: 'Configure inside the guest after installation.', disabled: true },
+                ]}
+              />
+            </FormRow>
+            <Alert tone="info" title="Adapter placement is applied now">
+              InfraOps attaches the selected port group to the powered-off VM. DHCP or static guest settings cannot be applied until an OS and VMware Tools are present. Choose an OVF/OVA package when automated guest networking is required.
+            </Alert>
+          </div>
+        </div>
       ) : (
         <div className="console-group">
           <div className="console-group-header">

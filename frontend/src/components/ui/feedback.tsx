@@ -60,7 +60,7 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
   const Icon = meta.icon
   return (
     <Badge tone={meta.tone}>
-      <Icon aria-hidden className={cn('h-3 w-3', status === 'RUNNING' && 'animate-spin')} />
+      <Icon aria-hidden className={cn('h-3 w-3', status === 'RUNNING' && 'ui-spinner')} />
       {meta.label}
     </Badge>
   )
@@ -68,7 +68,7 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
 
 const STEP_STATUS_META: Record<StepStatus, { icon: typeof OkIcon; classes: string }> = {
   PENDING: { icon: CircleDashed, classes: 'text-slate-400' },
-  RUNNING: { icon: Loader2, classes: 'text-sky-600 animate-spin' },
+  RUNNING: { icon: Loader2, classes: 'text-sky-600 ui-spinner' },
   SUCCEEDED: { icon: OkIcon, classes: 'text-emerald-600' },
   FAILED: { icon: FailIcon, classes: 'text-red-600' },
   SKIPPED: { icon: CircleDashed, classes: 'text-slate-400' },
@@ -161,7 +161,7 @@ export function ProgressBar({ percent, label }: { percent: number; label?: strin
 
 export function Spinner({ className }: { className?: string }) {
   return (
-    <Loader2 aria-label="Loading" className={cn('h-5 w-5 animate-spin text-slate-400', className)} />
+    <Loader2 aria-label="Loading" className={cn('ui-spinner h-5 w-5 text-slate-400', className)} />
   )
 }
 
@@ -205,7 +205,7 @@ export function LoadingState({
     >
       <div className="max-w-sm">
         <span className="mx-auto grid h-11 w-11 place-items-center rounded-2xl bg-brand-50 text-brand-700">
-          <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+          <Loader2 className="ui-spinner h-5 w-5" aria-hidden />
         </span>
         <p className="mt-3 text-sm font-semibold text-[#202923]">{title}</p>
         {description && <p className="mt-1 text-xs leading-5 text-[#6b756f]">{description}</p>}

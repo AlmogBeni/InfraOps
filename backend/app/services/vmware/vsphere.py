@@ -564,7 +564,7 @@ class VsphereVMwareService(VMwareService):
             finally:
                 view.Destroy()
 
-            results: list[IsoImageOut] = []
+            searches: list[tuple[object, object]] = []
             for datastore in datastores:
                 if not bool(getattr(datastore.summary, "accessible", False)):
                     continue
@@ -578,6 +578,13 @@ class VsphereVMwareService(VMwareService):
                     datastorePath=f"[{datastore.name}]",
                     searchSpec=search_spec,
                 )
+                searches.append((datastore, task))
+
+            # Datastore-browser searches are independent vCenter tasks. Start
+            # every accessible search first so vCenter can execute them in
+            # parallel, then collect their results in a deterministic order.
+            results: list[IsoImageOut] = []
+            for datastore, task in searches:
                 self._wait_for_task(task)
                 for folder in task.info.result or []:
                     folder_path = str(folder.folderPath or f"[{datastore.name}]")
