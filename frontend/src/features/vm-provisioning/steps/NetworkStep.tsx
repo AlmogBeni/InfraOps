@@ -48,11 +48,11 @@ export function NetworkStep() {
             <h2>Virtual network</h2>
             <p>
               {data.source_type === 'blank'
-                ? 'Attach the virtual adapter now. Guest addressing is configured after OS installation.'
+                ? 'Attach a port group now; InfraOps applies guest addressing after unattended Windows Setup.'
                 : 'Attach a port group and define guest addressing applied through VMware Tools.'}
             </p>
           </div>
-          <Badge tone="neutral">{data.source_type === 'blank' ? 'Adapter only' : 'Guest configuration'}</Badge>
+          <Badge tone="neutral">Guest configuration</Badge>
         </div>
       </header>
 
@@ -121,7 +121,7 @@ export function NetworkStep() {
         </div>
       </div>
 
-      {data.source_type === 'blank' ? (
+      {data.source_type === 'blank' && !data.iso_id ? (
         <div className="console-group">
           <div className="console-group-header">
             <div>

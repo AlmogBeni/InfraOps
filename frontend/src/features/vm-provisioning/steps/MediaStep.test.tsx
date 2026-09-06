@@ -121,14 +121,14 @@ describe('MediaStep datacenter-scoped resources', () => {
     vi.restoreAllMocks()
   })
 
-  it('keeps No ISO available and offers only ISO names returned for the target datacenter', async () => {
+  it('requires a discovered ISO and offers only ISO names returned for the target datacenter', async () => {
     const request = deferred<IsoImageOut[]>()
     const isos = vi.spyOn(api, 'isos').mockImplementation(() => request.promise)
     const templates = vi.spyOn(api, 'templates').mockResolvedValue(PACKAGES)
 
     renderStep('blank')
 
-    expect(screen.getByRole('radio', { name: /No ISO/i })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('radio', { name: /No ISO/i })).not.toBeInTheDocument()
     expect(await screen.findByText('Loading ISO images')).toBeInTheDocument()
     expect(templates).not.toHaveBeenCalled()
 
@@ -164,7 +164,7 @@ describe('MediaStep datacenter-scoped resources', () => {
     expect(wizardState().template_id).toBe('pkg-monitoring-ova')
   })
 
-  it('keeps the no-media path usable when datacenter ISO discovery fails', async () => {
+  it('blocks media selection when datacenter ISO discovery fails', async () => {
     vi.spyOn(api, 'isos').mockRejectedValue(new Error('ISO inventory timed out.'))
     vi.spyOn(api, 'templates').mockResolvedValue(PACKAGES)
 
@@ -172,7 +172,7 @@ describe('MediaStep datacenter-scoped resources', () => {
 
     expect(await screen.findByText('ISO images could not be loaded')).toBeInTheDocument()
     expect(screen.getByText('ISO inventory timed out.')).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: /No ISO/i })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('radio', { name: /No ISO/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Try again/i })).toBeEnabled()
   })
 

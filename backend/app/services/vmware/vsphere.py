@@ -5,17 +5,20 @@ package. All blocking pyvmomi calls are executed in worker threads; every
 failure is translated into an :class:`InfraOperationError` carrying a human
 message, a reason, a recommended action and the preserved technical detail.
 
-Credentials are resolved through the secrets provider at connect time and are
-never cached, logged, or exposed.
+Credentials are resolved from encrypted backend storage at connect time and are
+never logged or exposed. Credential fingerprints invalidate rotated sessions.
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import ssl
 import threading
 import time
+import urllib.parse
+import urllib.request
 
 from app.core.config import get_settings
 from app.core.errors import InfraOperationError, NotFoundError, ServiceUnavailableError
@@ -39,6 +42,7 @@ from app.services.vmware.base import (
     BlankVmSpec,
     CloneSpec,
     PowerStateInfo,
+    TemporaryMediaRef,
     VCenterTarget,
     VmRef,
     VMwareService,
@@ -105,23 +109,34 @@ class _ConnectionCache:
     """Thread-safe cache of live ServiceInstance objects keyed by vCenter id."""
 
     def __init__(self) -> None:
-        self._sessions: dict[str, tuple[object, float]] = {}
+        self._sessions: dict[str, tuple[object, float, str]] = {}
         self._lock = threading.Lock()
 
-    def get(self, vcenter_id: str):
+    def get(self, vcenter_id: str, credential_fingerprint: str):
         with self._lock:
             entry = self._sessions.get(vcenter_id)
             if entry is None:
                 return None
-            instance, created = entry
-            if time.monotonic() - created > _CONNECTION_TTL_SECONDS:
+            instance, created, stored_fingerprint = entry
+            if (
+                time.monotonic() - created > _CONNECTION_TTL_SECONDS
+                or stored_fingerprint != credential_fingerprint
+            ):
                 del self._sessions[vcenter_id]
+                try:
+                    pyvim_connect.Disconnect(instance)
+                except Exception:  # noqa: BLE001
+                    pass
                 return None
             return instance
 
-    def put(self, vcenter_id: str, instance) -> None:
+    def put(self, vcenter_id: str, instance, credential_fingerprint: str) -> None:
         with self._lock:
-            self._sessions[vcenter_id] = (instance, time.monotonic())
+            self._sessions[vcenter_id] = (
+                instance,
+                time.monotonic(),
+                credential_fingerprint,
+            )
 
     def evict(self, vcenter_id: str) -> None:
         with self._lock:
@@ -145,19 +160,22 @@ class VsphereVMwareService(VMwareService):
     # ── Connection handling ──────────────────────────────────────────────────
 
     async def _get_session(self, target: VCenterTarget):
-        cached = self._cache.get(target.id)
-        if cached is not None:
-            return cached
         username, password = await self._secrets.get_credentials(
             target.username_secret_ref, target.password_secret_ref
         )
+        fingerprint = hashlib.sha256(
+            f"{username}\0{password}".encode()
+        ).hexdigest()
+        cached = self._cache.get(target.id, fingerprint)
+        if cached is not None:
+            return cached
         try:
             instance = await asyncio.to_thread(self._connect_blocking, target, username, password)
         except InfraOperationError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise _wrap("connect", exc, retryable=True) from exc
-        self._cache.put(target.id, instance)
+        self._cache.put(target.id, instance, fingerprint)
         return instance
 
     def _connect_blocking(self, target: VCenterTarget, username: str, password: str):
@@ -889,7 +907,7 @@ class VsphereVMwareService(VMwareService):
             config = vim.vm.ConfigSpec()
             config.name = spec.vm_name
             config.annotation = spec.description
-            config.guestId = "otherGuest64"
+            config.guestId = "windows9Server64Guest"
             config.numCPUs = spec.cpu
             config.memoryMB = spec.memory_mb
             config.files = vim.vm.FileInfo(vmPathName=f"[{datastore.name}]")
@@ -1163,13 +1181,188 @@ class VsphereVMwareService(VMwareService):
 
         await self._with_session(target, op)
 
+    async def attach_temporary_iso(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        *,
+        datacenter_id: str,
+        datastore_id: str | None,
+        file_name: str,
+        content: bytes,
+    ) -> TemporaryMediaRef:
+        safe_name = file_name.replace("/", "_").replace("\\", "_")
+
+        def op(si):
+            inventory = self._content(si)
+            vm = self._find_by_moref(inventory, vm_id)
+            datacenter = self._find_by_moref(inventory, datacenter_id)
+            if vm is None or datacenter is None or not isinstance(datacenter, vim.Datacenter):
+                raise InfraOperationError(
+                    "The VM or datacenter disappeared before unattended media could be attached.",
+                    reason="vCenter inventory changed after validation.",
+                    recommended_action="Refresh inventory and retry the preparation stage.",
+                    retryable=True,
+                )
+            vm_datastores = list(getattr(vm, "datastore", []) or [])
+            datastore = next(
+                (entry for entry in vm_datastores if not datastore_id or entry._moId == datastore_id),
+                None,
+            )
+            if datastore is None:
+                raise InfraOperationError(
+                    "No VM datastore is available for temporary unattended media.",
+                    reason="The selected datastore is not attached to the VM.",
+                    recommended_action="Select a datastore accessible to the VM and retry.",
+                    retryable=False,
+                )
+
+            folder = f"[{datastore.name}] infraops-unattend"
+            datastore_path = f"{folder}/{safe_name}"
+            try:
+                inventory.fileManager.MakeDirectory(
+                    name=folder,
+                    datacenter=datacenter,
+                    createParentDirectories=True,
+                )
+            except vim.fault.FileAlreadyExists:
+                pass
+
+            context = ssl.create_default_context(cafile=get_settings().vcenter_ca_file or None)
+            if not target.verify_ssl:
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+            relative = urllib.parse.quote(f"infraops-unattend/{safe_name}", safe="/")
+            query = urllib.parse.urlencode({"dcPath": datacenter.name, "dsName": datastore.name})
+            url = f"https://{target.host}:{target.port}/folder/{relative}?{query}"
+            request = urllib.request.Request(url, data=content, method="PUT")
+            request.add_header("Content-Type", "application/octet-stream")
+            cookie = getattr(getattr(si, "_stub", None), "cookie", None)
+            if cookie:
+                request.add_header("Cookie", cookie)
+            with urllib.request.urlopen(request, context=context, timeout=120) as response:  # noqa: S310
+                if response.status not in (200, 201):
+                    raise RuntimeError(f"datastore upload returned HTTP {response.status}")
+
+            existing = next(
+                (
+                    device for device in vm.config.hardware.device
+                    if isinstance(device, vim.vm.device.VirtualCdrom)
+                    and getattr(getattr(device, "backing", None), "fileName", None) == datastore_path
+                ),
+                None,
+            )
+            if existing is None:
+                controllers = [
+                    device for device in vm.config.hardware.device
+                    if isinstance(device, vim.vm.device.VirtualAHCIController)
+                ]
+                changes = []
+                if controllers:
+                    controller = controllers[0]
+                else:
+                    controller = vim.vm.device.VirtualAHCIController(key=-290, busNumber=1)
+                    controller_change = vim.vm.device.VirtualDeviceSpec()
+                    controller_change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                    controller_change.device = controller
+                    changes.append(controller_change)
+                used_units = {
+                    device.unitNumber for device in vm.config.hardware.device
+                    if getattr(device, "controllerKey", None) == controller.key
+                }
+                unit = next((candidate for candidate in range(30) if candidate not in used_units), 0)
+                backing = vim.vm.device.VirtualCdrom.IsoBackingInfo(
+                    fileName=datastore_path,
+                    datastore=datastore,
+                )
+                cdrom = vim.vm.device.VirtualCdrom(
+                    key=-291,
+                    controllerKey=controller.key,
+                    unitNumber=unit,
+                    backing=backing,
+                    connectable=vim.vm.device.VirtualDevice.ConnectInfo(
+                        startConnected=True,
+                        allowGuestControl=False,
+                        connected=True,
+                    ),
+                )
+                cdrom_change = vim.vm.device.VirtualDeviceSpec()
+                cdrom_change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                cdrom_change.device = cdrom
+                changes.append(cdrom_change)
+                reconfigure = vim.vm.ConfigSpec(deviceChange=changes)
+                self._wait_for_task(vm.ReconfigVM_Task(spec=reconfigure))
+            return TemporaryMediaRef(datastore_path=datastore_path)
+
+        try:
+            return await self._with_session(target, op, operation="attach-unattended-media")
+        except Exception as exc:  # noqa: BLE001
+            raise _wrap("attach-unattended-media", exc) from exc
+
+    async def remove_temporary_iso(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        *,
+        datacenter_id: str,
+        datastore_path: str,
+    ) -> None:
+        def op(si):
+            inventory = self._content(si)
+            vm = self._find_by_moref(inventory, vm_id)
+            datacenter = self._find_by_moref(inventory, datacenter_id)
+            if vm is not None:
+                changes = []
+                for device in vm.config.hardware.device:
+                    if (
+                        isinstance(device, vim.vm.device.VirtualCdrom)
+                        and getattr(getattr(device, "backing", None), "fileName", None) == datastore_path
+                    ):
+                        change = vim.vm.device.VirtualDeviceSpec()
+                        change.operation = vim.vm.device.VirtualDeviceSpec.Operation.remove
+                        change.device = device
+                        changes.append(change)
+                if changes:
+                    self._wait_for_task(vm.ReconfigVM_Task(spec=vim.vm.ConfigSpec(deviceChange=changes)))
+            try:
+                task = inventory.fileManager.DeleteDatastoreFile_Task(
+                    name=datastore_path,
+                    datacenter=datacenter,
+                )
+                self._wait_for_task(task)
+            except vim.fault.FileNotFound:
+                pass
+
+        await self._with_session(target, op, operation="remove-unattended-media")
+
+    async def mount_tools_installer(self, target: VCenterTarget, vm_id: str) -> bool:
+        def op(si):
+            vm = self._find_by_moref(self._content(si), vm_id)
+            if vm is None:
+                return False
+            try:
+                vm.MountToolsInstaller()
+                return True
+            except (vim.fault.InvalidState, vim.fault.ToolsUnavailable):
+                return False
+
+        return bool(await self._with_session(target, op, operation="mount-tools-installer"))
+
     async def wait_for_tools(self, target: VCenterTarget, vm_id: str, timeout_seconds: float) -> None:
         async def poll() -> None:
             deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=timeout_seconds)
+            next_mount_attempt = dt.datetime.min.replace(tzinfo=dt.UTC)
             while dt.datetime.now(dt.UTC) < deadline:
                 info = await self.get_vm_info_by_id(target, vm_id)
                 if info is not None and info.tools_status in ("toolsOk", "toolsOld"):
                     return
+                now = dt.datetime.now(dt.UTC)
+                if now >= next_mount_attempt:
+                    try:
+                        await self.mount_tools_installer(target, vm_id)
+                    except InfraOperationError:
+                        pass
+                    next_mount_attempt = now + dt.timedelta(seconds=30)
                 await asyncio.sleep(_TOOLS_POLL_INTERVAL)
             raise InfraOperationError(
                 "VMware Tools did not become ready within the configured timeout.",

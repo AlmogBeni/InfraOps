@@ -28,6 +28,7 @@ vi.mock('@/features/vm-provisioning/steps/ApplicationsStep', () => ({
 function renderWithWizard(sourceType: 'blank' | 'template', content: ReactNode) {
   const draft = initialWizardData()
   draft.source_type = sourceType
+  draft.iso_id = sourceType === 'blank' ? 'iso-windows' : null
   draft.vcenter_id = 'vc-primary'
   draft.datacenter_id = 'dc-production'
   localStorage.setItem('infraops.provisioning-draft.v2', JSON.stringify(draft))
@@ -53,12 +54,12 @@ describe('VM workflow capability visibility', () => {
     expect(document.querySelector('details')).not.toBeInTheDocument()
   })
 
-  it('shows DHCP and static addressing as explicit post-installation capabilities for blank VMs', async () => {
+  it('enables post-installation DHCP and static addressing for blank Windows VMs', async () => {
     vi.spyOn(api, 'networks').mockResolvedValue([])
     renderWithWizard('blank', <NetworkStep />)
 
-    expect(await screen.findByRole('radio', { name: /DHCP/i })).toBeDisabled()
-    expect(screen.getByRole('radio', { name: /Static IPv4/i })).toBeDisabled()
-    expect(screen.getByText('Available after OS installation')).toBeVisible()
+    expect(await screen.findByRole('radio', { name: /DHCP/i })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: /Static IPv4/i })).toBeEnabled()
+    expect(screen.getByText('Applied after VMware Tools becomes available.')).toBeVisible()
   })
 })

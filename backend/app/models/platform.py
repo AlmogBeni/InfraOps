@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, Uuid, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,20 +29,19 @@ class PlatformSetting(Base):
 
 
 class SecretReference(Base):
-    """A *logical* named secret managed by administrators.
-
-    Holds metadata only (never the secret value itself). Values live in the
-    configured secrets provider (environment variables in development,
-    HashiCorp Vault in production) and are resolved by name at runtime.
-    """
+    """An encrypted credential pair managed by administrators."""
 
     __tablename__ = "secret_references"
 
     id: Mapped[uuid.UUID] = uuid_primary_key()
     name: Mapped[str] = mapped_column(String(150), unique=True, nullable=False)
-    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="env")
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="database")
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False, default="generic")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    encrypted_username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

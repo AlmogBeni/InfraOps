@@ -23,7 +23,9 @@ export const WIZARD_STEPS: WizardStepDefinition[] = [
   { key: 'location', title: 'Location' },
   { key: 'media', title: 'Source' },
   { key: 'configuration', title: 'Configuration' },
+  { key: 'credentials', title: 'Administrator' },
   { key: 'network', title: 'Network' },
+  { key: 'directory', title: 'Domain join' },
   { key: 'review', title: 'Review' },
 ]
 

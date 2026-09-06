@@ -40,6 +40,11 @@ from app.services.settings_store import (
     load_effective,
 )
 from app.services.vmware.base import VmRef
+from app.services.windows_unattend import (
+    WindowsUnattendSpec,
+    build_autounattend_xml,
+    build_unattend_iso,
+)
 from app.workers.context import JobRunContext
 from app.workers.state_machine import ORDERED_STAGES
 
@@ -280,7 +285,14 @@ async def effective_timeout_seconds(ctx: JobRunContext, stage_key: str) -> float
     mapped = stage_timeout(stage_key, DEFAULT_STAGE_TIMEOUTS)
     for setting_key in _TIMEOUT_KEY_MAP.get(stage_key, ()):
         if setting_key in override:
-            return float(override[setting_key]) * 60
+            configured = float(override[setting_key]) * 60
+            if (
+                stage_key == "wait_for_tools"
+                and ctx.request.source_type == VmSourceType.BLANK
+                and ctx.request.guest.iso_id is not None
+            ):
+                return max(configured, 7200.0)
+            return configured
     return float(mapped)
 
 
@@ -301,7 +313,10 @@ def _require_vm_id(ctx: JobRunContext) -> str:
 
 
 def _blank_guest_skip(ctx: JobRunContext, operation: str) -> StageOutcome | None:
-    if ctx.request.source_type != VmSourceType.BLANK:
+    if (
+        ctx.request.source_type != VmSourceType.BLANK
+        or ctx.request.guest.iso_id is not None
+    ):
         return None
     return StageOutcome(
         status="SKIPPED",
@@ -652,6 +667,49 @@ async def stage_attach_network_adapter(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(output=f"{net.adapter_type.value} network adapter connected.")
 
 
+async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Unattended Windows installation")
+    if skipped:
+        return skipped
+    vm_id = _require_vm_id(ctx)
+    credentials = await ctx.resolve_guest_credentials()
+    guest = ctx.request.guest
+    xml = build_autounattend_xml(
+        WindowsUnattendSpec(
+            computer_name=ctx.request.effective_computer_name,
+            administrator_username=credentials.username,
+            administrator_password=credentials.password,
+            image_index=guest.windows_image_index,
+            locale=guest.installation_locale,
+            input_locale=guest.input_locale,
+            timezone=guest.timezone or "UTC",
+            firmware=ctx.request.hardware.firmware.value,
+        )
+    )
+    # The media contains a plaintext Windows Setup password by necessity. It is
+    # held only in memory here, uploaded directly, and removed after Tools starts.
+    media = build_unattend_iso(xml)
+    datastore_id = next(
+        (disk.datastore_id for disk in ctx.request.hardware.disks if disk.datastore_id),
+        None,
+    )
+    ref = await ctx.vmware.attach_temporary_iso(
+        ctx.target,
+        vm_id,
+        datacenter_id=ctx.request.compute.datacenter_id,
+        datastore_id=datastore_id,
+        file_name=f"infraops-{ctx.job_id}.iso",
+        content=media,
+    )
+    return StageOutcome(
+        output=(
+            "Temporary answer media attached. Windows Setup will configure the selected "
+            "administrator, locale, keyboard layout and computer name without OOBE prompts."
+        ),
+        artifacts={"datastore_path": ref.datastore_path},
+    )
+
+
 async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
     skipped = _blank_guest_skip(ctx, "Power-on")
     if skipped:
@@ -672,6 +730,23 @@ async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
     timeout = await effective_timeout_seconds(ctx, "wait_for_tools")
     await ctx.vmware.wait_for_tools(ctx.target, vm_id, timeout)
     return StageOutcome(output=f"VMware Tools reported ready (waited up to {int(timeout)} s).")
+
+
+async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
+    skipped = _blank_guest_skip(ctx, "Temporary unattended media cleanup")
+    if skipped:
+        return skipped
+    prepare = ctx.steps_by_key.get("prepare_unattended_install")
+    datastore_path = ((prepare.artifacts or {}).get("datastore_path") if prepare else None)
+    if not datastore_path:
+        return StageOutcome(status="SKIPPED", output="No temporary unattended media was recorded.")
+    await ctx.vmware.remove_temporary_iso(
+        ctx.target,
+        _require_vm_id(ctx),
+        datacenter_id=ctx.request.compute.datacenter_id,
+        datastore_path=str(datastore_path),
+    )
+    return StageOutcome(output="Temporary unattended answer media was detached and deleted.")
 
 
 async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
@@ -802,10 +877,7 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
     identity_artifacts = {"hostname": desired, "computer_name": desired}
     if ctx.request.effective_fqdn:
         identity_artifacts["requested_fqdn"] = ctx.request.effective_fqdn
-    if (
-        ctx.request.source_type != VmSourceType.BLANK
-        and ctx.request.guest.domain_join is not None
-    ):
+    if ctx.request.guest.domain_join is not None:
         return StageOutcome(
             status="SKIPPED",
             output=(
@@ -1211,11 +1283,15 @@ async def stage_validate_applications(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
+    automates_guest = not (
+        ctx.request.source_type == VmSourceType.BLANK
+        and getattr(getattr(ctx.request, "guest", None), "iso_id", None) is None
+    )
     checklist: list[dict] = []
     observed_computer_name = (
         ctx.request.effective_computer_name
         if (
-            ctx.request.source_type != VmSourceType.BLANK
+            automates_guest
             and ctx.request.guest.domain_join is None
         )
         else None
@@ -1229,7 +1305,7 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
     add("VM", "Exists in vCenter", info is not None)
     if info is not None:
-        if ctx.request.source_type == VmSourceType.BLANK:
+        if not automates_guest:
             add("VM", "Left powered off for OS installation", info.power_state == "poweredOff",
                 info.power_state)
         else:
@@ -1239,7 +1315,7 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
 
     net_step = ctx.steps_by_key.get("configure_guest_network")
     net_artifacts = net_step.artifacts if net_step else {}
-    if ctx.request.source_type == VmSourceType.BLANK:
+    if not automates_guest:
         inventory_step = ctx.steps_by_key.get("validate_infrastructure")
         inventory_artifacts = inventory_step.artifacts if inventory_step else {}
         add(
@@ -1262,10 +1338,7 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
         add("Network", "DHCP address acquired", bool(info and info.ip_addresses),
             ", ".join(info.ip_addresses) if info else "")
 
-    if (
-        ctx.request.source_type != VmSourceType.BLANK
-        and ctx.request.guest.domain_join is not None
-    ):
+    if automates_guest and ctx.request.guest.domain_join is not None:
         credentials = await ctx.resolve_guest_credentials()
         identity = await probe_windows_identity(
             ctx,
@@ -1348,8 +1421,10 @@ STAGE_HANDLERS: dict[str, StageHandler] = {
         stage_clone_vm,
         stage_configure_hardware,
         stage_attach_network_adapter,
+        stage_prepare_unattended_install,
         stage_power_on,
         stage_wait_for_tools,
+        stage_cleanup_unattended_media,
         stage_configure_guest_network,
         stage_validate_network,
         stage_configure_hostname,

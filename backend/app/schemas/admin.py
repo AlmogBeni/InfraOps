@@ -66,9 +66,27 @@ class SecretReferenceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=2, max_length=150, pattern=SECRET_NAME_PATTERN.pattern)
-    provider: str = Field(default="env", pattern=r"^(env|vault)$")
+    provider: str = Field(default="database", pattern=r"^(database)$")
+    purpose: str = Field(
+        default="generic",
+        pattern=r"^(generic|vcenter|guest_administrator|domain_join)$",
+    )
+    username: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
     description: str = Field(default="", max_length=1000)
     meta: dict = Field(default_factory=dict)
+
+
+class SecretReferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    purpose: str | None = Field(
+        default=None,
+        pattern=r"^(generic|vcenter|guest_administrator|domain_join)$",
+    )
+    username: str | None = Field(default=None, min_length=1, max_length=320)
+    password: str | None = Field(default=None, min_length=1, max_length=1024)
+    description: str | None = Field(default=None, max_length=1000)
 
 
 class SecretReferenceOut(BaseModel):
@@ -77,9 +95,13 @@ class SecretReferenceOut(BaseModel):
     id: str
     name: str
     provider: str
+    purpose: str
     description: str
     meta: dict
+    configured: bool
+    revision: int
     created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
 
 
 class DefaultTimeouts(BaseModel):

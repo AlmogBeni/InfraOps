@@ -16,8 +16,8 @@ const OPTIONS: Array<{
     value: 'blank',
     title: 'Blank virtual machine',
     description:
-      'Create an empty virtual machine and optionally mount an ISO. Guest networking and domain membership are configured after OS installation.',
-    detail: 'Optional ISO · installation-ready hardware · powered off',
+      'Create an empty virtual machine, install Windows unattended from a required ISO, then continue through network and domain provisioning.',
+    detail: 'Windows ISO · unattended setup · full provisioning',
     icon: Box,
   },
   {
@@ -105,8 +105,8 @@ export function SourceStep() {
       )}
 
       {wizard.data.source_type === 'blank' && (
-        <Alert tone="info" title="Installation media and guest setup">
-          After choosing a datacenter, you can mount one of its ISO images or continue without an ISO. Guest IP addressing and domain join remain visible in the workflow, but are applied manually after installing the OS and VMware Tools.
+        <Alert tone="info" title="InfraOps completes the Windows installation">
+          Choose a Windows ISO, image index, locale, keyboard layout and provisioning administrator. InfraOps handles Setup, VMware Tools, networking and optional domain join.
         </Alert>
       )}
     </section>

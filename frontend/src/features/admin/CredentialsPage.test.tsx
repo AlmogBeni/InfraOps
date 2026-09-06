@@ -29,7 +29,7 @@ describe('CredentialsPage create dialog', () => {
     vi.spyOn(api.admin, 'credentials').mockResolvedValue([])
     renderPage()
 
-    const addButtons = await screen.findAllByRole('button', { name: /Add reference/i })
+    const addButtons = await screen.findAllByRole('button', { name: /Add credential/i })
     fireEvent.click(addButtons[0])
 
     const nameInput = screen.getByLabelText(/Reference name/i)
@@ -38,7 +38,7 @@ describe('CredentialsPage create dialog', () => {
 
     expect(nameInput).toHaveValue('g')
     expect(nameInput).toHaveFocus()
-    expect(screen.getByRole('button', { name: 'Create reference' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save credential' })).toBeDisabled()
     expect(screen.getByText('Enter a valid secret reference from 2 to 150 characters.')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Close dialog' })[0]).not.toHaveFocus()
   })

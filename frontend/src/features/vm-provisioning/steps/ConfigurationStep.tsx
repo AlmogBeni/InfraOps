@@ -29,20 +29,16 @@ export function ConfigurationStep() {
             <span className="block text-sm font-semibold text-[#202923]">Guest operating system and automation</span>
             <span className="mt-0.5 block text-xs text-[#68736d]">
               {data.source_type === 'template'
-                ? 'Hostname, Active Directory domain join, certificates, and approved applications.'
-                : 'Review what becomes available after the operating system and VMware Tools are installed.'}
+                ? 'Windows identity, certificates, and approved applications.'
+                : 'Unattended Windows identity and post-installation automation.'}
             </span>
           </span>
           <PackageCheck className="h-4 w-4 text-brand-700" aria-hidden />
         </div>
         <div className="space-y-8 bg-[#fafbf8] p-5">
           <OsStep embedded />
-          {data.source_type === 'template' && (
-            <>
-              <CertificatesStep embedded />
-              <ApplicationsStep embedded />
-            </>
-          )}
+          <CertificatesStep embedded />
+          <ApplicationsStep embedded />
         </div>
       </div>
     </section>

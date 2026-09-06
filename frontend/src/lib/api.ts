@@ -5,6 +5,7 @@ import type {
   AuditListResponse,
   CertificatePackageOut,
   ClusterOut,
+  CredentialOptionOut,
   DashboardResponse,
   DatacenterOut,
   DatastoreClusterOut,
@@ -192,6 +193,10 @@ export const api = {
     ),
 
   // Provisioning
+  provisioningCredentials: (purpose?: string) =>
+    request<CredentialOptionOut[]>(
+      `/provisioning/credentials${purpose ? `?purpose=${encodeURIComponent(purpose)}` : ''}`,
+    ),
   validate: (payload: ProvisioningRequest) =>
     request<PreflightReport>('/provisioning/validate', { method: 'POST', body: payload }),
   ipCheck: (address: string, prefix: number, vcenterId?: string | null) =>
@@ -271,6 +276,8 @@ export const api = {
     credentials: () => request<SecretReferenceOut[]>('/admin/credentials'),
     createCredential: (body: Record<string, unknown>) =>
       request<SecretReferenceOut>('/admin/credentials', { method: 'POST', body }),
+    updateCredential: (id: string, body: Record<string, unknown>) =>
+      request<SecretReferenceOut>(`/admin/credentials/${id}`, { method: 'PUT', body }),
     deleteCredential: (id: string) =>
       request<void>(`/admin/credentials/${id}`, { method: 'DELETE' }),
 

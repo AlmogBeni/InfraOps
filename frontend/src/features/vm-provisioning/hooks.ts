@@ -99,3 +99,12 @@ export function useCertificatePackages(enabled = true) {
 export function useApplications(enabled = true) {
   return useQuery({ queryKey: ['applications'], queryFn: () => api.applications(true), enabled })
 }
+
+export function useProvisioningCredentials(purpose: 'guest_administrator' | 'domain_join') {
+  return useQuery({
+    queryKey: ['provisioning-credentials', purpose],
+    queryFn: () => api.provisioningCredentials(purpose),
+    refetchInterval: 5_000,
+    staleTime: 0,
+  })
+}

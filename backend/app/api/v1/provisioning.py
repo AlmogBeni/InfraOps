@@ -19,10 +19,12 @@ from app.auth.permissions import Permission, roles_grant
 from app.core.errors import NotFoundError
 from app.models.infrastructure import VCenterConnection
 from app.models.jobs import ProvisioningJob, ProvisioningJobStep
+from app.models.platform import SecretReference
 from app.models.user import User
 from app.repositories.jobs import JobRepository
 from app.schemas.jobs import JobDetailOut, JobListResponse, JobOut, JobStepOut, RetryRequest
 from app.schemas.provisioning import (
+    CredentialOptionOut,
     IpConflictCheckRequest,
     IpConflictReport,
     PreflightReport,
@@ -42,6 +44,31 @@ from app.services.vmware.factory import get_vmware_service
 from app.workers.events import JobEventPublisher
 
 router = APIRouter(prefix="/provisioning", tags=["provisioning"])
+
+
+@router.get("/credentials", response_model=list[CredentialOptionOut])
+async def list_provisioning_credentials(
+    db: DbSession,
+    user=require(Permission.PROVISIONING_VALIDATE),
+    purpose: str | None = Query(default=None),
+):
+    query = select(SecretReference).where(
+        SecretReference.provider == "database",
+        SecretReference.encrypted_username.is_not(None),
+        SecretReference.encrypted_password.is_not(None),
+    )
+    if purpose:
+        query = query.where(SecretReference.purpose == purpose)
+    result = await db.execute(query.order_by(SecretReference.name))
+    return [
+        CredentialOptionOut(
+            name=row.name,
+            purpose=row.purpose,
+            revision=row.revision,
+            updated_at=row.updated_at.isoformat() if row.updated_at else None,
+        )
+        for row in result.scalars().all()
+    ]
 
 
 # ── serialisation helpers ────────────────────────────────────────────────────

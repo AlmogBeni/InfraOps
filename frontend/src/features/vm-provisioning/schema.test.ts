@@ -108,8 +108,7 @@ describe('validateStep', () => {
       credential_secret_ref: 'domain-join',
     }
 
-    expect(validateStep('configuration', data).vm_name).toContain('Windows computer name')
-    expect(validateStep('os', data).vm_name).toContain('Windows computer name')
+    expect(validateStep('directory', data).vm_name).toContain('Windows computer name')
   })
 
   it('accepts a 63-character DNS domain label', () => {
@@ -121,8 +120,7 @@ describe('validateStep', () => {
       credential_secret_ref: 'domain-join',
     }
 
-    expect(validateStep('configuration', data)['domain_join.domain']).toBeUndefined()
-    expect(validateStep('os', data)['domain_join.domain']).toBeUndefined()
+    expect(validateStep('directory', data)['domain_join.domain']).toBeUndefined()
   })
 
   it('rejects a DNS domain label longer than 63 characters', () => {
@@ -134,8 +132,7 @@ describe('validateStep', () => {
       credential_secret_ref: 'domain-join',
     }
 
-    expect(validateStep('configuration', data)['domain_join.domain']).toContain('63 characters')
-    expect(validateStep('os', data)['domain_join.domain']).toContain('63 characters')
+    expect(validateStep('directory', data)['domain_join.domain']).toContain('63 characters')
   })
 
   it('requires a template only for template mode', () => {
@@ -153,7 +150,7 @@ describe('validateStep', () => {
     expect(validateStep('media', data).template_id).toBe('Select an OVF or OVA package.')
 
     data.source_type = 'blank'
-    expect(validateStep('media', data)).toEqual({})
+    expect(validateStep('media', data).iso_id).toContain('Windows installation ISO')
   })
 
   it('requires a host for manual placement', () => {
@@ -230,7 +227,7 @@ describe('buildRequest', () => {
     expect(buildRequest(data).compute.host_id).toBeNull()
   })
 
-  it('removes all template and guest-only state from blank requests', () => {
+  it('provisions the complete guest workflow from a blank Windows ISO', () => {
     const data = validData()
     data.source_type = 'blank'
     data.template_id = 'vm-stale'
@@ -243,9 +240,9 @@ describe('buildRequest', () => {
     expect(payload.source_type).toBe('blank')
     expect(payload.guest.template_id).toBeNull()
     expect(payload.guest.iso_id).toBe('iso-ubuntu-2404')
-    expect(payload.guest.domain_join).toBeNull()
-    expect(payload.certificate_package_ids).toEqual([])
-    expect(payload.application_ids).toEqual([])
+    expect(payload.guest.domain_join).not.toBeNull()
+    expect(payload.certificate_package_ids).toEqual(data.certificate_package_ids)
+    expect(payload.application_ids).toEqual(data.application_ids)
   })
 
   it('sends an OVF or OVA package without an ISO', () => {

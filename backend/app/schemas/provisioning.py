@@ -149,6 +149,10 @@ class GuestSpec(BaseModel):
     iso_id: str | None = Field(default=None, min_length=1, max_length=2048)
     hostname: str | None = Field(default=None, max_length=64, pattern=VM_NAME_PATTERN.pattern)
     timezone: str | None = Field(default=None, max_length=100)
+    installation_locale: str = Field(default="en-US", min_length=2, max_length=35)
+    input_locale: str = Field(default="0409:00000409", min_length=2, max_length=100)
+    windows_image_index: int = Field(default=1, ge=1, le=99)
+    credential_secret_ref: str = Field(default="guest-local-admin", min_length=2, max_length=150)
     domain_join: DomainJoinSpec | None = None
 
     @property
@@ -241,9 +245,15 @@ class ProvisioningRequest(BaseModel):
             raise ValueError("guest.template_id is required when source_type is 'template'.")
         if self.source_type == VmSourceType.TEMPLATE and self.guest.iso_id is not None:
             raise ValueError("guest.iso_id must be null when source_type is 'template'.")
-        if self.source_type == VmSourceType.BLANK:
-            if self.guest.template_id is not None:
-                raise ValueError("guest.template_id must be null when source_type is 'blank'.")
+        if self.source_type == VmSourceType.BLANK and self.guest.template_id is not None:
+            raise ValueError("guest.template_id must be null when source_type is 'blank'.")
+        if (
+            self.identity_policy_version == IdentityPolicyVersion.V2
+            and self.source_type == VmSourceType.BLANK
+            and self.guest.iso_id is None
+        ):
+            raise ValueError("guest.iso_id is required to provision Windows on a blank VM.")
+        if self.source_type == VmSourceType.BLANK and self.guest.iso_id is None:
             if self.guest.hostname or self.guest.timezone or self.guest.domain_join:
                 raise ValueError(
                     "Guest customization is unavailable for a blank VM until an operating system is installed."
@@ -253,6 +263,13 @@ class ProvisioningRequest(BaseModel):
                     "Certificates and applications cannot be installed on a blank VM without an operating system."
                 )
         else:
+            if (
+                self.identity_policy_version == IdentityPolicyVersion.V2
+                and not SECRET_REFERENCE_PATTERN.fullmatch(self.guest.credential_secret_ref)
+            ):
+                raise ValueError(
+                    "guest.credential_secret_ref must be a safe lowercase, slash-separated secret reference."
+                )
             short_name = (
                 (
                     self.guest.hostname or self.vm.name
@@ -316,7 +333,7 @@ class ProvisioningRequest(BaseModel):
     @property
     def effective_computer_name(self) -> str:
         """Short Windows name passed to Rename-Computer, never an FQDN."""
-        if self.source_type == VmSourceType.BLANK:
+        if self.source_type == VmSourceType.BLANK and self.guest.iso_id is None:
             return ""
         if self.guest.domain_join is not None:
             if self.identity_policy_version == IdentityPolicyVersion.V1:
@@ -327,7 +344,10 @@ class ProvisioningRequest(BaseModel):
     @property
     def effective_fqdn(self) -> str | None:
         """Canonical DNS identity created by joining the short VM name to AD."""
-        if self.source_type == VmSourceType.BLANK or self.guest.domain_join is None:
+        if (
+            self.source_type == VmSourceType.BLANK
+            and self.guest.iso_id is None
+        ) or self.guest.domain_join is None:
             return None
         return f"{self.effective_computer_name}.{self.guest.domain_join.domain}".lower()
 
@@ -340,6 +360,13 @@ class ProvisioningSubmissionRequest(ProvisioningRequest):
     """Public validation/submission body; historical v1 is read-only."""
 
     identity_policy_version: Literal[IdentityPolicyVersion.V2] = IdentityPolicyVersion.V2
+
+
+class CredentialOptionOut(BaseModel):
+    name: str
+    purpose: str
+    revision: int
+    updated_at: str | None = None
 
 
 # ── Dry-run / preflight ──────────────────────────────────────────────────────

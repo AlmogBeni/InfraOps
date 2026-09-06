@@ -1,4 +1,4 @@
-"""Shared validation grammar for references resolved by secret providers."""
+"""Shared validation grammar for encrypted backend credential references."""
 
 from __future__ import annotations
 

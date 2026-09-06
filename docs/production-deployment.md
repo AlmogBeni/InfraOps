@@ -15,8 +15,9 @@ no sample infrastructure, certificates, applications, credentials, or demo accou
    `docker compose up --build` and confirm that administrator can log in.
 4. Remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env`, restart, and retain the password in your
    normal enterprise password manager.
-5. Through Administration, add and test the vCenter connection before creating any
-   provisioning job. Datacenters, clusters, and hosts are discovered directly from vSphere.
+5. In **Administration → Credentials**, add encrypted pairs for vCenter, Windows
+   provisioning administrator, and (when used) domain join. Then add and test the vCenter
+   connection before creating any provisioning job.
 
 The frontend listens on `127.0.0.1:8080` by default for a host-level TLS reverse proxy. The
 backend is available only on the private Compose network. Forward the original `Host`,
@@ -25,12 +26,13 @@ connections under `/api/v1/provisioning/jobs/*/events`.
 
 ## Required operational data
 
-- A vCenter FQDN/port, TLS trust chain, least-privilege service account, and the secret names
-  holding its username/password.
+- A vCenter FQDN/port, TLS trust chain, least-privilege service account, and its managed
+  vCenter credential selected in the UI.
 - Access to the vSphere datacenters, clusters, and hosts that operators may target.
-- The template-local Windows administrator secret at
-  `guest-local-admin/username` and `guest-local-admin/password`.
-- Optional domain name, OU path, and separate domain-join credential secret.
+- A managed Windows provisioning-administrator credential selected in every workflow.
+- Optional domain name, OU path, and a separate managed domain-join credential.
+- For blank VMs, a Windows ISO on an accessible datastore, its image index, language,
+  keyboard input locale, and time-zone identifier.
 - Approved software repository roots plus each application's installer, silent arguments,
   detection rule, timeout, reboot behavior, and dependencies.
 - Public root/intermediate CA certificates and their intended LocalMachine stores. Private
@@ -49,3 +51,6 @@ connections under `/api/v1/provisioning/jobs/*/events`.
   verification.
 - A UNC software repository must be reachable from the Windows guest under the account used
   by VMware Tools guest operations. Validate share and NTFS permissions from the template.
+- `SECRET_KEY` is also the root for stored credential encryption. Back it up securely and
+  restore the same value during disaster recovery; changing it makes existing ciphertext
+  unreadable.

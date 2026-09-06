@@ -24,10 +24,15 @@ by deployment hardening guidance.
   non-administrators.
 
 ### Secrets
-* No credentials in code, config files or the database. Integrations resolve named
-  secrets via `SecretsProvider` (env for dev, Vault KV v2 for production).
-* The DB stores logical references only; the credentials UI displays metadata and the
-  expected environment-variable names, never values.
+* vCenter, Windows local-administrator and domain-join credentials are entered through the
+  administrator UI and encrypted at rest with Fernet authenticated encryption. The key is
+  purpose-derived from the deployment's `SECRET_KEY`.
+* The API never returns username/password values. Jobs and vCenter records contain only
+  reference names; the worker resolves the latest encrypted revision for each operation,
+  so rotations apply without a restart.
+* Blank-Windows provisioning builds a temporary answer ISO containing the password because
+  Windows Setup requires it. The bytes are created in memory, never logged or stored in job
+  payloads, and the ISO is detached and deleted after VMware Tools becomes ready.
 * Defensive redaction (`logging.redact`) strips password/token/key/credential keys from
   anything flowing into logs or audit details.
 
@@ -62,7 +67,8 @@ by deployment hardening guidance.
 2. Strong random `SECRET_KEY`; `ENVIRONMENT=production`.
 3. Dedicated InfraOps service accounts (vCenter, domain join) distinct from human
    admin accounts, restricted per `docs/vmware-integration.md`.
-4. Store secrets in Vault; rotate the vCenter/domain-join credentials regularly.
+4. Rotate managed credentials in the UI. Securely back up `SECRET_KEY`; changing it without
+   re-encrypting the credential table makes existing values unreadable.
 5. Restrict the software repository share so the platform account can read installers but
    operators cannot write them.
 6. Protect PostgreSQL backups (job history + audit trail are business records).

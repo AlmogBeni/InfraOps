@@ -244,7 +244,7 @@ class TestVmSpec:
         with pytest.raises(ValidationError, match="template_id is required"):
             ProvisioningRequest.model_validate(payload)
 
-    def test_blank_source_accepts_no_guest_automation(self):
+    def test_blank_source_requires_iso_for_new_provisioning(self):
         payload = make_request().model_dump(mode="json")
         payload["source_type"] = "blank"
         payload["guest"] = {
@@ -254,10 +254,22 @@ class TestVmSpec:
             "timezone": None,
             "domain_join": None,
         }
+        with pytest.raises(ValidationError, match="iso_id is required"):
+            ProvisioningRequest.model_validate(payload)
+
+    def test_historical_blank_source_without_iso_remains_readable(self):
+        payload = make_request().model_dump(mode="json")
+        payload["source_type"] = "blank"
+        payload["identity_policy_version"] = "v1"
+        payload["guest"] = {
+            "template_id": None,
+            "iso_id": None,
+            "hostname": None,
+            "timezone": None,
+            "domain_join": None,
+        }
         rebuilt = ProvisioningRequest.model_validate(payload)
-        assert rebuilt.source_type == VmSourceType.BLANK
-        assert rebuilt.guest.template_id is None
-        assert rebuilt.guest.iso_id is None
+        assert rebuilt.effective_computer_name == ""
 
     def test_blank_source_accepts_selected_iso(self):
         payload = make_request().model_dump(mode="json")

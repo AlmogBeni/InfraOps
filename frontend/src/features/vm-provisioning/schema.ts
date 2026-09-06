@@ -82,6 +82,10 @@ export interface WizardData {
   disks: DiskDraft[]
   hostname: string
   timezone: string
+  installation_locale: string
+  input_locale: string
+  windows_image_index: number
+  guest_credential_secret_ref: string
   domain_join: DomainJoinDraft
   network_id: string
   adapter_type: 'VMXNET3' | 'E1000E'
@@ -118,6 +122,10 @@ export function initialWizardData(): WizardData {
     disks: [{ size_gb: 100, provisioning: 'thin', datastore_id: null }],
     hostname: '',
     timezone: '',
+    installation_locale: 'en-US',
+    input_locale: '0409:00000409',
+    windows_image_index: 1,
+    guest_credential_secret_ref: '',
     domain_join: { enabled: false, domain: '', ou: '', credential_secret_ref: 'domain-join' },
     network_id: '',
     adapter_type: 'VMXNET3',
@@ -224,6 +232,13 @@ export const stepSchemas = {
           message: 'Select an OVF or OVA package.',
         })
       }
+      if (value.source_type === 'blank' && !value.iso_id) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['iso_id'],
+          message: 'Select a Windows installation ISO for unattended provisioning.',
+        })
+      }
     }),
   infrastructure: z
     .object({
@@ -271,6 +286,9 @@ export const stepSchemas = {
     storage_mode: z.enum(['auto', 'manual']),
     datastore_id: z.string().nullable(),
     hostname: z.string(),
+    installation_locale: z.string().trim().min(2, 'Enter a Windows language tag.'),
+    input_locale: z.string().trim().min(2, 'Enter a Windows keyboard input locale.'),
+    windows_image_index: z.number().int().min(1).max(99),
     domain_join: z.object({
       enabled: z.boolean(),
       domain: z.string(),
@@ -285,20 +303,17 @@ export const stepSchemas = {
         message: 'Select a datastore.',
       })
     }
-    if (value.source_type === 'template') {
-      const hostname = value.domain_join.enabled ? value.vm_name : (value.hostname || value.vm_name)
-      if (!isWindowsComputerName(hostname)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [value.domain_join.enabled ? 'vm_name' : 'hostname'],
-          message: 'Enter a valid short Windows computer name (letters, numbers and hyphens only).',
-        })
-      }
-      validateDomainIdentity(value.vm_name, value.domain_join, context)
-      if (value.domain_join.enabled && value.domain_join.credential_secret_ref.length < 2) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ['domain_join', 'credential_secret_ref'], message: 'Select the domain-join credential reference.' })
-      }
+    const hostname = value.hostname || value.vm_name
+    if (!isWindowsComputerName(hostname)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['hostname'],
+        message: 'Enter a valid short Windows computer name (letters, numbers and hyphens only).',
+      })
     }
+  }),
+  credentials: z.object({
+    guest_credential_secret_ref: z.string().min(2, 'Select a Windows provisioning administrator credential.'),
   }),
   network: z.object({
     network_id: z.string().min(1, 'Select a port group.'),
@@ -343,13 +358,39 @@ export const stepSchemas = {
     }
     validateDomainIdentity(value.vm_name, value.domain_join, context)
   }),
+  directory: z.object({
+    vm_name: z.string(),
+    domain_join: z.object({
+      enabled: z.boolean(),
+      domain: z.string(),
+      ou: z.string(),
+      credential_secret_ref: z.string(),
+    }),
+  }).superRefine((value, context) => {
+    if (!value.domain_join.enabled) return
+    if (!isWindowsComputerName(value.vm_name)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['vm_name'],
+        message: 'Enter a valid short Windows computer name (letters, numbers and hyphens only).',
+      })
+    }
+    validateDomainIdentity(value.vm_name, value.domain_join, context)
+    if (value.domain_join.credential_secret_ref.length < 2) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['domain_join', 'credential_secret_ref'],
+        message: 'Select the domain-join credential.',
+      })
+    }
+  }),
 } satisfies Record<string, z.ZodTypeAny>
 
 export type StepKey = keyof typeof stepSchemas
 
 /** Validate one wizard slice; returns a field-to-message map. */
 export function validateStep(step: StepKey, data: WizardData): Record<string, string> {
-  const fromTemplate = data.source_type === 'template'
+  const automatesGuest = data.source_type === 'template' || Boolean(data.iso_id)
   const slice = {
     deployment: { source_type: data.source_type },
     source: { source_type: data.source_type },
@@ -384,29 +425,34 @@ export function validateStep(step: StepKey, data: WizardData): Record<string, st
       storage_mode: data.storage_mode,
       datastore_id: data.datastore_id,
       hostname: data.hostname,
+      installation_locale: data.installation_locale,
+      input_locale: data.input_locale,
+      windows_image_index: data.windows_image_index,
       domain_join: data.domain_join,
     },
+    credentials: { guest_credential_secret_ref: data.guest_credential_secret_ref },
     storage: { storage_mode: data.storage_mode, datastore_id: data.datastore_id },
     network: {
       network_id: data.network_id,
-      ip_address: fromTemplate && data.ip_mode === 'STATIC' ? data.ip_address : '0.0.0.0',
-      prefix_input: fromTemplate && data.ip_mode === 'STATIC' ? data.prefix_input : '24',
-      gateway: fromTemplate && data.ip_mode === 'STATIC' ? data.gateway : '0.0.0.0',
-      dns_primary: fromTemplate && data.ip_mode === 'STATIC' ? data.dns_primary : '0.0.0.0',
-      dns_secondary: fromTemplate && data.ip_mode === 'STATIC' ? data.dns_secondary : '',
-      dns_extra: fromTemplate && data.ip_mode === 'STATIC' ? data.dns_extra : '',
+      ip_address: automatesGuest && data.ip_mode === 'STATIC' ? data.ip_address : '0.0.0.0',
+      prefix_input: automatesGuest && data.ip_mode === 'STATIC' ? data.prefix_input : '24',
+      gateway: automatesGuest && data.ip_mode === 'STATIC' ? data.gateway : '0.0.0.0',
+      dns_primary: automatesGuest && data.ip_mode === 'STATIC' ? data.dns_primary : '0.0.0.0',
+      dns_secondary: automatesGuest && data.ip_mode === 'STATIC' ? data.dns_secondary : '',
+      dns_extra: automatesGuest && data.ip_mode === 'STATIC' ? data.dns_extra : '',
     },
     os: {
       vm_name: data.vm_name,
-      hostname: fromTemplate
+      hostname: automatesGuest
         ? deriveGuestIdentity(
             data.vm_name,
             data.hostname,
             data.domain_join.enabled ? data.domain_join.domain : null,
           ).computerName
         : (data.vm_name || 'blank-vm'),
-      domain_join: fromTemplate ? data.domain_join : { ...data.domain_join, enabled: false },
+      domain_join: automatesGuest ? data.domain_join : { ...data.domain_join, enabled: false },
     },
+    directory: { vm_name: data.vm_name, domain_join: data.domain_join },
   }[step]
 
   const result = stepSchemas[step].safeParse(slice)
@@ -431,10 +477,11 @@ function collectDns(data: WizardData): string[] {
 export function buildRequest(data: WizardData): ProvisioningRequest {
   if (!data.source_type) throw new Error('A VM source must be selected before building the request.')
   const fromTemplate = data.source_type === 'template'
+  const automatesGuest = fromTemplate || Boolean(data.iso_id)
   const identity = deriveGuestIdentity(
     data.vm_name,
     data.hostname,
-    fromTemplate && data.domain_join.enabled ? data.domain_join.domain : null,
+    automatesGuest && data.domain_join.enabled ? data.domain_join.domain : null,
   )
   return {
     source_type: data.source_type,
@@ -461,10 +508,14 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
     guest: {
       template_id: fromTemplate ? data.template_id : null,
       iso_id: fromTemplate ? null : data.iso_id,
-      hostname: fromTemplate ? identity.computerName : null,
-      timezone: fromTemplate ? (data.timezone || null) : null,
+      hostname: automatesGuest ? identity.computerName : null,
+      timezone: automatesGuest ? (data.timezone || null) : null,
+      installation_locale: data.installation_locale,
+      input_locale: data.input_locale,
+      windows_image_index: data.windows_image_index,
+      credential_secret_ref: data.guest_credential_secret_ref,
       domain_join:
-        fromTemplate && data.domain_join.enabled
+        automatesGuest && data.domain_join.enabled
           ? {
               domain: normalizeDomain(data.domain_join.domain),
               ou: data.domain_join.ou || null,
@@ -475,9 +526,9 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
     network: {
       network_id: data.network_id,
       adapter_type: data.adapter_type,
-      mode: fromTemplate ? data.ip_mode : 'DHCP',
+      mode: automatesGuest ? data.ip_mode : 'DHCP',
       ipv4:
-        fromTemplate && data.ip_mode === 'STATIC'
+        automatesGuest && data.ip_mode === 'STATIC'
           ? {
               address: data.ip_address.trim(),
               prefix: resolvePrefix(data.prefix_input),
@@ -486,7 +537,7 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
             }
           : null,
     },
-    certificate_package_ids: fromTemplate ? data.certificate_package_ids : [],
-    application_ids: fromTemplate ? data.application_ids : [],
+    certificate_package_ids: automatesGuest ? data.certificate_package_ids : [],
+    application_ids: automatesGuest ? data.application_ids : [],
   }
 }

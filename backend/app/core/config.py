@@ -1,8 +1,7 @@
 """Application configuration.
 
-All runtime configuration is sourced from environment variables (12-factor).
-Secrets are *never* placed here — they are resolved through the secrets
-provider abstraction (see ``app.secrets``).
+Root runtime configuration is sourced from environment variables (12-factor).
+Operational credentials are encrypted in PostgreSQL and never placed here.
 """
 
 from __future__ import annotations
@@ -28,11 +27,6 @@ class AuthMode(str, Enum):
     LOCAL = "local"
     LDAP = "ldap"  # reserved for future enterprise integration
     OIDC = "oidc"  # reserved for future enterprise integration
-
-
-class SecretsProviderKind(str, Enum):
-    ENV = "env"
-    VAULT = "vault"
 
 
 class Settings(BaseSettings):
@@ -71,12 +65,6 @@ class Settings(BaseSettings):
     refresh_token_expire_minutes: int = 720
     cookie_secure: bool = True
     rate_limit_login_per_minute: int = 10
-
-    # ── Secrets management ───────────────────────────────────────────────────
-    secrets_provider: SecretsProviderKind = SecretsProviderKind.ENV
-    vault_addr: str = ""
-    vault_token: str = ""
-    vault_kv_mount: str = "secret"
 
     # ── Job worker ───────────────────────────────────────────────────────────
     worker_concurrency: int = 2

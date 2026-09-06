@@ -39,10 +39,10 @@ def test_vcenter_accepts_slash_separated_secret_references() -> None:
 )
 def test_secret_reference_rejects_unsafe_path_forms(invalid_ref: str) -> None:
     with pytest.raises(ValidationError):
-        SecretReferenceCreate(name=invalid_ref)
+        SecretReferenceCreate(name=invalid_ref, username="user", password="password")
 
 
 def test_secret_reference_preserves_150_character_limit() -> None:
-    assert len(SecretReferenceCreate(name="a" * 150).name) == 150
+    assert len(SecretReferenceCreate(name="a" * 150, username="user", password="password").name) == 150
     with pytest.raises(ValidationError):
-        SecretReferenceCreate(name="a" * 151)
+        SecretReferenceCreate(name="a" * 151, username="user", password="password")

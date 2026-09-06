@@ -25,7 +25,7 @@ class VCenterTarget:
     """Connection descriptor resolved from the database by callers.
 
     Raw credentials are never carried here — only secret references which the
-    implementation resolves through the secrets provider at connect time.
+    implementation resolves from encrypted backend storage at connect time.
     """
 
     id: str
@@ -77,6 +77,11 @@ class BlankVmSpec:
 class VmRef:
     id: str
     name: str
+
+
+@dataclass(frozen=True)
+class TemporaryMediaRef:
+    datastore_path: str
 
 
 @dataclass
@@ -170,6 +175,33 @@ class VMwareService(ABC):
         adapter_type: AdapterType,
         datacenter_id: str,
     ) -> None: ...
+
+    @abstractmethod
+    async def attach_temporary_iso(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        *,
+        datacenter_id: str,
+        datastore_id: str | None,
+        file_name: str,
+        content: bytes,
+    ) -> TemporaryMediaRef:
+        """Upload and attach ephemeral media. Callers must never persist ``content``."""
+
+    @abstractmethod
+    async def remove_temporary_iso(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        *,
+        datacenter_id: str,
+        datastore_path: str,
+    ) -> None: ...
+
+    @abstractmethod
+    async def mount_tools_installer(self, target: VCenterTarget, vm_id: str) -> bool:
+        """Best-effort request to mount the vSphere-provided VMware Tools image."""
 
     @abstractmethod
     async def power_on(self, target: VCenterTarget, vm_id: str) -> None: ...

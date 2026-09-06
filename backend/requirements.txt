@@ -10,3 +10,4 @@ PyJWT==2.10.1
 cryptography==44.0.0
 httpx==0.28.1
 pyvmomi~=8.0
+pycdlib==1.14.0

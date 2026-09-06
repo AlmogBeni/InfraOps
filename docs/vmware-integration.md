@@ -10,12 +10,12 @@ get_resource_pools / get_datastores / get_datastore_clusters /
 get_networks / get_templates / get_isos
 vm_exists / get_vm_info / get_used_ips / resolve_vm_id
 clone_from_template / create_blank_vm / configure_hardware / attach_network /
-power_on / wait_for_tools
+attach_temporary_iso / mount_tools_installer / remove_temporary_iso / power_on / wait_for_tools
 ```
 
 Callers pass a `VCenterTarget` (id, host, port, **secret references**, verify_ssl) — raw
-credentials never travel through the application; they are resolved from the secrets
-provider at connect time and never cached or logged.
+credential values are resolved from encrypted backend storage at connect time and never
+logged. A credential fingerprint invalidates cached sessions immediately after rotation.
 
 ## Development test double (`INFRASTRUCTURE_MODE=mock`)
 
@@ -25,7 +25,7 @@ selects it. Production configuration validation rejects mock mode. It exercises:
 * clones consume datastore capacity and fail on duplicates/insufficient space,
 * OVF/OVA packages, networks and ISO images are scoped to their simulated
   datacenters, and cross-datacenter selections are rejected at mutation time,
-* blank VM creation records the selected ISO as mounted installation media,
+* blank VM creation records the selected Windows ISO and temporary answer media,
 * VMware Tools become ready ~3 s after power-on (`wait_for_tools` polls),
 * guest commands mutate shared state (IPs sync back into the inventory used by conflict
   checks), certificate thumbprints persist per VM, installers honour a `__FAIL__`
@@ -53,13 +53,17 @@ Implementation notes:
 * Blank VM creation can add a connected virtual CD-ROM backed by the selected
   ISO. The datastore must still belong to the selected datacenter and target
   cluster when the VM mutation runs.
+* Unattended media is uploaded to `[datastore] infraops-unattend`, attached as a second
+  CD-ROM, then detached and deleted when Tools reports ready. The service account therefore
+  also needs datastore file create/delete permission.
 * Hardware stage reconfigures CPU/memory, grows existing disks (never shrinks) and creates
   additional disks with thin/thick backing.
 * Network discovery is rooted at the selected datacenter's network folder. The
   network stage revalidates that boundary before replacing existing adapters
   with VMXNET3/E1000E backed by the selected distributed port group or standard
   network.
-* Tools readiness polls `guest.toolsStatus ∈ {toolsOk, toolsOld}`.
+* Tools readiness polls `guest.toolsStatus ∈ {toolsOk, toolsOld}` and periodically retries
+  `MountToolsInstaller` while Windows Setup completes.
 * All faults are translated to `InfraOperationError`; `NoPermission` and `InvalidLogin`
   produce dedicated actionable messages.
 Content Library items are vCenter-scoped rather than owned by an inventory
@@ -76,7 +80,8 @@ Grant the service account (read-only role plus):
 * `VirtualMachine.Config.*` for: Add existing disk, Add new disk, Raw device, Change CPU,
   Memory, Settings, Add/remove network adapter
 * `Network.Assign network`
-* `Datastore.Allocate space`, `Browse datastore`
+* `Datastore.Allocate space`, `Browse datastore`, and low-level file operations needed to
+  create/delete temporary answer media
 * `Resource.Assign virtual machine to resource pool`
 * Content Library read and OVF deployment access for each library exposed to
   InfraOps

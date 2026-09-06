@@ -1,7 +1,6 @@
 """Administration: credential references, platform settings and roles.
 
-Credential endpoints manage *logical references only* — actual secret values
-live exclusively in the configured secrets provider.
+Credential endpoints accept pairs, encrypt them before storage, and return metadata only.
 """
 
 from __future__ import annotations
@@ -24,7 +23,9 @@ from app.schemas.admin import (
     RoleOut,
     SecretReferenceCreate,
     SecretReferenceOut,
+    SecretReferenceUpdate,
 )
+from app.secrets.encryption import encrypt_secret
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
     SETTING_DEFAULT_TIMEOUTS,
@@ -45,8 +46,9 @@ async def list_credentials(db: DbSession, user=require(Permission.ADMIN_CREDENTI
     return [
         SecretReferenceOut(
             id=str(row.id), name=row.name, provider=row.provider,
-            description=row.description, meta=dict(row.meta or {}),
-            created_at=row.created_at,
+            purpose=row.purpose, description=row.description, meta=dict(row.meta or {}),
+            configured=bool(row.encrypted_username and row.encrypted_password),
+            revision=row.revision, created_at=row.created_at, updated_at=row.updated_at,
         )
         for row in result.scalars().all()
     ]
@@ -58,17 +60,66 @@ async def create_credential(payload: SecretReferenceCreate, db: DbSession,
     exists = await db.execute(select(SecretReference).where(SecretReference.name == payload.name))
     if exists.scalar_one_or_none() is not None:
         raise ConflictError(f"A credential reference named '{payload.name}' already exists.")
-    row = SecretReference(**payload.model_dump(), created_by=user.id if user else None)
+    values = payload.model_dump(exclude={"username", "password"})
+    row = SecretReference(
+        **values,
+        encrypted_username=encrypt_secret(payload.username),
+        encrypted_password=encrypt_secret(payload.password),
+        created_by=user.id if user else None,
+    )
     db.add(row)
     await db.flush()
     await AuditRecorder(db).record(
         AuditAction.CREDENTIAL_CREATED, user=user, resource_type="credential_reference",
         resource_name=row.name, source_ip=source_ip,
-        details={"provider": row.provider},
+        details={"provider": row.provider, "purpose": row.purpose},
     )
     return SecretReferenceOut(id=str(row.id), name=row.name, provider=row.provider,
-                              description=row.description, meta=dict(row.meta or {}),
-                              created_at=row.created_at)
+                              purpose=row.purpose, description=row.description,
+                              meta=dict(row.meta or {}), configured=True,
+                              revision=row.revision, created_at=row.created_at,
+                              updated_at=row.updated_at)
+
+
+@router.put("/credentials/{credential_id}", response_model=SecretReferenceOut)
+async def update_credential(
+    credential_id: uuid.UUID,
+    payload: SecretReferenceUpdate,
+    db: DbSession,
+    source_ip: ClientIp,
+    user=require(Permission.ADMIN_CREDENTIALS),
+):
+    row = await db.get(SecretReference, credential_id)
+    if row is None:
+        raise NotFoundError("Credential not found.")
+    changes = payload.model_dump(exclude_unset=True)
+    username = changes.pop("username", None)
+    password = changes.pop("password", None)
+    for field, value in changes.items():
+        setattr(row, field, value)
+    if username is not None:
+        row.encrypted_username = encrypt_secret(username)
+    if password is not None:
+        row.encrypted_password = encrypt_secret(password)
+    if username is not None or password is not None:
+        row.provider = "database"
+        row.revision += 1
+    await AuditRecorder(db).record(
+        AuditAction.CREDENTIAL_UPDATED,
+        user=user,
+        resource_type="credential_reference",
+        resource_name=row.name,
+        source_ip=source_ip,
+        details={"fields": sorted(payload.model_fields_set)},
+    )
+    await db.commit()
+    await db.refresh(row)
+    return SecretReferenceOut(
+        id=str(row.id), name=row.name, provider=row.provider, purpose=row.purpose,
+        description=row.description, meta=dict(row.meta or {}),
+        configured=bool(row.encrypted_username and row.encrypted_password),
+        revision=row.revision, created_at=row.created_at, updated_at=row.updated_at,
+    )
 
 
 @router.delete("/credentials/{credential_id}", status_code=204)

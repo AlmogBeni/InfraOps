@@ -20,21 +20,6 @@ export function CertificatesStep({ embedded = false }: { embedded?: boolean }) {
     }
   }, [data.certificate_package_ids, packages.data, packages.isSuccess, wizard.update])
 
-  if (data.source_type === 'blank') {
-    return (
-      <section aria-label="Certificate selection" className="space-y-5">
-        {!embedded && <header>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest security</p>
-          <h2>Certificate deployment</h2>
-          <p>Certificate installation requires a running guest with VMware Tools.</p>
-        </header>}
-        <Alert tone="info" title="Not applicable to a blank VM">
-          No certificate packages or certificate material will be included in this request.
-        </Alert>
-      </section>
-    )
-  }
-
   function togglePackage(packageId: string, checked: boolean) {
     const selected = new Set(data.certificate_package_ids)
     if (checked) selected.add(packageId)

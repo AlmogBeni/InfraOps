@@ -36,8 +36,8 @@ Key design rules:
   handlers never touch vCenter or guest APIs directly.
 * Production requires `INFRASTRUCTURE_MODE=real`; mock adapters are retained only as
   explicitly selected development test doubles.
-* Secrets are resolved by name through a `SecretsProvider` (env / Vault). No credentials
-  exist in code, configuration or the database.
+* Administrators enter credential pairs in the UI. Values are encrypted in PostgreSQL
+  with a key derived from `SECRET_KEY`, never returned by the API, and resolved live.
 * Every provisioning stage is persisted with start/finish times, human-readable output,
   technical error detail and retry state.
 
@@ -105,10 +105,8 @@ See [`.env.example`](.env.example) for the full annotated list. Highlights:
 | Variable | Purpose |
 |---|---|
 | `INFRASTRUCTURE_MODE` | Must be `real` in production (pyvmomi vSphere adapter) |
-| `SECRETS_PROVIDER` | `env` or HashiCorp Vault KV v2 |
-| `SECRETS_<NAME>` | env-provider secret values, e.g. `SECRETS_VCSA_PROD_PASSWORD` |
 | `DATABASE_URL` / `REDIS_URL` | PostgreSQL (asyncpg) and Redis DSNs |
-| `SECRET_KEY` | JWT signing key — change for anything beyond local dev |
+| `SECRET_KEY` | JWT signing and stored-credential root key; back it up and do not rotate casually |
 | `CORS_ORIGINS` | allowed browser origins |
 
 ## Database migrations
@@ -146,16 +144,13 @@ approved applications, credential references, and platform policy through the ad
 screens. The `0002_remove_dev_seed_data` migration removes records created by older
 versions of the automatic demo seed. See [`docs/production-deployment.md`](docs/production-deployment.md).
 
-## Secret management design
+## Credential management design
 
-Integrations call `SecretsService.get_secret(name)`; providers:
-
-* **env** — resolves `SECRETS_<NORMALISED_NAME>` variables (development)
-* **vault** — HashiCorp Vault KV v2 via HTTP (`VAULT_ADDR`, `VAULT_TOKEN`, mount `secret`;
-  each secret exposes its credential under a `value` key)
-
-The database stores only logical references (`secret_references` table + fields like
-`password_secret_ref`). See [`docs/security.md`](docs/security.md).
+Administrators create and rotate vCenter, Windows provisioning-administrator and domain-join
+credential pairs under **Administration → Credentials**. The backend encrypts both values
+before storing them, returns metadata only, and reads the current revision at operation time.
+Provisioning jobs persist only the selected reference name. `.env` contains no vCenter,
+local-administrator or domain-join values. See [`docs/security.md`](docs/security.md).
 
 ## Security considerations (summary)
 
@@ -174,8 +169,8 @@ The database stores only logical references (`secret_references` table + fields 
    publishes the frontend to `127.0.0.1:8080` by default and does not publish the backend.
 2. Use a dedicated vCenter service account restricted to the privileges listed in
    [`docs/vmware-integration.md`](docs/vmware-integration.md).
-3. Set a strong `SECRET_KEY`, keep `ENVIRONMENT=production`, and configure an appropriate
-   secrets provider.
+3. Set and securely back up a strong `SECRET_KEY`; changing it makes stored credentials
+   unreadable. Keep `ENVIRONMENT=production`.
 4. Run one worker per host is unnecessary — a single worker handles concurrency via
    `WORKER_CONCURRENCY`; scale out safely thanks to `SKIP LOCKED` claiming.
 5. Back up PostgreSQL; it holds the authoritative job history and audit trail.

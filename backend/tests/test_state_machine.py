@@ -35,8 +35,8 @@ class TestStageRegistry:
         expected_prefix = [
             "validate_request", "connect_vcenter", "validate_infrastructure",
             "clone_vm", "configure_hardware", "attach_network_adapter",
-            "power_on", "wait_for_tools", "configure_guest_network",
-            "validate_network",
+            "prepare_unattended_install", "power_on", "wait_for_tools",
+            "cleanup_unattended_media", "configure_guest_network", "validate_network",
         ]
         actual = [s.key for s in ORDERED_STAGES][: len(expected_prefix)]
         assert actual == expected_prefix

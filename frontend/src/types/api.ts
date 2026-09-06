@@ -159,6 +159,13 @@ export interface DomainJoinSpec {
   credential_secret_ref: string
 }
 
+export interface CredentialOptionOut {
+  name: string
+  purpose: string
+  revision: number
+  updated_at: string | null
+}
+
 export interface ProvisioningRequest {
   source_type: 'blank' | 'template'
   identity_policy_version: 'v1' | 'v2'
@@ -182,6 +189,10 @@ export interface ProvisioningRequest {
     iso_id: string | null
     hostname: string | null
     timezone: string | null
+    installation_locale: string
+    input_locale: string
+    windows_image_index: number
+    credential_secret_ref: string
     domain_join: DomainJoinSpec | null
   }
   network: {
@@ -352,9 +363,13 @@ export interface SecretReferenceOut {
   id: string
   name: string
   provider: string
+  purpose: 'generic' | 'vcenter' | 'guest_administrator' | 'domain_join'
   description: string
   meta: Record<string, unknown>
+  configured: boolean
+  revision: number
   created_at: string | null
+  updated_at: string | null
 }
 
 export interface DefaultTimeouts {

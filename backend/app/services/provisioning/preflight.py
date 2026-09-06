@@ -404,11 +404,11 @@ class PreflightValidator:
                 "Install order: " + " → ".join(node.name for node in ordered))
 
     async def _check_credentials(self, request: ProvisioningRequest, add) -> None:
-        if request.source_type == VmSourceType.BLANK:
+        if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
             add("credentials", "Guest credentials", CheckStatus.PASS,
                 "Not required for a powered-off blank VM.")
             return
-        bases = ["guest-local-admin"]
+        bases = [request.guest.credential_secret_ref]
         if request.guest.domain_join:
             bases.append(request.guest.domain_join.credential_secret_ref)
         problems = []
@@ -425,20 +425,14 @@ class PreflightValidator:
                         f"Secret '{base}/{suffix}' could not be checked. Contact an administrator."
                     )
         if problems:
-            if any(problem.startswith("Secret 'guest-local-admin/") for problem in problems):
-                if self._secrets.provider_name == "env":
-                    problems.append(
-                        "Configure SECRETS_GUEST_LOCAL_ADMIN_USERNAME and "
-                        "SECRETS_GUEST_LOCAL_ADMIN_PASSWORD for the template-local Windows "
-                        "administrator. These are required before domain join and are separate "
-                        "from SECRETS_DOMAIN_JOIN_USERNAME/PASSWORD."
-                    )
-                else:
-                    problems.append(
-                        "Configure guest-local-admin/username and guest-local-admin/password for "
-                        "the template-local Windows administrator. These credentials are required "
-                        "before domain join and must be separate from the domain-join account."
-                    )
+            if any(
+                problem.startswith(f"Secret '{request.guest.credential_secret_ref}/")
+                for problem in problems
+            ):
+                problems.append(
+                    "Select a configured Windows provisioning administrator credential. "
+                    "It is required before network configuration and domain join."
+                )
             add("credentials", "Credential references resolvable", CheckStatus.FAIL,
                 " ".join(problems))
         else:

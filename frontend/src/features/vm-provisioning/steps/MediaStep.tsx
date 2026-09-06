@@ -1,4 +1,4 @@
-import { Check, Disc3, FileArchive, HardDrive, MapPin, RefreshCw, Search, Unplug } from 'lucide-react'
+import { Check, Disc3, FileArchive, HardDrive, MapPin, RefreshCw, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -31,7 +31,7 @@ function MediaInventoryLoading({ packageInventory = false }: { packageInventory?
           <p className="mt-1 text-xs text-[#68736d]">
             {packageInventory
               ? 'Reading the selected vCenter Content Library.'
-              : 'Scanning accessible datastores. You can continue with no ISO while this completes.'}
+                : 'Scanning accessible datastores for a Windows installation ISO.'}
           </p>
         </div>
       </div>
@@ -108,7 +108,7 @@ export function MediaStep() {
           <p>
             {isPackage
               ? 'Choose an actual OVF or OVA package from the selected vCenter library. The target datacenter is validated again before deployment.'
-              : 'Only ISO images stored in the selected datacenter are available. You may also create the VM without mounted media.'}
+              : 'Select a Windows ISO stored in the target datacenter. InfraOps will install it unattended and continue provisioning.'}
           </p>
         </div>
         <Badge tone="info"><MapPin className="h-3 w-3" /> {isPackage ? 'Selected deployment target' : 'Selected datacenter only'}</Badge>
@@ -190,34 +190,16 @@ export function MediaStep() {
         )
       ) : (
         <div className="space-y-3">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={data.iso_id === null}
-            onClick={() => wizard.update({ iso_id: null })}
-            className={cn(
-              'flex w-full items-center gap-4 rounded-2xl border bg-white p-5 text-left',
-              data.iso_id === null ? 'border-brand-600 shadow-[0_0_0_2px_rgba(31,109,88,0.12)]' : 'border-[#d8ddd7] hover:border-[#aeb9b1]',
-            )}
-          >
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#f1f3ef] text-[#65706a]"><Unplug className="h-5 w-5" /></span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-[#1e2722]">No ISO</span>
-              <span className="mt-1 block text-xs text-[#68736d]">Create the VM with an empty optical drive and mount installation media later.</span>
-            </span>
-            <ChoiceMark selected={data.iso_id === null} />
-          </button>
-
           {isos.isLoading ? (
             <MediaInventoryLoading />
           ) : isos.isError ? (
             <EmptyState
               title="ISO images could not be loaded"
-              description={isos.error instanceof Error ? isos.error.message : 'You can retry or continue with no ISO.'}
+              description={isos.error instanceof Error ? isos.error.message : 'Retry the inventory request.'}
               action={<Button type="button" variant="secondary" onClick={() => void isos.refetch()}><RefreshCw className="h-4 w-4" /> Try again</Button>}
             />
           ) : (isos.data ?? []).length === 0 ? (
-            <EmptyState title="No ISO images are available in this datacenter" description="Continue with no ISO or upload installation media to an accessible datastore." />
+            <EmptyState title="No ISO images are available in this datacenter" description="Upload a Windows installation ISO to an accessible datastore, then refresh inventory." />
           ) : filteredIsos.length === 0 ? (
             <EmptyState title="No ISO images match your search" />
           ) : (
@@ -251,7 +233,7 @@ export function MediaStep() {
         </div>
       )}
 
-      {wizard.errors.template_id && <p className="text-xs font-medium text-red-700" role="alert">{wizard.errors.template_id}</p>}
+      {(wizard.errors.template_id || wizard.errors.iso_id) && <p className="text-xs font-medium text-red-700" role="alert">{wizard.errors.template_id || wizard.errors.iso_id}</p>}
     </section>
   )
 }

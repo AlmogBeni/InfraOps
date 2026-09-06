@@ -1,7 +1,7 @@
 """Production guest operations through the VMware Tools guest API.
 
 ENVIRONMENT DEPENDENT — requires VMware Tools running inside the target VM
-and valid guest credentials resolved from the secrets provider.
+and valid guest credentials resolved live from encrypted backend storage.
 
 Output capture: ``StartProgramInGuest`` cannot stream stdout, so commands are
 wrapped through ``cmd.exe /c "... > tempfile 2>&1"`` and the temporary output

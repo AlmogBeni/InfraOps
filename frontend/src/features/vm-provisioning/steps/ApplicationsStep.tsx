@@ -20,21 +20,6 @@ export function ApplicationsStep({ embedded = false }: { embedded?: boolean }) {
     }
   }, [applications.data, applications.isSuccess, data.application_ids, wizard.update])
 
-  if (data.source_type === 'blank') {
-    return (
-      <section aria-label="Application selection" className="space-y-5">
-        {!embedded && <header>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Guest software</p>
-          <h2>Application deployment</h2>
-          <p>Application installation requires a running guest with VMware Tools.</p>
-        </header>}
-        <Alert tone="info" title="Not applicable to a blank VM">
-          No applications will be submitted with this request. Install an OS before running guest automation.
-        </Alert>
-      </section>
-    )
-  }
-
   function toggleApplication(applicationId: string, checked: boolean) {
     const selected = new Set(data.application_ids)
     if (checked) selected.add(applicationId)

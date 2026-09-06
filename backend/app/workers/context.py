@@ -40,7 +40,6 @@ class JobRunContext:
 
     # Populated during execution:
     vm_ref: VmRef | None = None
-    guest_credentials: GuestCredentials | None = None
     reboot_required: bool = False
     hostname_changed: bool = False
 
@@ -57,19 +56,16 @@ class JobRunContext:
         return {step.stage_key: step for step in self.job.steps}
 
     async def resolve_guest_credentials(self) -> GuestCredentials:
-        """Resolve guest credentials once per run (never logged, never persisted)."""
-        if self.guest_credentials is not None:
-            return self.guest_credentials
+        """Resolve the latest guest credential revision (never log or persist it)."""
         # VMware Tools authenticates to the guest before it has joined the
         # domain. Domain-join credentials are used only by Add-Computer inside
         # the guest and must never replace the template's local administrator.
-        base = "guest-local-admin"
+        base = self.request.guest.credential_secret_ref
         username_ref = f"{base}/username"
         password_ref = f"{base}/password"
         username = await self.secrets.get_secret(username_ref)
         password = await self.secrets.get_secret(password_ref)
-        self.guest_credentials = GuestCredentials(username=username, password=password)
-        return self.guest_credentials
+        return GuestCredentials(username=username, password=password)
 
 
 async def load_request_payload(job: ProvisioningJob) -> ProvisioningRequest:

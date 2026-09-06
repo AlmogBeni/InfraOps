@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsPage } from '@/features/admin/SettingsPage'
 import { VCenterConnectionsPage } from '@/features/admin/VCenterConnectionsPage'
 import { api } from '@/lib/api'
-import type { PlatformSettingsOut, VCenterConnectionAdminOut } from '@/types/api'
+import type { PlatformSettingsOut, SecretReferenceOut, VCenterConnectionAdminOut } from '@/types/api'
 
 function renderWithQueryClient(page: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -39,9 +39,23 @@ const platformSettings: PlatformSettingsOut = {
   environment_label: 'Production',
 }
 
+const vcenterCredential: SecretReferenceOut = {
+  id: '22222222-2222-4222-8222-222222222222',
+  name: 'vcenter/lab',
+  provider: 'database',
+  purpose: 'vcenter',
+  description: 'Lab vCenter service account',
+  meta: {},
+  configured: true,
+  revision: 1,
+  created_at: '2026-09-01T10:00:00Z',
+  updated_at: '2026-09-01T10:00:00Z',
+}
+
 describe('admin infrastructure and settings redesign', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.spyOn(api.admin, 'credentials').mockResolvedValue([vcenterCredential])
   })
 
   it('keeps credential references off vCenter cards and confirms removal in-app', async () => {
@@ -74,8 +88,7 @@ describe('admin infrastructure and settings redesign', () => {
 
     fireEvent.change(screen.getByRole('textbox', { name: /Connection name/ }), { target: { value: 'Lab vCenter' } })
     fireEvent.change(screen.getByRole('textbox', { name: /Server hostname/ }), { target: { value: 'lab-vcenter.example.test' } })
-    fireEvent.change(screen.getByRole('textbox', { name: /Username credential reference/ }), { target: { value: 'vcenter/lab/username' } })
-    fireEvent.change(screen.getByRole('textbox', { name: /Password credential reference/ }), { target: { value: 'vcenter/lab/password' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /vCenter service account/ }), { target: { value: 'vcenter/lab' } })
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Port' }), { target: { value: '70000' } })
 
     expect(saveButton).toBeDisabled()

@@ -16,6 +16,8 @@ import { Alert, Badge } from '@/components/ui/feedback'
 import { Stepper } from '@/components/ui/stepper'
 import { WizardProvider, WIZARD_STEPS, useWizard } from '@/features/vm-provisioning/context'
 import { ConfigurationStep } from '@/features/vm-provisioning/steps/ConfigurationStep'
+import { CredentialsStep } from '@/features/vm-provisioning/steps/CredentialsStep'
+import { DirectoryStep } from '@/features/vm-provisioning/steps/DirectoryStep'
 import { LocationStep } from '@/features/vm-provisioning/steps/LocationStep'
 import { MediaStep } from '@/features/vm-provisioning/steps/MediaStep'
 import { NetworkStep } from '@/features/vm-provisioning/steps/NetworkStep'
@@ -35,8 +37,12 @@ function StepContent() {
       return <MediaStep />
     case 'configuration':
       return <ConfigurationStep />
+    case 'credentials':
+      return <CredentialsStep />
     case 'network':
       return <NetworkStep />
+    case 'directory':
+      return <DirectoryStep />
     default:
       return <ReviewStep />
   }

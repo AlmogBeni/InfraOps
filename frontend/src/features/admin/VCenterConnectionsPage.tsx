@@ -19,9 +19,8 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback'
-import { Checkbox, FormRow, Input } from '@/components/ui/form-controls'
+import { Checkbox, FormRow, Input, Select } from '@/components/ui/form-controls'
 import { PageHeader } from '@/components/ui/page'
-import { isValidSecretReference, SECRET_REFERENCE_HINT } from '@/features/admin/secret-reference'
 import { api } from '@/lib/api'
 import { displayValue, formatDateTime, humanizeIdentifier } from '@/lib/utils'
 import type { VCenterConnectionAdminOut } from '@/types/api'
@@ -30,13 +29,18 @@ const EMPTY_FORM = {
   name: '',
   host: '',
   port: 443,
-  username_secret_ref: '',
-  password_secret_ref: '',
+  credential_secret_ref: '',
   verify_ssl: true,
   notes: '',
 }
 
 const HOSTNAME_PATTERN = /^[a-zA-Z0-9](?:[a-zA-Z0-9.\-]{0,251}[a-zA-Z0-9])?$/
+
+function credentialBase(connection: VCenterConnectionAdminOut): string {
+  const usernameBase = connection.username_secret_ref.replace(/\/username$/, '')
+  const passwordBase = connection.password_secret_ref.replace(/\/password$/, '')
+  return usernameBase === passwordBase ? usernameBase : ''
+}
 
 interface TestFeedback {
   ok: boolean
@@ -80,6 +84,15 @@ export function VCenterConnectionsPage() {
   const [testResults, setTestResults] = useState<Record<string, TestFeedback>>({})
 
   const connections = useQuery({ queryKey: ['admin-vcenters'], queryFn: () => api.admin.vcenters() })
+  const credentials = useQuery({
+    queryKey: ['admin-credentials'],
+    queryFn: () => api.admin.credentials(),
+    refetchInterval: 5_000,
+    staleTime: 0,
+  })
+  const vcenterCredentials = (credentials.data ?? []).filter(
+    (credential) => credential.purpose === 'vcenter' && credential.configured,
+  )
 
   function openCreate() {
     setEditing(null)
@@ -94,8 +107,7 @@ export function VCenterConnectionsPage() {
       name: connection.name,
       host: connection.host,
       port: connection.port,
-      username_secret_ref: connection.username_secret_ref,
-      password_secret_ref: connection.password_secret_ref,
+      credential_secret_ref: credentialBase(connection),
       verify_ssl: connection.verify_ssl,
       notes: connection.notes,
     })
@@ -115,8 +127,8 @@ export function VCenterConnectionsPage() {
         name: form.name.trim(),
         host: form.host.trim(),
         port: Number(form.port),
-        username_secret_ref: form.username_secret_ref.trim(),
-        password_secret_ref: form.password_secret_ref.trim(),
+        username_secret_ref: `${form.credential_secret_ref}/username`,
+        password_secret_ref: `${form.credential_secret_ref}/password`,
       }
       if (editing) return api.admin.updateVCenter(editing.id, body)
       return api.admin.createVCenter(body)
@@ -166,8 +178,6 @@ export function VCenterConnectionsPage() {
   const tlsCount = items.filter((item) => item.verify_ssl).length
   const normalizedName = form.name.trim()
   const normalizedHost = form.host.trim()
-  const normalizedUsernameRef = form.username_secret_ref.trim()
-  const normalizedPasswordRef = form.password_secret_ref.trim()
   const nameError = normalizedName.length < 2 || normalizedName.length > 150
     ? 'Use a connection name from 2 to 150 characters.'
     : null
@@ -176,19 +186,15 @@ export function VCenterConnectionsPage() {
     || !HOSTNAME_PATTERN.test(normalizedHost)
     ? 'Enter a valid DNS hostname or IP address from 3 to 255 characters.'
     : null
-  const usernameRefError = !isValidSecretReference(normalizedUsernameRef)
-    ? 'Enter a valid username credential reference.'
-    : null
-  const passwordRefError = !isValidSecretReference(normalizedPasswordRef)
-    ? 'Enter a valid password credential reference.'
+  const credentialError = !form.credential_secret_ref
+    ? 'Select a configured vCenter service account.'
     : null
   const validPort = Number.isInteger(form.port) && form.port >= 1 && form.port <= 65535
   const formValidationErrors = [
     nameError,
     hostError,
     !validPort ? 'Enter a whole-number port from 1 to 65,535.' : null,
-    usernameRefError,
-    passwordRefError,
+    credentialError,
   ].filter((error): error is string => Boolean(error))
   const formIsValid = formValidationErrors.length === 0
 
@@ -197,9 +203,9 @@ export function VCenterConnectionsPage() {
       <PageHeader
         eyebrow="Infrastructure administration"
         title="vCenter connections"
-        description="Manage vSphere endpoints, provider-backed credentials, certificate verification, and connection health in one place."
+        description="Manage vSphere endpoints, encrypted credentials, certificate verification, and connection health in one place."
         actions={<Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" /> Add vCenter</Button>}
-        meta={<><span>{items.length} configured endpoint{items.length === 1 ? '' : 's'}</span><span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5 text-brand-700" /> Credentials remain in the secret provider</span></>}
+        meta={<><span>{items.length} configured endpoint{items.length === 1 ? '' : 's'}</span><span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5 text-brand-700" /> Credentials encrypted in the backend</span></>}
       />
 
       <section className="animate-panel-reveal overflow-hidden rounded-2xl border border-[#285f50] bg-[#173f34] text-white shadow-[0_18px_44px_rgba(23,63,52,0.18)]" aria-label="vCenter connection summary">
@@ -299,10 +305,14 @@ export function VCenterConnectionsPage() {
         </section>
 
         <section className="mb-5 rounded-xl border border-brand-100 bg-brand-50/50 p-4">
-          <div className="mb-4 flex items-start gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white text-brand-700 ring-1 ring-inset ring-brand-100"><LockKeyhole className="h-4 w-4" /></span><div><h3 className="text-xs font-semibold text-brand-900">External credential references</h3><p className="mt-1 text-[11px] leading-4 text-brand-800/70">Enter provider lookup names only. Usernames and passwords remain in the external secret provider.</p></div></div>
-          <FormRow label="Username credential reference" htmlFor="vc-user-ref" required hint={`${SECRET_REFERENCE_HINT} Example: vcenter/production/username.`} error={form.username_secret_ref.length > 0 ? usernameRefError ?? undefined : undefined}><Input id="vc-user-ref" maxLength={150} autoComplete="off" value={form.username_secret_ref} onChange={(event) => setForm({ ...form, username_secret_ref: event.target.value.toLowerCase() })} /></FormRow>
-          <FormRow label="Password credential reference" htmlFor="vc-pass-ref" required hint={`${SECRET_REFERENCE_HINT} Example: vcenter/production/password.`} error={form.password_secret_ref.length > 0 ? passwordRefError ?? undefined : undefined}><Input id="vc-pass-ref" maxLength={150} autoComplete="off" value={form.password_secret_ref} onChange={(event) => setForm({ ...form, password_secret_ref: event.target.value.toLowerCase() })} /></FormRow>
-          <p className="flex items-center gap-1.5 text-[10px] text-brand-800/70"><KeyRound className="h-3.5 w-3.5" /> No secret value is stored in this connection record.</p>
+          <div className="mb-4 flex items-start gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white text-brand-700 ring-1 ring-inset ring-brand-100"><LockKeyhole className="h-4 w-4" /></span><div><h3 className="text-xs font-semibold text-brand-900">Managed credential</h3><p className="mt-1 text-[11px] leading-4 text-brand-800/70">Select an encrypted service account from Administration → Credentials.</p></div></div>
+          <FormRow label="vCenter service account" htmlFor="vc-credential" required error={credentialError ?? undefined}>
+            <Select id="vc-credential" value={form.credential_secret_ref} onChange={(event) => setForm({ ...form, credential_secret_ref: event.target.value })}>
+              <option value="">Select service account</option>
+              {vcenterCredentials.map((credential) => <option key={credential.name} value={credential.name}>{credential.name} · revision {credential.revision}</option>)}
+            </Select>
+          </FormRow>
+          <p className="flex items-center gap-1.5 text-[10px] text-brand-800/70"><KeyRound className="h-3.5 w-3.5" /> Credential rotations apply to the next connection without restarting services.</p>
         </section>
 
         <FormRow label="Operator notes" htmlFor="vc-notes" hint="Optional context such as environment ownership or maintenance window."><Input id="vc-notes" placeholder="Managed by the virtualization team" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></FormRow>

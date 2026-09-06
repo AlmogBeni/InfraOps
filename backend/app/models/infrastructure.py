@@ -15,7 +15,7 @@ class VCenterConnection(Base):
     """A registered vCenter endpoint.
 
     Credentials are never stored here — only secret references resolved at
-    runtime through the secrets provider.
+    runtime through encrypted backend credential storage.
     """
 
     __tablename__ = "vcenters"

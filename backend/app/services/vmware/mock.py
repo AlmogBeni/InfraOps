@@ -32,6 +32,7 @@ from app.services.vmware.base import (
     BlankVmSpec,
     CloneSpec,
     PowerStateInfo,
+    TemporaryMediaRef,
     VCenterTarget,
     VmRef,
     VMwareService,
@@ -111,6 +112,8 @@ class _MockVM:
         self.memory_mb = 4096
         self.disks_gb: list[int] = []
         self.powered_on_at: dt.datetime | None = None
+        self.temporary_media: set[str] = set()
+        self.tools_installer_requested = False
 
 
 class _MockInventory:
@@ -697,6 +700,45 @@ class MockVMwareService(VMwareService):
             )
         vm.network_id = network_id
         log.info("MOCK network attached: %s -> %s (%s)", vm.name, inv.networks[network_id].name, adapter_type.value)
+
+    async def attach_temporary_iso(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        *,
+        datacenter_id: str,
+        datastore_id: str | None,
+        file_name: str,
+        content: bytes,
+    ) -> TemporaryMediaRef:
+        await asyncio.sleep(_LATENCY_RECONFIG)
+        vm = self._require_vm(target, vm_id)
+        if not content:
+            raise InfraOperationError(
+                "The generated unattended media was empty.",
+                reason="No answer-file content was supplied.",
+                recommended_action="Retry the unattended installation preparation stage.",
+                retryable=True,
+            )
+        path = f"[mock-datastore] infraops-unattend/{file_name}"
+        vm.temporary_media.add(path)
+        return TemporaryMediaRef(datastore_path=path)
+
+    async def remove_temporary_iso(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        *,
+        datacenter_id: str,
+        datastore_path: str,
+    ) -> None:
+        vm = self._require_vm(target, vm_id)
+        vm.temporary_media.discard(datastore_path)
+
+    async def mount_tools_installer(self, target: VCenterTarget, vm_id: str) -> bool:
+        vm = self._require_vm(target, vm_id)
+        vm.tools_installer_requested = True
+        return True
 
     async def power_on(self, target: VCenterTarget, vm_id: str) -> None:
         await asyncio.sleep(_LATENCY_POWER_ON)

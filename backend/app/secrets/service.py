@@ -4,17 +4,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.core.config import SecretsProviderKind, get_settings
 from app.secrets.base import SecretsProvider
-from app.secrets.env_provider import EnvSecretsProvider
-from app.secrets.vault_provider import VaultSecretsProvider
+from app.secrets.database_provider import DatabaseSecretsProvider
 
 
-def build_provider(kind: SecretsProviderKind | None = None) -> SecretsProvider:
-    selected = kind or get_settings().secrets_provider
-    if selected == SecretsProviderKind.VAULT:
-        return VaultSecretsProvider()
-    return EnvSecretsProvider()
+def build_provider() -> SecretsProvider:
+    """The environment cannot select or supply operational credentials."""
+    return DatabaseSecretsProvider()
 
 
 class SecretsService:
@@ -27,8 +23,8 @@ class SecretsService:
         return await self.provider.get_secret(secret_name)
 
     async def get_credentials(self, username_ref: str, password_ref: str) -> tuple[str, str]:
-        username = await self.provider.get_secret(username_ref)
-        password = await self.provider.get_secret(password_ref)
+        username = await self.get_secret(username_ref)
+        password = await self.get_secret(password_ref)
         return username, password
 
     async def healthcheck(self) -> bool:
