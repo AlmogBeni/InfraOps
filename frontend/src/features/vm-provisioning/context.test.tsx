@@ -14,8 +14,15 @@ function Harness() {
         Change datacenter
       </button>
       <button type="button" onClick={() => wizard.goTo(5)}>Open review</button>
+      <button type="button" onClick={() => wizard.setErrors({ ip_address: 'Enter a valid IPv4 address.' })}>
+        Set IP error
+      </button>
+      <button type="button" onClick={() => wizard.update({ ip_address: '192.168.77.52' })}>
+        Correct IP
+      </button>
       <output data-testid="wizard-state">{JSON.stringify(wizard.data)}</output>
       <output data-testid="wizard-step">{wizard.currentIndex}</output>
+      <output data-testid="wizard-errors">{JSON.stringify(wizard.errors)}</output>
     </>
   )
 }
@@ -107,5 +114,15 @@ describe('WizardProvider datacenter scope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open review' }))
 
     expect(screen.getByTestId('wizard-step')).toHaveTextContent('0')
+  })
+
+  it('clears a stale field error when that field is corrected', () => {
+    render(<WizardProvider><Harness /></WizardProvider>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set IP error' }))
+    expect(screen.getByTestId('wizard-errors')).toHaveTextContent('Enter a valid IPv4 address.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Correct IP' }))
+    expect(screen.getByTestId('wizard-errors')).toHaveTextContent('{}')
   })
 })

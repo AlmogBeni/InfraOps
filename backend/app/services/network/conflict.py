@@ -9,6 +9,7 @@ understand exactly what was (and was not) checked.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import socket
 from abc import ABC, abstractmethod
 
@@ -34,14 +35,20 @@ class IcmpPingProvider(ConflictCheckProvider):
     name = "ICMP"
 
     async def check(self, address: str, prefix: int) -> ProviderResult:
-        import asyncio
         import os
         import re
 
+        ping = shutil.which("ping")
+        if ping is None:
+            return ProviderResult(
+                provider=self.name,
+                status=ConflictProviderStatus.NOT_CONFIGURED,
+                detail="ICMP probe is unavailable because the ping utility is not installed.",
+            )
         if os.name == "nt":
-            cmd = ["ping", "-n", "1", "-w", str(int(_ICMP_TIMEOUT_SECONDS * 1000)), address]
+            cmd = [ping, "-n", "1", "-w", str(int(_ICMP_TIMEOUT_SECONDS * 1000)), address]
         else:
-            cmd = ["ping", "-c", "1", "-W", "1", address]
+            cmd = [ping, "-c", "1", "-W", "1", address]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -49,7 +56,7 @@ class IcmpPingProvider(ConflictCheckProvider):
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_ICMP_TIMEOUT_SECONDS + 2)
-        except (asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, OSError) as exc:
             return ProviderResult(provider=self.name, status=ConflictProviderStatus.ERROR,
                                   detail=f"Ping could not be executed: {exc}")
         text = stdout.decode(errors="replace")
@@ -131,7 +138,12 @@ async def run_conflict_check(
             )
 
     conflict = any(r.status == ConflictProviderStatus.CONFLICT_DETECTED for r in results)
-    definitive = sum(1 for r in results if r.status in (ConflictProviderStatus.NO_CONFLICT, ConflictProviderStatus.CONFLICT_DETECTED))
+    definitive = sum(
+        1
+        for result in results
+        if result.status
+        in (ConflictProviderStatus.NO_CONFLICT, ConflictProviderStatus.CONFLICT_DETECTED)
+    )
     available = sum(1 for r in results if r.status != ConflictProviderStatus.NOT_CONFIGURED)
 
     if conflict:

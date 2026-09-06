@@ -230,7 +230,12 @@ export function CredentialsPage() {
           />
         </FormRow>
         <Alert tone="info" title="Complete provider setup separately">
-          After registering this name, provision the corresponding credential fields in the selected provider according to your organization&apos;s naming policy.
+          For a username/password workflow, register the pair&apos;s base name (for example,
+          <span className="font-mono"> domain-join</span>), not separate
+          <span className="font-mono"> -username</span> and <span className="font-mono"> -password</span> references.
+          The environment provider resolves that example from
+          <span className="font-mono"> SECRETS_DOMAIN_JOIN_USERNAME</span> and
+          <span className="font-mono"> SECRETS_DOMAIN_JOIN_PASSWORD</span>.
         </Alert>
       </Dialog>
 

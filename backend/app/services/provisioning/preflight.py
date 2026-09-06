@@ -425,6 +425,20 @@ class PreflightValidator:
                         f"Secret '{base}/{suffix}' could not be checked. Contact an administrator."
                     )
         if problems:
+            if any(problem.startswith("Secret 'guest-local-admin/") for problem in problems):
+                if self._secrets.provider_name == "env":
+                    problems.append(
+                        "Configure SECRETS_GUEST_LOCAL_ADMIN_USERNAME and "
+                        "SECRETS_GUEST_LOCAL_ADMIN_PASSWORD for the template-local Windows "
+                        "administrator. These are required before domain join and are separate "
+                        "from SECRETS_DOMAIN_JOIN_USERNAME/PASSWORD."
+                    )
+                else:
+                    problems.append(
+                        "Configure guest-local-admin/username and guest-local-admin/password for "
+                        "the template-local Windows administrator. These credentials are required "
+                        "before domain join and must be separate from the domain-join account."
+                    )
             add("credentials", "Credential references resolvable", CheckStatus.FAIL,
                 " ".join(problems))
         else:

@@ -387,6 +387,13 @@ class IpConflictCheckRequest(BaseModel):
     address: str
     prefix: int = Field(ge=8, le=32)
 
+    @field_validator("address", mode="before")
+    @classmethod
+    def _normalize_address(cls, value: object) -> object:
+        if isinstance(value, str):
+            return _validate_ipv4(value, "IP address")
+        return value
+
 
 class IpConflictReport(BaseModel):
     address: str

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildRequest,
   initialWizardData,
+  parsePrefixInput,
   validateStep,
   type WizardData,
 } from '@/features/vm-provisioning/schema'
@@ -69,6 +70,32 @@ describe('validateStep', () => {
     data.gateway = ''
     data.dns_primary = ''
     expect(validateStep('network', data)).toEqual({})
+  })
+
+  it('accepts surrounding whitespace in IPv4 fields and normalizes the request', () => {
+    const data = validData()
+    data.ip_address = ' 192.168.77.52 '
+    data.gateway = ' 192.168.77.254 '
+
+    expect(validateStep('network', data)).toEqual({})
+    expect(buildRequest(data).network.ipv4?.address).toBe('192.168.77.52')
+    expect(buildRequest(data).network.ipv4?.gateway).toBe('192.168.77.254')
+  })
+
+  it('uses the actual prefix represented by a dotted subnet mask', () => {
+    expect(parsePrefixInput('255.255.254.0')).toBe(23)
+    expect(parsePrefixInput('255.0.255.0')).toBeNull()
+    expect(parsePrefixInput('0.0.0.0')).toBeNull()
+  })
+
+  it('validates every optional DNS server', () => {
+    const data = validData()
+    data.dns_secondary = '999.1.1.1'
+    data.dns_extra = '10.20.1.12, bad-address'
+
+    const errors = validateStep('network', data)
+    expect(errors.dns_secondary).toBeTruthy()
+    expect(errors.dns_extra).toBeTruthy()
   })
 
   it('requires the VM name to be a valid short Windows name for domain join', () => {

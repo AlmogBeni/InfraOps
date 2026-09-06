@@ -98,6 +98,12 @@ export function WizardProvider({ children }: { children: ReactNode }) {
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   const update = useCallback((patch: Partial<WizardData>) => {
+    const changedFields = Object.keys(patch)
+    setErrors((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([field]) => !changedFields.some(
+        (changed) => field === changed || field.startsWith(`${changed}.`),
+      )),
+    ))
     setData((previous) => {
       let normalizedPatch = { ...patch }
 

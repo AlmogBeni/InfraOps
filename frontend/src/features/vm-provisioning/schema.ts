@@ -134,7 +134,36 @@ export function initialWizardData(): WizardData {
 }
 
 function ipv4(message: string) {
-  return z.string().regex(IPV4_REGEX, message)
+  return z.string().trim().regex(IPV4_REGEX, message)
+}
+
+function optionalIpv4(message: string) {
+  return z.string().trim().refine((value) => value === '' || IPV4_REGEX.test(value), message)
+}
+
+function ipv4List(message: string) {
+  return z.string().refine(
+    (value) => value
+      .split(/[\s,;]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .every((entry) => IPV4_REGEX.test(entry)),
+    message,
+  )
+}
+
+export function isValidIpv4(value: string): boolean {
+  return IPV4_REGEX.test(value.trim())
+}
+
+export function parsePrefixInput(value: string): number | null {
+  const input = value.trim()
+  if (/^\d{1,2}$/.test(input)) {
+    const prefix = Number(input)
+    return prefix >= 8 && prefix <= 32 ? prefix : null
+  }
+  const prefix = maskToPrefix(input)
+  return prefix !== null && prefix >= 8 && prefix <= 32 ? prefix : null
 }
 
 const computeSchema = z.object({
@@ -277,17 +306,13 @@ export const stepSchemas = {
     prefix_input: z
       .string()
       .refine(
-        (value) => {
-          if (/^\d{1,2}$/.test(value)) {
-            const prefix = Number(value)
-            return prefix >= 8 && prefix <= 32
-          }
-          return maskToPrefix(value) !== null
-        },
+        (value) => parsePrefixInput(value) !== null,
         'Enter a prefix length (8–32) or a valid subnet mask.',
       ),
     gateway: ipv4('Enter a valid IPv4 gateway.'),
     dns_primary: ipv4('Enter a valid IPv4 DNS server.'),
+    dns_secondary: optionalIpv4('Enter a valid secondary IPv4 DNS server.'),
+    dns_extra: ipv4List('Enter only valid IPv4 DNS servers separated by spaces or commas.'),
   }),
   os: z.object({
     vm_name: z.string(),
@@ -368,6 +393,8 @@ export function validateStep(step: StepKey, data: WizardData): Record<string, st
       prefix_input: fromTemplate && data.ip_mode === 'STATIC' ? data.prefix_input : '24',
       gateway: fromTemplate && data.ip_mode === 'STATIC' ? data.gateway : '0.0.0.0',
       dns_primary: fromTemplate && data.ip_mode === 'STATIC' ? data.dns_primary : '0.0.0.0',
+      dns_secondary: fromTemplate && data.ip_mode === 'STATIC' ? data.dns_secondary : '',
+      dns_extra: fromTemplate && data.ip_mode === 'STATIC' ? data.dns_extra : '',
     },
     os: {
       vm_name: data.vm_name,
@@ -393,8 +420,7 @@ export function validateStep(step: StepKey, data: WizardData): Record<string, st
 }
 
 function resolvePrefix(input: string): number {
-  if (/^\d{1,2}$/.test(input.trim())) return Number(input.trim())
-  return maskToPrefix(input.trim()) ?? 24
+  return parsePrefixInput(input) ?? 24
 }
 
 function collectDns(data: WizardData): string[] {
@@ -453,9 +479,9 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
       ipv4:
         fromTemplate && data.ip_mode === 'STATIC'
           ? {
-              address: data.ip_address,
+              address: data.ip_address.trim(),
               prefix: resolvePrefix(data.prefix_input),
-              gateway: data.gateway,
+              gateway: data.gateway.trim(),
               dns_servers: collectDns(data),
             }
           : null,

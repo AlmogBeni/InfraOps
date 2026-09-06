@@ -7,6 +7,7 @@ import { Alert, Badge, EmptyState, LoadingState } from '@/components/ui/feedback
 import { FormRow, Input, RadioGroup, Select } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useNetworks } from '@/features/vm-provisioning/hooks'
+import { isValidIpv4, parsePrefixInput } from '@/features/vm-provisioning/schema'
 import { api } from '@/lib/api'
 import { humanizeIdentifier } from '@/lib/utils'
 import type { IpConflictReport } from '@/types/api'
@@ -29,7 +30,10 @@ export function NetworkStep() {
 
   const ipCheck = useMutation({
     mutationFn: () => {
-      const prefix = /^\d{1,2}$/.test(data.prefix_input.trim()) ? Number(data.prefix_input.trim()) : 24
+      const prefix = parsePrefixInput(data.prefix_input)
+      if (prefix === null || !isValidIpv4(data.ip_address)) {
+        throw new Error('Enter a valid IPv4 address and subnet mask before checking the address.')
+      }
       return api.ipCheck(data.ip_address, prefix, data.vcenter_id || undefined)
     },
     onSuccess: setConflictReport,
@@ -198,7 +202,7 @@ export function NetworkStep() {
                         <p className="text-[11px] text-slate-500">Queries ICMP, DNS, and vCenter inventory.</p>
                       </div>
                     </div>
-                    <Button type="button" size="sm" variant="secondary" loading={ipCheck.isPending} disabled={!data.ip_address} onClick={() => ipCheck.mutate()}>
+                    <Button type="button" size="sm" variant="secondary" loading={ipCheck.isPending} disabled={!isValidIpv4(data.ip_address) || parsePrefixInput(data.prefix_input) === null} onClick={() => ipCheck.mutate()}>
                       Check address
                     </Button>
                   </div>
