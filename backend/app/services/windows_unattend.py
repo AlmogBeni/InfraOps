@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import io
 import re
+import struct
 from dataclasses import dataclass
 from xml.etree import ElementTree as ET
 
@@ -185,8 +185,9 @@ def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \""
         "$limit=(Get-Date).AddHours(2); do { "
         "$installer=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=5' | "
-        "ForEach-Object { $root=$_.DeviceID; @((Join-Path $root 'setup.exe'),"
-        "(Join-Path $root 'setup64.exe')) } | "
+        "ForEach-Object { $root=$_.DeviceID; if (-not (Test-Path "
+        "(Join-Path $root 'sources\\boot.wim'))) { @((Join-Path $root 'setup.exe'),"
+        "(Join-Path $root 'setup64.exe')) } } | "
         "Where-Object { Test-Path $_ } | Select-Object -First 1; "
         "if ($installer) { Start-Process $installer -ArgumentList '/s /v /qn REBOOT=R' -Wait; exit 0 }; "
         "Start-Sleep -Seconds 15 } while ((Get-Date) -lt $limit); exit 1\""
@@ -196,23 +197,105 @@ def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def build_unattend_iso(xml_bytes: bytes) -> bytes:
-    """Create a small Joliet ISO with Autounattend.xml at its root."""
-    try:
-        import pycdlib
-    except ImportError as exc:  # pragma: no cover - dependency checked in deployment
-        raise RuntimeError("pycdlib is required to build unattended Windows media") from exc
+def _fat12_set_entry(table: bytearray, cluster: int, value: int) -> None:
+    offset = cluster + cluster // 2
+    if cluster % 2:
+        table[offset] = (table[offset] & 0x0F) | ((value << 4) & 0xF0)
+        table[offset + 1] = (value >> 4) & 0xFF
+    else:
+        table[offset] = value & 0xFF
+        table[offset + 1] = (table[offset + 1] & 0xF0) | ((value >> 8) & 0x0F)
 
-    image = pycdlib.PyCdlib()
-    image.new(interchange_level=3, joliet=3, vol_ident="INFRAOPS")
-    source = io.BytesIO(xml_bytes)
-    image.add_fp(
-        source,
-        len(xml_bytes),
-        iso_path="/AUTOUNAT.XML;1",
-        joliet_path="/Autounattend.xml",
-    )
-    output = io.BytesIO()
-    image.write_fp(output)
-    image.close()
-    return output.getvalue()
+
+def _short_name_checksum(name: bytes) -> int:
+    checksum = 0
+    for value in name:
+        checksum = (((checksum & 1) << 7) | (checksum >> 1)) + value
+        checksum &= 0xFF
+    return checksum
+
+
+def _long_name_entry(ordinal: int, units: list[int], checksum: int) -> bytes:
+    entry = bytearray(32)
+    entry[0] = ordinal
+    entry[11] = 0x0F
+    entry[12] = 0
+    entry[13] = checksum
+    struct.pack_into("<H", entry, 26, 0)
+    for offset, value in zip(
+        (1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30),
+        units,
+        strict=True,
+    ):
+        struct.pack_into("<H", entry, offset, value)
+    return bytes(entry)
+
+
+def build_unattend_floppy(xml_bytes: bytes) -> bytes:
+    """Create a 1.44 MB FAT12 floppy image containing ``Autounattend.xml``.
+
+    Windows Setup searches removable read/write media for this exact long file
+    name. A floppy-backed answer file avoids presenting a second bootable CD-ROM
+    beside the selected Windows installation ISO.
+    """
+    sector_size = 512
+    sectors_per_fat = 9
+    root_entries = 224
+    root_sectors = (root_entries * 32 + sector_size - 1) // sector_size
+    data_start_sector = 1 + 2 * sectors_per_fat + root_sectors
+    available_clusters = 2880 - data_start_sector
+    clusters_needed = max(1, (len(xml_bytes) + sector_size - 1) // sector_size)
+    if clusters_needed > available_clusters:
+        raise ValueError("Autounattend.xml is too large for the virtual floppy image.")
+
+    image = bytearray(2880 * sector_size)
+    image[0:3] = b"\xeb\x3c\x90"
+    image[3:11] = b"INFRAOPS"
+    struct.pack_into("<HBHBHHBHHHII", image, 11, 512, 1, 1, 2, root_entries, 2880,
+                     0xF0, sectors_per_fat, 18, 2, 0, 0)
+    image[36] = 0
+    image[38] = 0x29
+    struct.pack_into("<I", image, 39, 0x494F5053)
+    image[43:54] = b"INFRAOPS   "
+    image[54:62] = b"FAT12   "
+    image[510:512] = b"\x55\xaa"
+
+    fat = bytearray(sectors_per_fat * sector_size)
+    fat[0:3] = b"\xf0\xff\xff"
+    first_cluster = 2
+    for index in range(clusters_needed):
+        cluster = first_cluster + index
+        next_cluster = 0xFFF if index == clusters_needed - 1 else cluster + 1
+        _fat12_set_entry(fat, cluster, next_cluster)
+    for start_sector in (1, 1 + sectors_per_fat):
+        start = start_sector * sector_size
+        image[start:start + len(fat)] = fat
+
+    long_name = "Autounattend.xml"
+    short_name = b"AUTOUN~1XML"
+    name_units = list(struct.unpack(f"<{len(long_name)}H", long_name.encode("utf-16le")))
+    name_units.append(0)
+    while len(name_units) % 13:
+        name_units.append(0xFFFF)
+    chunks = [name_units[index:index + 13] for index in range(0, len(name_units), 13)]
+    checksum = _short_name_checksum(short_name)
+    directory_entries = []
+    for index in reversed(range(len(chunks))):
+        ordinal = index + 1
+        if ordinal == len(chunks):
+            ordinal |= 0x40
+        directory_entries.append(_long_name_entry(ordinal, chunks[index], checksum))
+
+    short_entry = bytearray(32)
+    short_entry[0:11] = short_name
+    short_entry[11] = 0x20
+    struct.pack_into("<H", short_entry, 26, first_cluster)
+    struct.pack_into("<I", short_entry, 28, len(xml_bytes))
+    directory_entries.append(bytes(short_entry))
+    root_start = (1 + 2 * sectors_per_fat) * sector_size
+    directory = b"".join(directory_entries)
+    image[root_start:root_start + len(directory)] = directory
+
+    data_start = data_start_sector * sector_size
+    image[data_start:data_start + len(xml_bytes)] = xml_bytes
+    return bytes(image)

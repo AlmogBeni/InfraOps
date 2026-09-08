@@ -16,7 +16,7 @@ const OPTIONS: Array<{
     value: 'blank',
     title: 'Blank virtual machine',
     description:
-      'Create VM hardware only, optionally adding a Windows ISO for unattended installation. Without media, provisioning pauses for OS installation.',
+      'Create VM hardware only, optionally adding a Windows ISO for unattended installation. InfraOps asks for confirmation when Windows reaches first logon.',
     detail: 'Optional Windows ISO · separate hardware and guest lifecycles',
     icon: Box,
   },

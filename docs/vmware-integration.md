@@ -10,7 +10,7 @@ get_resource_pools / get_datastores / get_datastore_clusters /
 get_networks / get_templates / get_isos
 vm_exists / get_vm_info / get_used_ips / resolve_vm_id
 clone_from_template / create_blank_vm / configure_hardware / attach_network /
-attach_temporary_iso / mount_tools_installer / remove_temporary_iso / power_on / wait_for_tools
+attach_temporary_floppy / mount_tools_installer / remove_temporary_floppy / power_on / wait_for_tools
 ```
 
 Callers pass a `VCenterTarget` (id, host, port, **secret references**, verify_ssl) — raw
@@ -25,7 +25,7 @@ selects it. Production configuration validation rejects mock mode. It exercises:
 * clones consume datastore capacity and fail on duplicates/insufficient space,
 * OVF/OVA packages, networks and ISO images are scoped to their simulated
   datacenters, and cross-datacenter selections are rejected at mutation time,
-* blank VM creation records the selected Windows ISO and temporary answer media,
+* blank VM creation records the selected Windows ISO and temporary floppy-backed answer media,
 * VMware Tools become ready ~3 s after power-on (`wait_for_tools` polls),
 * guest commands mutate shared state (IPs sync back into the inventory used by conflict
   checks), certificate thumbprints persist per VM, installers honour a `__FAIL__`
@@ -53,8 +53,9 @@ Implementation notes:
 * Blank VM creation can add a connected virtual CD-ROM backed by the selected
   ISO. The datastore must still belong to the selected datacenter and target
   cluster when the VM mutation runs.
-* Unattended media is uploaded to `[datastore] infraops-unattend`, attached as a second
-  CD-ROM, then detached and deleted when Tools reports ready. The service account therefore
+* Unattended media is uploaded to `[datastore] infraops-unattend`, attached as a virtual
+  floppy so the Windows installer remains the VM's only datastore-backed CD-ROM, then
+  detached and deleted when Tools reports ready. The service account therefore
   also needs datastore file create/delete permission.
 * Hardware stage reconfigures CPU/memory, grows existing disks (never shrinks) and creates
   additional disks with thin/thick backing.
@@ -65,10 +66,11 @@ Implementation notes:
 * Guest readiness reads `guest.toolsRunningStatus`, `guest.toolsVersionStatus2`,
   `guest.guestOperationsReady`, and the legacy `guest.toolsStatus` compatibility value.
   Configured `guestId` is never used as proof that an OS is installed.
-* `MountToolsInstaller` is used only to supply installer media to the blank-Windows
-  unattended bootstrap. The `FirstLogonCommands` installer runs inside Windows, checks both
-  `setup.exe` and legacy `setup64.exe`, and a later heartbeat proves installation. OVF/OVA
-  deployments never mount or upgrade Tools automatically.
+* `MountToolsInstaller` is used only after an administrator confirms that the blank-Windows
+  unattended installation reached first logon. The `FirstLogonCommands` installer runs inside
+  Windows, excludes the Windows installation disc, checks both `setup.exe` and legacy
+  `setup64.exe`, and a later heartbeat proves installation. OVF/OVA deployments never mount
+  or upgrade Tools automatically.
 * Tools states are normalized to `NOT_APPLICABLE_YET`, `NOT_INSTALLED`, `INSTALLING`,
   `RUNNING`, `NOT_RUNNING`, `OUTDATED`, `ERROR`, or `UNKNOWN`. `toolsOld` is a warning;
   `toolsNotRunning` is not treated as uninstalled.

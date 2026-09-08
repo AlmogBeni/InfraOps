@@ -49,7 +49,7 @@ from app.services.vmware.base import PowerStateInfo, VmRef
 from app.services.windows_unattend import (
     WindowsUnattendSpec,
     build_autounattend_xml,
-    build_unattend_iso,
+    build_unattend_floppy,
 )
 from app.workers.context import JobRunContext
 from app.workers.state_machine import ORDERED_STAGES
@@ -745,17 +745,17 @@ async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
     )
     # The media contains a plaintext Windows Setup password by necessity. It is
     # held only in memory here, uploaded directly, and removed after Tools starts.
-    media = build_unattend_iso(xml)
+    media = build_unattend_floppy(xml)
     datastore_id = next(
         (disk.datastore_id for disk in ctx.request.hardware.disks if disk.datastore_id),
         None,
     )
-    ref = await ctx.vmware.attach_temporary_iso(
+    ref = await ctx.vmware.attach_temporary_floppy(
         ctx.target,
         vm_id,
         datacenter_id=ctx.request.compute.datacenter_id,
         datastore_id=datastore_id,
-        file_name=f"infraops-{ctx.job_id}.iso",
+        file_name=f"infraops-{ctx.job_id}.flp",
         content=media,
     )
     return StageOutcome(
@@ -806,40 +806,30 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
             artifacts={"required_action": "INSTALL_AND_CONFIRM_GUEST_OS"},
         )
 
-    timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
     if request.source_type == VmSourceType.BLANK:
+        step = ctx.steps_by_key.get("wait_for_guest_os")
+        confirmed = bool((step.artifacts or {}).get("administrator_confirmed")) if step else False
         ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
-        try:
-            # Autounattend runs the installer *inside Windows* at first logon.
-            # The vCenter call only supplies its media; the heartbeat proves
-            # that both the OS and Tools service subsequently became ready.
-            await ctx.vmware.wait_for_tools(
-                ctx.target, vm_id, max(1.0, timeout - 5.0), mount_if_missing=True
-            )
-        except InfraOperationError as exc:
-            ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
-            ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
+        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
+        if not confirmed:
             return StageOutcome(
                 status="WAITING_FOR_PREREQUISITE",
                 output=(
-                    "Windows Setup has not produced a verifiable guest. Inspect the VM console for "
-                    "installer or boot errors, then resume after Windows reaches first logon."
+                    "The VM was started from the selected Windows ISO and unattended Setup is in "
+                    "progress. Verify in the console that Windows has reached first logon, then "
+                    "confirm and resume. Power state alone is not accepted as OS readiness, and "
+                    "VMware Tools media has not been mounted yet."
                 ),
-                artifacts={
-                    "required_action": "VERIFY_UNATTENDED_OS_INSTALLATION",
-                    "last_observation": exc.human_message,
-                },
+                artifacts={"required_action": "CONFIRM_UNATTENDED_OS_INSTALLATION"},
             )
         ctx.job.guest_os_status = GuestOsStatus.READY.value
-        ctx.job.vmware_tools_status = VMwareToolsStatus.RUNNING.value
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
         return StageOutcome(
-            output=(
-                "Unattended Windows Setup reached first logon and the in-guest Tools bootstrap "
-                "reported a heartbeat. Guest OS readiness is verified."
-            )
+            output="An administrator confirmed that unattended Windows Setup reached first logon."
         )
 
+    timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
     # An OVF/OVA deploy result proves only that the vCenter resource exists.
     # Wait for an existing heartbeat and never mount/reinstall Tools silently.
     try:
@@ -881,7 +871,7 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
-    _require_vm_id(ctx)
+    vm_id = _require_vm_id(ctx)
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
     state = _tools_lifecycle(info)
     ctx.job.vmware_tools_status = state.value
@@ -894,6 +884,67 @@ async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
                 "VMware Tools is running but outdated. InfraOps continued with a warning and did "
                 "not silently upgrade the guest."
             ),
+        )
+    if (
+        ctx.request.source_type == VmSourceType.BLANK
+        and ctx.request.guest.iso_id is not None
+        and state in (VMwareToolsStatus.UNKNOWN, VMwareToolsStatus.NOT_INSTALLED)
+    ):
+        try:
+            mounted = await ctx.vmware.mount_tools_installer(ctx.target, vm_id)
+        except InfraOperationError as exc:
+            ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+            return StageOutcome(
+                status="WAITING_FOR_PREREQUISITE",
+                output=(
+                    "The guest OS is ready, but vCenter could not supply VMware Tools media. "
+                    "Disconnect the Windows installation ISO or provide an available CD/DVD "
+                    "device, then resume."
+                ),
+                artifacts={
+                    "required_action": "PREPARE_CDROM_FOR_VMWARE_TOOLS",
+                    "last_observation": exc.human_message,
+                },
+            )
+        if mounted:
+            ctx.job.vmware_tools_status = VMwareToolsStatus.INSTALLING.value
+            timeout = await effective_timeout_seconds(ctx, "wait_for_tools")
+            try:
+                await ctx.vmware.wait_for_tools(
+                    ctx.target,
+                    vm_id,
+                    max(1.0, timeout - 5.0),
+                    mount_if_missing=False,
+                )
+            except InfraOperationError as exc:
+                ctx.job.guest_provisioning_status = (
+                    GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+                )
+                return StageOutcome(
+                    status="WAITING_FOR_PREREQUISITE",
+                    output=(
+                        "VMware Tools media was supplied only after OS readiness was confirmed, "
+                        "but no Tools heartbeat was observed. Run or troubleshoot the installer "
+                        "inside Windows, then resume."
+                    ),
+                    artifacts={
+                        "required_action": "COMPLETE_VMWARE_TOOLS_INSTALLATION",
+                        "last_observation": exc.human_message,
+                    },
+                )
+            ctx.job.vmware_tools_status = VMwareToolsStatus.RUNNING.value
+            ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
+            return StageOutcome(
+                output="VMware Tools was installed inside Windows and its heartbeat is ready."
+            )
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+        return StageOutcome(
+            status="WAITING_FOR_PREREQUISITE",
+            output=(
+                "The guest OS is ready, but vCenter could not mount VMware Tools media. "
+                "Disconnect the Windows installation ISO from the CD/DVD device, then resume."
+            ),
+            artifacts={"required_action": "PREPARE_CDROM_FOR_VMWARE_TOOLS"},
         )
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
     if state == VMwareToolsStatus.NOT_RUNNING:
@@ -928,7 +979,7 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
     datastore_path = ((prepare.artifacts or {}).get("datastore_path") if prepare else None)
     if not datastore_path:
         return StageOutcome(status="SKIPPED", output="No temporary unattended media was recorded.")
-    await ctx.vmware.remove_temporary_iso(
+    await ctx.vmware.remove_temporary_floppy(
         ctx.target,
         _require_vm_id(ctx),
         datacenter_id=ctx.request.compute.datacenter_id,

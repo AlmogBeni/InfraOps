@@ -71,10 +71,11 @@ validate request and live inventory
   -> ReconfigVM_Task (idempotent hardware reconciliation)
   -> ReconfigVM_Task (vNIC to port group)
   -> no ISO: powered off -> OS INSTALLATION_REQUIRED -> ACTION_REQUIRED
-  -> ISO: attach temporary answer media -> PowerOnVM_Task
+  -> ISO: attach temporary answer-file floppy -> set CD-first boot -> PowerOnVM_Task
           -> OS INSTALLATION_IN_PROGRESS
           -> Windows Setup/OOBE
-          -> first-logon in-guest Tools installation
+          -> administrator confirms first logon
+          -> supply Tools media -> first-logon in-guest Tools installation
           -> OS READY + Tools RUNNING
           -> guest IP/hostname/domain/certificates/apps
           -> final verification -> COMPLETED

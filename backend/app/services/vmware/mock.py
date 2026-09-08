@@ -712,7 +712,7 @@ class MockVMwareService(VMwareService):
         vm.network_id = network_id
         log.info("MOCK network attached: %s -> %s (%s)", vm.name, inv.networks[network_id].name, adapter_type.value)
 
-    async def attach_temporary_iso(
+    async def attach_temporary_floppy(
         self,
         target: VCenterTarget,
         vm_id: str,
@@ -735,7 +735,7 @@ class MockVMwareService(VMwareService):
         vm.temporary_media.add(path)
         return TemporaryMediaRef(datastore_path=path)
 
-    async def remove_temporary_iso(
+    async def remove_temporary_floppy(
         self,
         target: VCenterTarget,
         vm_id: str,

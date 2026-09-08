@@ -35,7 +35,7 @@ administrator credentials resolved live from encrypted backend storage.
 
 | Stage | Mechanism |
 |---|---|
-| Windows installation | Temporary root-level `Autounattend.xml` ISO configures image index, locale, keyboard, time zone, computer name and local administrator; vSphere mounts VMware Tools automatically |
+| Windows installation | `Autounattend.xml` on a temporary virtual floppy configures image index, locale, keyboard, time zone, computer name and local administrator; the selected Windows ISO remains the only datastore-backed CD-ROM |
 | Static IP / gateway / DNS | PowerShell: `New-NetIPAddress`, `Set-DnsClientServerAddress` (adapter auto-detected; DHCP disabled first) |
 | DHCP mode | `Set-NetIPInterface -Dhcp Enabled` + DNS reset |
 | Gateway/DNS validation | `Test-Connection` to gateway, `Resolve-DnsName` via first DNS server |

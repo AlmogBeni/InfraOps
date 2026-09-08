@@ -998,6 +998,33 @@ class VsphereVMwareService(VMwareService):
                     recommended_action="Check recent tasks in vCenter before retrying.",
                     retryable=True,
                 )
+            if iso_reference is not None:
+                boot_order = [vim.vm.BootOptions.BootableCdromDevice()]
+                created_disks = [
+                    device
+                    for device in created.config.hardware.device
+                    if isinstance(device, vim.vm.device.VirtualDisk)
+                ]
+                if created_disks:
+                    boot_order.append(
+                        vim.vm.BootOptions.BootableDiskDevice(
+                            deviceKey=created_disks[0].key
+                        )
+                    )
+                boot_options = vim.vm.BootOptions(
+                    bootOrder=boot_order,
+                    bootRetryEnabled=True,
+                    bootRetryDelay=10_000,
+                )
+                if spec.firmware == FirmwareType.EFI:
+                    boot_options.efiSecureBootEnabled = spec.secure_boot
+                try:
+                    task = created.ReconfigVM_Task(
+                        spec=vim.vm.ConfigSpec(bootOptions=boot_options)
+                    )
+                    self._wait_for_task(task)
+                except Exception as exc:  # noqa: BLE001
+                    raise _wrap("configure_installation_boot", exc) from exc
             return VmRef(id=created._moId, name=created.name)
 
         log.info("vSphere create blank VM: name=%s cluster=%s", spec.vm_name, spec.cluster_id)
@@ -1194,7 +1221,7 @@ class VsphereVMwareService(VMwareService):
 
         await self._with_session(target, op)
 
-    async def attach_temporary_iso(
+    async def attach_temporary_floppy(
         self,
         target: VCenterTarget,
         vm_id: str,
@@ -1260,38 +1287,19 @@ class VsphereVMwareService(VMwareService):
             existing = next(
                 (
                     device for device in vm.config.hardware.device
-                    if isinstance(device, vim.vm.device.VirtualCdrom)
+                    if isinstance(device, vim.vm.device.VirtualFloppy)
                     and getattr(getattr(device, "backing", None), "fileName", None) == datastore_path
                 ),
                 None,
             )
             if existing is None:
-                controllers = [
-                    device for device in vm.config.hardware.device
-                    if isinstance(device, vim.vm.device.VirtualAHCIController)
-                ]
                 changes = []
-                if controllers:
-                    controller = controllers[0]
-                else:
-                    controller = vim.vm.device.VirtualAHCIController(key=-290, busNumber=1)
-                    controller_change = vim.vm.device.VirtualDeviceSpec()
-                    controller_change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-                    controller_change.device = controller
-                    changes.append(controller_change)
-                used_units = {
-                    device.unitNumber for device in vm.config.hardware.device
-                    if getattr(device, "controllerKey", None) == controller.key
-                }
-                unit = next((candidate for candidate in range(30) if candidate not in used_units), 0)
-                backing = vim.vm.device.VirtualCdrom.IsoBackingInfo(
+                backing = vim.vm.device.VirtualFloppy.ImageBackingInfo(
                     fileName=datastore_path,
                     datastore=datastore,
                 )
-                cdrom = vim.vm.device.VirtualCdrom(
+                floppy = vim.vm.device.VirtualFloppy(
                     key=-291,
-                    controllerKey=controller.key,
-                    unitNumber=unit,
                     backing=backing,
                     connectable=vim.vm.device.VirtualDevice.ConnectInfo(
                         startConnected=True,
@@ -1299,10 +1307,10 @@ class VsphereVMwareService(VMwareService):
                         connected=True,
                     ),
                 )
-                cdrom_change = vim.vm.device.VirtualDeviceSpec()
-                cdrom_change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-                cdrom_change.device = cdrom
-                changes.append(cdrom_change)
+                floppy_change = vim.vm.device.VirtualDeviceSpec()
+                floppy_change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                floppy_change.device = floppy
+                changes.append(floppy_change)
                 reconfigure = vim.vm.ConfigSpec(deviceChange=changes)
                 self._wait_for_task(vm.ReconfigVM_Task(spec=reconfigure))
             return TemporaryMediaRef(datastore_path=datastore_path)
@@ -1312,7 +1320,7 @@ class VsphereVMwareService(VMwareService):
         except Exception as exc:  # noqa: BLE001
             raise _wrap("attach-unattended-media", exc) from exc
 
-    async def remove_temporary_iso(
+    async def remove_temporary_floppy(
         self,
         target: VCenterTarget,
         vm_id: str,
@@ -1328,7 +1336,7 @@ class VsphereVMwareService(VMwareService):
                 changes = []
                 for device in vm.config.hardware.device:
                     if (
-                        isinstance(device, vim.vm.device.VirtualCdrom)
+                        isinstance(device, vim.vm.device.VirtualFloppy)
                         and getattr(getattr(device, "backing", None), "fileName", None) == datastore_path
                     ):
                         change = vim.vm.device.VirtualDeviceSpec()

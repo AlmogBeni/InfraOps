@@ -182,7 +182,7 @@ class VMwareService(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def attach_temporary_iso(
+    async def attach_temporary_floppy(
         self,
         target: VCenterTarget,
         vm_id: str,
@@ -195,7 +195,7 @@ class VMwareService(ABC):
         """Upload and attach ephemeral media. Callers must never persist ``content``."""
 
     @abstractmethod
-    async def remove_temporary_iso(
+    async def remove_temporary_floppy(
         self,
         target: VCenterTarget,
         vm_id: str,

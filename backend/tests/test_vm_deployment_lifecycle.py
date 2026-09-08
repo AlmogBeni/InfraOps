@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -15,7 +16,7 @@ from app.models.jobs import (
     VMwareToolsStatus,
 )
 from app.schemas.provisioning import ProvisioningRequest
-from app.services.vmware.base import PowerStateInfo, VmRef
+from app.services.vmware.base import PowerStateInfo, TemporaryMediaRef, VmRef
 from app.workers.stages import (
     stage_clone_vm,
     stage_prepare_unattended_install,
@@ -73,28 +74,105 @@ async def test_blank_without_iso_waits_for_os_and_never_attempts_tools() -> None
 
 
 @pytest.mark.asyncio
-async def test_blank_iso_uses_in_guest_tools_bootstrap_only_during_os_wait() -> None:
+async def test_blank_iso_waits_for_confirmation_without_mounting_tools() -> None:
     vmware = SimpleNamespace(wait_for_tools=AsyncMock())
     ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
 
     outcome = await stage_wait_for_guest_os(ctx)
 
-    assert outcome.status == "SUCCEEDED"
-    vmware.wait_for_tools.assert_awaited_once()
-    assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is True
+    assert outcome.status == "WAITING_FOR_PREREQUISITE"
+    assert outcome.artifacts["required_action"] == "CONFIRM_UNATTENDED_OS_INSTALLATION"
+    vmware.wait_for_tools.assert_not_awaited()
+    assert ctx.job.guest_os_status == GuestOsStatus.INSTALLATION_IN_PROGRESS.value
+    assert ctx.job.vmware_tools_status == VMwareToolsStatus.NOT_APPLICABLE_YET.value
+
+
+@pytest.mark.asyncio
+async def test_blank_iso_mounts_tools_only_after_os_confirmation() -> None:
+    vmware = SimpleNamespace(wait_for_tools=AsyncMock())
+    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
+    ctx.steps_by_key["wait_for_guest_os"].artifacts = {"administrator_confirmed": True}
+
+    os_outcome = await stage_wait_for_guest_os(ctx)
+
+    assert os_outcome.status == "SUCCEEDED"
     assert ctx.job.guest_os_status == GuestOsStatus.READY.value
+    vmware.wait_for_tools.assert_not_awaited()
+
+    ctx.vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(
+            return_value=PowerStateInfo(
+                power_state="poweredOn",
+                tools_status="toolsNotInstalled",
+                guest_family="windowsGuest",
+            )
+        ),
+        mount_tools_installer=AsyncMock(return_value=True),
+        wait_for_tools=AsyncMock(),
+    )
+    tools_outcome = await stage_wait_for_tools(ctx)
+
+    assert tools_outcome.status == "SUCCEEDED"
+    ctx.vmware.mount_tools_installer.assert_awaited_once()
+    assert ctx.vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
     assert ctx.job.vmware_tools_status == VMwareToolsStatus.RUNNING.value
 
 
 @pytest.mark.asyncio
+async def test_blank_iso_reports_busy_cdrom_before_tools_installation() -> None:
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(
+            return_value=PowerStateInfo(
+                power_state="poweredOn",
+                tools_status="toolsNotInstalled",
+                guest_family="windowsGuest",
+            )
+        ),
+        mount_tools_installer=AsyncMock(return_value=False),
+        wait_for_tools=AsyncMock(),
+    )
+    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
+    ctx.job.guest_os_status = GuestOsStatus.READY.value
+
+    outcome = await stage_wait_for_tools(ctx)
+
+    assert outcome.status == "WAITING_FOR_PREREQUISITE"
+    assert outcome.artifacts["required_action"] == "PREPARE_CDROM_FOR_VMWARE_TOOLS"
+    vmware.wait_for_tools.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_template_never_receives_blank_unattended_media() -> None:
-    vmware = SimpleNamespace(attach_temporary_iso=AsyncMock())
+    vmware = SimpleNamespace(attach_temporary_floppy=AsyncMock())
     ctx = context(request_for("template"), vmware)
 
     outcome = await stage_prepare_unattended_install(ctx)
 
     assert outcome.status == "NOT_APPLICABLE"
-    vmware.attach_temporary_iso.assert_not_awaited()
+    vmware.attach_temporary_floppy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_blank_iso_uses_answer_floppy_not_a_second_datastore_iso() -> None:
+    vmware = SimpleNamespace(
+        attach_temporary_floppy=AsyncMock(
+            return_value=TemporaryMediaRef(
+                datastore_path="[datastore] infraops-unattend/answer.flp"
+            )
+        )
+    )
+    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
+    ctx.job_id = uuid.uuid4()
+    ctx.resolve_guest_credentials = AsyncMock(
+        return_value=SimpleNamespace(username="Administrator", password="secret")
+    )
+
+    outcome = await stage_prepare_unattended_install(ctx)
+
+    assert outcome.status == "SUCCEEDED"
+    call = vmware.attach_temporary_floppy.await_args
+    assert call.kwargs["file_name"].endswith(".flp")
+    assert len(call.kwargs["content"]) == 1_474_560
 
 
 @pytest.mark.asyncio

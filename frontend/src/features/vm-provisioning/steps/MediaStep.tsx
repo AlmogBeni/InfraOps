@@ -108,7 +108,7 @@ export function MediaStep() {
           <p>
             {isPackage
               ? 'Choose an actual OVF or OVA package from the selected vCenter library. The target datacenter is validated again before deployment.'
-              : 'Optionally select a Windows ISO for unattended installation, or create powered-off hardware and install the OS later.'}
+              : 'Optionally select a Windows ISO for unattended installation with first-logon confirmation, or create powered-off hardware and install the OS later.'}
           </p>
         </div>
         <Badge tone="info"><MapPin className="h-3 w-3" /> {isPackage ? 'Selected deployment target' : 'Selected datacenter only'}</Badge>
