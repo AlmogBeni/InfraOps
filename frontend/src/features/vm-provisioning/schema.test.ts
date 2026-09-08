@@ -144,13 +144,13 @@ describe('validateStep', () => {
     expect(validateStep('infrastructure', template).template_id).toBeUndefined()
   })
 
-  it('requires an OVF or OVA package on the media step', () => {
+  it('requires a package for template mode and allows hardware-only blank VMs', () => {
     const data = validData()
     data.template_id = ''
     expect(validateStep('media', data).template_id).toBe('Select an OVF or OVA package.')
 
     data.source_type = 'blank'
-    expect(validateStep('media', data).iso_id).toContain('Windows installation ISO')
+    expect(validateStep('media', data).iso_id).toBeUndefined()
   })
 
   it('requires a host for manual placement', () => {

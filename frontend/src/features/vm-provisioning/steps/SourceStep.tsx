@@ -16,14 +16,14 @@ const OPTIONS: Array<{
     value: 'blank',
     title: 'Blank virtual machine',
     description:
-      'Create an empty virtual machine, install Windows unattended from a required ISO, then continue through network and domain provisioning.',
-    detail: 'Windows ISO · unattended setup · full provisioning',
+      'Create VM hardware only, optionally adding a Windows ISO for unattended installation. Without media, provisioning pauses for OS installation.',
+    detail: 'Optional Windows ISO · separate hardware and guest lifecycles',
     icon: Box,
   },
   {
     value: 'template',
     title: 'Deploy an OVF / OVA package',
-    description: 'Deploy a packaged virtual appliance with supported DHCP/static addressing and Active Directory domain-join automation.',
+    description: 'Deploy a Content Library OVF/OVA package. Windows guest automation proceeds only after a booted OS and healthy VMware Tools are verified.',
     detail: 'OVF or OVA only · repeatable appliance deployment',
     icon: Layers3,
   },
@@ -105,8 +105,13 @@ export function SourceStep() {
       )}
 
       {wizard.data.source_type === 'blank' && (
-        <Alert tone="info" title="InfraOps completes the Windows installation">
-          Choose a Windows ISO, image index, locale, keyboard layout and provisioning administrator. InfraOps handles Setup, VMware Tools, networking and optional domain join.
+        <Alert tone="info" title="A VM object is not an installed operating system">
+          With an ISO, InfraOps can run unattended Windows Setup. Without one, it creates powered-off hardware and pauses with OS installation required; Tools and guest configuration remain ineligible.
+        </Alert>
+      )}
+      {wizard.data.source_type === 'template' && (
+        <Alert tone="info" title="Prepared package prerequisites are verified after deployment">
+          The package list does not prove that an OS boots or that VMware Tools/open-vm-tools is healthy. InfraOps pauses before guest commands if those prerequisites are unavailable, and Windows-only automation is never sent to a reported Linux guest.
         </Alert>
       )}
     </section>

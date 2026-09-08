@@ -102,7 +102,12 @@ async def retry_stages(
     source_ip: str | None,
 ) -> list[str]:
     """Reset failed stage(s) to PENDING and requeue the job."""
-    if job.status not in (JobStatus.FAILED, JobStatus.PARTIALLY_COMPLETED, JobStatus.CANCELLED):
+    if job.status not in (
+        JobStatus.FAILED,
+        JobStatus.PARTIALLY_COMPLETED,
+        JobStatus.ACTION_REQUIRED,
+        JobStatus.CANCELLED,
+    ):
         raise DomainValidationError(
             f"Jobs in status '{job.status.value}' cannot be retried.",
             details={"status": job.status.value},
@@ -117,16 +122,33 @@ async def retry_stages(
             raise NotFoundError(f"Unknown stage '{stage_key}' for this job.")
         if not (definition.retryable and step.retryable):
             raise DomainValidationError(f"Stage '{stage_key}' is not retryable.")
-        if step.status not in (StepStatus.FAILED, StepStatus.CANCELLED):
+        if step.status not in (
+            StepStatus.FAILED,
+            StepStatus.CANCELLED,
+            StepStatus.WAITING_FOR_PREREQUISITE,
+        ):
             raise DomainValidationError(
                 f"Stage '{stage_key}' is '{step.status.value}' — only failed stages can be retried."
             )
         stage_keys = [stage_key]
 
+    if job.status == JobStatus.ACTION_REQUIRED:
+        waiting = [
+            step for step in sorted(job.steps, key=lambda item: item.sequence)
+            if step.status == StepStatus.WAITING_FOR_PREREQUISITE
+        ]
+        resumed_step = (
+            steps_by_key.get(stage_key) if stage_key is not None else (waiting[0] if waiting else None)
+        )
+        if resumed_step is not None and resumed_step.stage_key == "wait_for_guest_os":
+            artifacts = dict(resumed_step.artifacts or {})
+            artifacts["administrator_confirmed"] = True
+            resumed_step.artifacts = artifacts
+
     repo = JobRepository(db)
     reset = await repo.reset_for_retry(job, stage_keys)
     if not reset:
-        raise DomainValidationError("No eligible failed stages were found to retry.")
+        raise DomainValidationError("No eligible failed or waiting stages were found to resume.")
 
     await AuditRecorder(db).record(
         AuditAction.JOB_STAGE_RETRIED,

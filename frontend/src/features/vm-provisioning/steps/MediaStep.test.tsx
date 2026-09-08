@@ -121,12 +121,14 @@ describe('MediaStep datacenter-scoped resources', () => {
     vi.restoreAllMocks()
   })
 
-  it('requires a discovered ISO and offers only ISO names returned for the target datacenter', async () => {
+  it('offers hardware-only creation plus discovered datacenter ISOs', async () => {
     const request = deferred<IsoImageOut[]>()
     const isos = vi.spyOn(api, 'isos').mockImplementation(() => request.promise)
     const templates = vi.spyOn(api, 'templates').mockResolvedValue(PACKAGES)
 
     renderStep('blank')
+
+    expect(screen.getByRole('radio', { name: /Create hardware without an ISO/i })).toHaveAttribute('aria-checked', 'true')
 
     expect(screen.queryByRole('radio', { name: /No ISO/i })).not.toBeInTheDocument()
     expect(await screen.findByText('Loading ISO images')).toBeInTheDocument()

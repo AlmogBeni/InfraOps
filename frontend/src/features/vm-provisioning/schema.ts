@@ -232,13 +232,6 @@ export const stepSchemas = {
           message: 'Select an OVF or OVA package.',
         })
       }
-      if (value.source_type === 'blank' && !value.iso_id) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['iso_id'],
-          message: 'Select a Windows installation ISO for unattended provisioning.',
-        })
-      }
     }),
   infrastructure: z
     .object({
@@ -313,7 +306,16 @@ export const stepSchemas = {
     }
   }),
   credentials: z.object({
-    guest_credential_secret_ref: z.string().min(2, 'Select a Windows provisioning administrator credential.'),
+    automates_guest: z.boolean(),
+    guest_credential_secret_ref: z.string(),
+  }).superRefine((value, context) => {
+    if (value.automates_guest && value.guest_credential_secret_ref.length < 2) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['guest_credential_secret_ref'],
+        message: 'Select a Windows provisioning administrator credential.',
+      })
+    }
   }),
   network: z.object({
     network_id: z.string().min(1, 'Select a port group.'),
@@ -430,7 +432,10 @@ export function validateStep(step: StepKey, data: WizardData): Record<string, st
       windows_image_index: data.windows_image_index,
       domain_join: data.domain_join,
     },
-    credentials: { guest_credential_secret_ref: data.guest_credential_secret_ref },
+    credentials: {
+      automates_guest: automatesGuest,
+      guest_credential_secret_ref: data.guest_credential_secret_ref,
+    },
     storage: { storage_mode: data.storage_mode, datastore_id: data.datastore_id },
     network: {
       network_id: data.network_id,
@@ -513,7 +518,9 @@ export function buildRequest(data: WizardData): ProvisioningRequest {
       installation_locale: data.installation_locale,
       input_locale: data.input_locale,
       windows_image_index: data.windows_image_index,
-      credential_secret_ref: data.guest_credential_secret_ref,
+      credential_secret_ref: automatesGuest
+        ? data.guest_credential_secret_ref
+        : 'guest-local-admin',
       domain_join:
         automatesGuest && data.domain_join.enabled
           ? {

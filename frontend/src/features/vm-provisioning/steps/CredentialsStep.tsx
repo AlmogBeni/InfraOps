@@ -11,6 +11,9 @@ export function CredentialsStep() {
   const wizard = useWizard()
   const credentials = useProvisioningCredentials('guest_administrator')
   const items = credentials.data ?? []
+  const guestAutomationDeferred = (
+    wizard.data.source_type === 'blank' && !wizard.data.iso_id
+  )
 
   useEffect(() => {
     if (
@@ -21,6 +24,21 @@ export function CredentialsStep() {
       wizard.update({ guest_credential_secret_ref: '' })
     }
   }, [credentials.isSuccess, items, wizard.data.guest_credential_secret_ref, wizard.update])
+
+  if (guestAutomationDeferred) {
+    return (
+      <section aria-label="Provisioning credentials" className="space-y-5">
+        <header>
+          <p className="console-kicker">Guest prerequisite</p>
+          <h2>No guest credential is required yet</h2>
+          <p>The deployment creates VM hardware only and stops before guest operations.</p>
+        </header>
+        <Alert tone="warning" title="Waiting for guest operating system">
+          Install and boot an operating system before supplying credentials or enabling VMware Tools, guest networking, hostname, domain, certificate, or application operations.
+        </Alert>
+      </section>
+    )
+  }
 
   return (
     <section aria-label="Provisioning credentials" className="space-y-5">

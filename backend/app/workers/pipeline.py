@@ -12,7 +12,14 @@ from app.audit.recorder import AuditRecorder
 from app.core.errors import InfraOperationError
 from app.core.logging import bind_logging_context, get_logger
 from app.core.metrics import job_duration_seconds, jobs_total, stage_failures_total
-from app.models.jobs import JobStatus, StepStatus
+from app.models.jobs import (
+    GuestOsStatus,
+    GuestProvisioningStatus,
+    InfrastructureStatus,
+    JobStatus,
+    StepStatus,
+    VMwareToolsStatus,
+)
 from app.repositories.jobs import JobRepository
 from app.workers.context import JobRunContext
 from app.workers.events import JobEventPublisher
@@ -43,7 +50,12 @@ class ProvisioningPipeline:
             step = ctx.steps_by_key.get(stage.key)
             if step is None:
                 continue
-            if step.status in (StepStatus.SUCCEEDED, StepStatus.SKIPPED):
+            if step.status in (
+                StepStatus.SUCCEEDED,
+                StepStatus.SKIPPED,
+                StepStatus.WARNING,
+                StepStatus.NOT_APPLICABLE,
+            ):
                 continue
 
             await ctx.db.refresh(ctx.job)
@@ -52,8 +64,8 @@ class ProvisioningPipeline:
                 return
 
             await self._run_stage(ctx, stage, step)
-            if step.status == StepStatus.FAILED:
-                return  # failure path finalised the job
+            if step.status in (StepStatus.FAILED, StepStatus.WAITING_FOR_PREREQUISITE):
+                return  # failure/action-required path finalised or paused the job
 
         await self._finalize_success(ctx)
 
@@ -112,13 +124,22 @@ class ProvisioningPipeline:
             return
 
         assert outcome is not None
-        step.status = StepStatus.SUCCEEDED if outcome.status == "SUCCEEDED" else StepStatus.SKIPPED
+        step.status = {
+            "SUCCEEDED": StepStatus.SUCCEEDED,
+            "SKIPPED": StepStatus.SKIPPED,
+            "WARNING": StepStatus.WARNING,
+            "NOT_APPLICABLE": StepStatus.NOT_APPLICABLE,
+            "WAITING_FOR_PREREQUISITE": StepStatus.WAITING_FOR_PREREQUISITE,
+        }.get(outcome.status, StepStatus.SUCCEEDED)
         step.finished_at = finished_at
         step.output = outcome.output[:_MAX_OUTPUT_CHARS]
         if outcome.artifacts:
             merged = dict(step.artifacts or {})
             merged.update(outcome.artifacts)
             step.artifacts = merged
+        if step.status == StepStatus.WAITING_FOR_PREREQUISITE:
+            await self._handle_action_required(ctx, stage, step, outcome.output, finished_at)
+            return
         ctx.job.progress = JobRepository.compute_progress(ctx.job)
         await ctx.db.commit()
 
@@ -147,10 +168,27 @@ class ProvisioningPipeline:
         step.error_technical = failure.technical_detail
 
         clone_step = ctx.steps_by_key.get("clone_vm")
-        vm_created = clone_step is not None and clone_step.status == StepStatus.SUCCEEDED
+        vm_created = clone_step is not None and clone_step.status in (
+            StepStatus.SUCCEEDED,
+            StepStatus.SKIPPED,
+        )
         ctx.job.status = (
             JobStatus.PARTIALLY_COMPLETED if vm_created else JobStatus.FAILED
         )
+        ctx.job.action_required = None
+        if stage.key in {"clone_vm", "configure_hardware", "attach_network_adapter"}:
+            ctx.job.infrastructure_status = InfrastructureStatus.FAILED.value
+        elif stage.key == "wait_for_guest_os":
+            ctx.job.guest_os_status = GuestOsStatus.ERROR.value
+            ctx.job.guest_provisioning_status = GuestProvisioningStatus.FAILED.value
+        elif stage.key == "wait_for_tools":
+            ctx.job.vmware_tools_status = VMwareToolsStatus.ERROR.value
+            ctx.job.guest_provisioning_status = GuestProvisioningStatus.FAILED.value
+        elif stage.key in {
+            "configure_guest_network", "validate_network", "configure_hostname",
+            "join_domain", "reboot_guest", "wait_guest_ready",
+        }:
+            ctx.job.guest_provisioning_status = GuestProvisioningStatus.FAILED.value
         ctx.job.error_summary = failure.human_message
         ctx.job.error_detail = (
             f"{failure.human_message}\nReason: {failure.reason}\n"
@@ -191,6 +229,7 @@ class ProvisioningPipeline:
     async def _finalize_success(self, ctx: JobRunContext) -> None:
         finished_at = _utcnow()
         ctx.job.status = JobStatus.COMPLETED
+        ctx.job.action_required = None
         ctx.job.finished_at = finished_at
         ctx.job.progress = 100
         ctx.job.current_stage = "final_validation"
@@ -234,6 +273,41 @@ class ProvisioningPipeline:
                     + (f" ({summary_artifact.get('ip_address')})" if summary_artifact.get("ip_address") else ""),
         )
         log.info("Job %s completed for VM %s", ctx.job_id, ctx.vm_name)
+
+    async def _handle_action_required(
+        self,
+        ctx: JobRunContext,
+        stage: StageDefinition,
+        step,
+        message: str,
+        finished_at: dt.datetime,
+    ) -> None:
+        """Pause a resumable deployment without misreporting a failure."""
+        downstream = False
+        for candidate in sorted(ctx.job.steps, key=lambda item: item.sequence):
+            if candidate.stage_key == stage.key:
+                downstream = True
+                continue
+            if downstream and candidate.status == StepStatus.PENDING:
+                candidate.status = StepStatus.WAITING_FOR_PREREQUISITE
+                candidate.output = f"Waiting for prerequisite: {stage.name}."
+        ctx.job.status = JobStatus.ACTION_REQUIRED
+        ctx.job.action_required = message[:2000]
+        ctx.job.error_summary = None
+        ctx.job.error_detail = None
+        ctx.job.current_stage = stage.key
+        ctx.job.finished_at = finished_at
+        if ctx.job.started_at:
+            ctx.job.duration_seconds = (finished_at - ctx.job.started_at).total_seconds()
+        ctx.job.progress = JobRepository.compute_progress(ctx.job)
+        await ctx.db.commit()
+        await self._publisher.publish_stage(
+            str(ctx.job_id),
+            stage=stage.key,
+            status=JobStatus.ACTION_REQUIRED.value,
+            progress=ctx.job.progress,
+            message=message,
+        )
 
     async def _apply_cancellation(self, ctx: JobRunContext) -> None:
         finished_at = _utcnow()

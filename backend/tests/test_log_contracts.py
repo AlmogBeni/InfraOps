@@ -55,7 +55,10 @@ def test_log_severity_and_message_are_human_readable() -> None:
     assert severity_for_status(step.status) == "ERROR"
     assert message_for_step(step) == "Deployment was rejected."
     assert severity_for_status(StepStatus.CANCELLED) == "WARNING"
+    assert severity_for_status(StepStatus.WARNING) == "WARNING"
+    assert severity_for_status(StepStatus.WAITING_FOR_PREREQUISITE) == "WARNING"
     assert severity_for_status(StepStatus.SKIPPED) == "DEBUG"
+    assert severity_for_status(StepStatus.NOT_APPLICABLE) == "DEBUG"
 
 
 def test_log_message_uses_only_a_concise_first_line() -> None:
@@ -68,6 +71,9 @@ def test_pending_future_stages_are_not_log_events() -> None:
     assert StepStatus.PENDING not in LOGGABLE_STEP_STATUSES
     assert StepStatus.RUNNING in LOGGABLE_STEP_STATUSES
     assert StepStatus.SUCCEEDED in LOGGABLE_STEP_STATUSES
+    assert StepStatus.WARNING in LOGGABLE_STEP_STATUSES
+    assert StepStatus.WAITING_FOR_PREREQUISITE in LOGGABLE_STEP_STATUSES
+    assert StepStatus.NOT_APPLICABLE in LOGGABLE_STEP_STATUSES
 
 
 def test_non_admin_log_details_exclude_internal_ids_and_artifacts() -> None:

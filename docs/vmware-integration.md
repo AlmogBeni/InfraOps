@@ -62,8 +62,16 @@ Implementation notes:
   network stage revalidates that boundary before replacing existing adapters
   with VMXNET3/E1000E backed by the selected distributed port group or standard
   network.
-* Tools readiness polls `guest.toolsStatus ∈ {toolsOk, toolsOld}` and periodically retries
-  `MountToolsInstaller` while Windows Setup completes.
+* Guest readiness reads `guest.toolsRunningStatus`, `guest.toolsVersionStatus2`,
+  `guest.guestOperationsReady`, and the legacy `guest.toolsStatus` compatibility value.
+  Configured `guestId` is never used as proof that an OS is installed.
+* `MountToolsInstaller` is used only to supply installer media to the blank-Windows
+  unattended bootstrap. The `FirstLogonCommands` installer runs inside Windows, checks both
+  `setup.exe` and legacy `setup64.exe`, and a later heartbeat proves installation. OVF/OVA
+  deployments never mount or upgrade Tools automatically.
+* Tools states are normalized to `NOT_APPLICABLE_YET`, `NOT_INSTALLED`, `INSTALLING`,
+  `RUNNING`, `NOT_RUNNING`, `OUTDATED`, `ERROR`, or `UNKNOWN`. `toolsOld` is a warning;
+  `toolsNotRunning` is not treated as uninstalled.
 * All faults are translated to `InfraOperationError`; `NoPermission` and `InvalidLogin`
   produce dedicated actionable messages.
 Content Library items are vCenter-scoped rather than owned by an inventory

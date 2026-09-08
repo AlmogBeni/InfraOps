@@ -104,6 +104,12 @@ class _MockVM:
         self.template_name = template_name
         self.power_state = "poweredOff"
         self.tools_status: str | None = None
+        self.tools_running_status: str | None = None
+        self.tools_version_status: str | None = None
+        self.guest_state: str | None = None
+        self.guest_operations_ready = False
+        self.guest_family: str | None = None
+        self.has_guest_os = bool(template_name)
         self.ip_address: str | None = None
         self.hostname: str | None = None
         self.network_id: str | None = None
@@ -434,6 +440,11 @@ class MockVMwareService(VMwareService):
         return PowerStateInfo(
             power_state=vm.power_state,
             tools_status=vm.tools_status,
+            tools_running_status=vm.tools_running_status,
+            tools_version_status=vm.tools_version_status,
+            guest_state=vm.guest_state,
+            guest_operations_ready=vm.guest_operations_ready,
+            guest_family=vm.guest_family,
             ip_addresses=ips,
         )
 
@@ -745,16 +756,33 @@ class MockVMwareService(VMwareService):
         vm = self._require_vm(target, vm_id)
         vm.power_state = "poweredOn"
         vm.powered_on_at = dt.datetime.now(dt.UTC)
+        if vm.has_guest_os:
+            vm.guest_state = "running"
         log.info("MOCK powered on: %s", vm.name)
 
-    async def wait_for_tools(self, target: VCenterTarget, vm_id: str, timeout_seconds: float) -> None:
+    async def wait_for_tools(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        timeout_seconds: float,
+        *,
+        mount_if_missing: bool = False,
+    ) -> None:
         vm = self._require_vm(target, vm_id)
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while True:
-            if vm.powered_on_at is not None:
+            if vm.powered_on_at is not None and (vm.has_guest_os or vm.iso_id is not None):
                 elapsed = (dt.datetime.now(dt.UTC) - vm.powered_on_at).total_seconds()
                 if elapsed >= _TOOLS_READY_DELAY_SECONDS:
+                    vm.has_guest_os = True
+                    vm.guest_state = "running"
+                    vm.guest_family = "windowsGuest"
                     vm.tools_status = "toolsOk"
+                    vm.tools_running_status = "guestToolsRunning"
+                    vm.tools_version_status = "guestToolsCurrent"
+                    vm.guest_operations_ready = True
+                    if mount_if_missing:
+                        vm.tools_installer_requested = True
                     log.info("MOCK VMware Tools ready: %s", vm.name)
                     return
             if asyncio.get_running_loop().time() >= deadline:

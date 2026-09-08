@@ -40,6 +40,7 @@ class JobStatus(str, enum.Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED"
+    ACTION_REQUIRED = "ACTION_REQUIRED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
@@ -50,11 +51,57 @@ class StepStatus(str, enum.Enum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
+    WARNING = "WARNING"
+    WAITING_FOR_PREREQUISITE = "WAITING_FOR_PREREQUISITE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
     CANCELLED = "CANCELLED"
 
 
+class InfrastructureStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    CREATING = "CREATING"
+    READY = "READY"
+    FAILED = "FAILED"
+
+
+class GuestOsStatus(str, enum.Enum):
+    UNKNOWN = "UNKNOWN"
+    NOT_PRESENT = "NOT_PRESENT"
+    INSTALLATION_REQUIRED = "INSTALLATION_REQUIRED"
+    INSTALLATION_IN_PROGRESS = "INSTALLATION_IN_PROGRESS"
+    READY = "READY"
+    ERROR = "ERROR"
+
+
+class VMwareToolsStatus(str, enum.Enum):
+    UNKNOWN = "UNKNOWN"
+    NOT_APPLICABLE_YET = "NOT_APPLICABLE_YET"
+    NOT_INSTALLED = "NOT_INSTALLED"
+    INSTALLING = "INSTALLING"
+    RUNNING = "RUNNING"
+    NOT_RUNNING = "NOT_RUNNING"
+    OUTDATED = "OUTDATED"
+    ERROR = "ERROR"
+
+
+class GuestProvisioningStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    WAITING_FOR_OS = "WAITING_FOR_OS"
+    WAITING_FOR_TOOLS = "WAITING_FOR_TOOLS"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    NOT_REQUESTED = "NOT_REQUESTED"
+    FAILED = "FAILED"
+
+
 TERMINAL_JOB_STATUSES = frozenset(
-    {JobStatus.COMPLETED, JobStatus.PARTIALLY_COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+    {
+        JobStatus.COMPLETED,
+        JobStatus.PARTIALLY_COMPLETED,
+        JobStatus.ACTION_REQUIRED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+    }
 )
 
 
@@ -82,6 +129,19 @@ class ProvisioningJob(Base):
     )
     current_stage: Mapped[str | None] = mapped_column(String(80), nullable=True)
     progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    infrastructure_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default=InfrastructureStatus.PENDING.value
+    )
+    guest_os_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default=GuestOsStatus.UNKNOWN.value
+    )
+    vmware_tools_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default=VMwareToolsStatus.UNKNOWN.value
+    )
+    guest_provisioning_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default=GuestProvisioningStatus.PENDING.value
+    )
+    action_required: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

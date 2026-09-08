@@ -176,10 +176,27 @@ class JobRepository:
         """
         now = dt.datetime.now(dt.UTC)
         reset: list[str] = []
+        selected_sequences = {
+            step.sequence for step in job.steps
+            if stage_keys is not None and step.stage_key in stage_keys
+        }
+        first_selected = min(selected_sequences) if selected_sequences else None
         for step in job.steps:
-            should_reset = step.status in (StepStatus.FAILED, StepStatus.CANCELLED) and (
-                stage_keys is None or step.stage_key in stage_keys
+            eligible_status = step.status in (
+                StepStatus.FAILED,
+                StepStatus.CANCELLED,
+                StepStatus.WAITING_FOR_PREREQUISITE,
             )
+            selected = (
+                stage_keys is None
+                or step.stage_key in stage_keys
+                or (
+                    first_selected is not None
+                    and step.status == StepStatus.WAITING_FOR_PREREQUISITE
+                    and step.sequence > first_selected
+                )
+            )
+            should_reset = eligible_status and selected
             if should_reset:
                 step.status = StepStatus.PENDING
                 step.attempt += 0  # attempt incremented when the stage starts
@@ -189,6 +206,7 @@ class JobRepository:
             job.cancel_requested = False
             job.finished_at = None
             job.duration_seconds = None
+            job.action_required = None
             job.queued_at = now
             job.progress = self.compute_progress(job)
             await self.session.commit()
@@ -208,11 +226,15 @@ class JobRepository:
 
     @staticmethod
     def compute_progress(job: ProvisioningJob) -> int:
-        actionable = [s for s in job.steps if s.status != StepStatus.SKIPPED]
+        actionable = [
+            s for s in job.steps
+            if s.status not in (StepStatus.SKIPPED, StepStatus.NOT_APPLICABLE)
+        ]
         if not actionable:
             return 0
         done = sum(
-            1 for s in actionable if s.status in (StepStatus.SUCCEEDED, StepStatus.CANCELLED)
+            1 for s in actionable
+            if s.status in (StepStatus.SUCCEEDED, StepStatus.WARNING, StepStatus.CANCELLED)
         )
         running = sum(1 for s in actionable if s.status == StepStatus.RUNNING)
         percent = int(((done + 0.5 * running) / len(actionable)) * 100)

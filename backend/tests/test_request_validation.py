@@ -244,7 +244,7 @@ class TestVmSpec:
         with pytest.raises(ValidationError, match="template_id is required"):
             ProvisioningRequest.model_validate(payload)
 
-    def test_blank_source_requires_iso_for_new_provisioning(self):
+    def test_blank_source_without_iso_creates_infrastructure_only(self):
         payload = make_request().model_dump(mode="json")
         payload["source_type"] = "blank"
         payload["guest"] = {
@@ -254,7 +254,22 @@ class TestVmSpec:
             "timezone": None,
             "domain_join": None,
         }
-        with pytest.raises(ValidationError, match="iso_id is required"):
+        payload["network"] = {
+            "network_id": payload["network"]["network_id"],
+            "adapter_type": payload["network"]["adapter_type"],
+            "mode": "DHCP",
+            "ipv4": None,
+        }
+        rebuilt = ProvisioningRequest.model_validate(payload)
+        assert rebuilt.guest.iso_id is None
+        assert rebuilt.effective_computer_name == ""
+
+    def test_blank_source_without_iso_rejects_guest_ip_configuration(self):
+        payload = make_request().model_dump(mode="json")
+        payload["source_type"] = "blank"
+        payload["guest"].update({"template_id": None, "iso_id": None, "hostname": None})
+        payload["guest"]["domain_join"] = None
+        with pytest.raises(ValidationError, match="Guest IP configuration is unavailable"):
             ProvisioningRequest.model_validate(payload)
 
     def test_historical_blank_source_without_iso_remains_readable(self):

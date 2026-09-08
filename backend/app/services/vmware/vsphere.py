@@ -657,6 +657,19 @@ class VsphereVMwareService(VMwareService):
             return PowerStateInfo(
                 power_state=str(vm.runtime.powerState),
                 tools_status=str(guest.toolsStatus) if guest.toolsStatus else None,
+                tools_running_status=(
+                    str(value) if (value := getattr(guest, "toolsRunningStatus", None)) else None
+                ),
+                tools_version_status=(
+                    str(value) if (value := getattr(guest, "toolsVersionStatus2", None)) else None
+                ),
+                guest_state=(
+                    str(value) if (value := getattr(guest, "guestState", None)) else None
+                ),
+                guest_operations_ready=bool(getattr(guest, "guestOperationsReady", False)),
+                guest_family=(
+                    str(value) if (value := getattr(guest, "guestFamily", None)) else None
+                ),
                 ip_addresses=ips,
                 host_id=vm.runtime.host._moId if vm.runtime.host else None,
             )
@@ -1348,16 +1361,30 @@ class VsphereVMwareService(VMwareService):
 
         return bool(await self._with_session(target, op, operation="mount-tools-installer"))
 
-    async def wait_for_tools(self, target: VCenterTarget, vm_id: str, timeout_seconds: float) -> None:
+    async def wait_for_tools(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        timeout_seconds: float,
+        *,
+        mount_if_missing: bool = False,
+    ) -> None:
         async def poll() -> None:
             deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=timeout_seconds)
             next_mount_attempt = dt.datetime.min.replace(tzinfo=dt.UTC)
             while dt.datetime.now(dt.UTC) < deadline:
                 info = await self.get_vm_info_by_id(target, vm_id)
-                if info is not None and info.tools_status in ("toolsOk", "toolsOld"):
+                if (
+                    info is not None
+                    and (
+                        info.tools_status in ("toolsOk", "toolsOld")
+                        or info.tools_running_status == "guestToolsRunning"
+                    )
+                    and info.guest_operations_ready
+                ):
                     return
                 now = dt.datetime.now(dt.UTC)
-                if now >= next_mount_attempt:
+                if mount_if_missing and now >= next_mount_attempt:
                     try:
                         await self.mount_tools_installer(target, vm_id)
                     except InfraOperationError:
@@ -1394,6 +1421,19 @@ class VsphereVMwareService(VMwareService):
             return PowerStateInfo(
                 power_state=str(vm.runtime.powerState),
                 tools_status=str(guest.toolsStatus) if guest.toolsStatus else None,
+                tools_running_status=(
+                    str(value) if (value := getattr(guest, "toolsRunningStatus", None)) else None
+                ),
+                tools_version_status=(
+                    str(value) if (value := getattr(guest, "toolsVersionStatus2", None)) else None
+                ),
+                guest_state=(
+                    str(value) if (value := getattr(guest, "guestState", None)) else None
+                ),
+                guest_operations_ready=bool(getattr(guest, "guestOperationsReady", False)),
+                guest_family=(
+                    str(value) if (value := getattr(guest, "guestFamily", None)) else None
+                ),
                 ip_addresses=ips,
             )
 

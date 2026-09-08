@@ -41,6 +41,11 @@ class JobOut(BaseModel):
     requested_by_username: str | None = None
     current_stage: str | None = None
     progress: int
+    infrastructure_status: str
+    guest_os_status: str
+    vmware_tools_status: str
+    guest_provisioning_status: str
+    action_required: str | None = None
     error_summary: str | None = None
     cancel_requested: bool = False
     queued_at: dt.datetime | None = None

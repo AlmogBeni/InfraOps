@@ -29,6 +29,12 @@ from app.core.errors import InfraOperationError
 from app.core.logging import get_logger
 from app.models.applications import Application
 from app.models.certificates import Certificate, CertificatePackage
+from app.models.jobs import (
+    GuestOsStatus,
+    GuestProvisioningStatus,
+    InfrastructureStatus,
+    VMwareToolsStatus,
+)
 from app.schemas.provisioning import IpMode, VmSourceType
 from app.services.applications.installer import ApplicationDefinition
 from app.services.applications.resolver import AppNode, resolve_install_order
@@ -39,7 +45,7 @@ from app.services.settings_store import (
     SETTING_VM_NAME_POLICY,
     load_effective,
 )
-from app.services.vmware.base import VmRef
+from app.services.vmware.base import PowerStateInfo, VmRef
 from app.services.windows_unattend import (
     WindowsUnattendSpec,
     build_autounattend_xml,
@@ -55,7 +61,7 @@ CMD_PATH = r"C:\Windows\System32\cmd.exe"
 
 @dataclass
 class StageOutcome:
-    status: str = "SUCCEEDED"  # SUCCEEDED | SKIPPED
+    status: str = "SUCCEEDED"
     output: str = ""
     artifacts: dict = field(default_factory=dict)
 
@@ -262,6 +268,7 @@ def build_domain_join_script(
 
 _TIMEOUT_KEY_MAP: dict[str, tuple[str, ...]] = {
     "clone_vm": ("clone_minutes",),
+    "wait_for_guest_os": ("vmware_tools_minutes",),
     "wait_for_tools": ("vmware_tools_minutes",),
     "configure_guest_network": ("network_configuration_minutes",),
     "validate_network": ("network_configuration_minutes",),
@@ -287,7 +294,7 @@ async def effective_timeout_seconds(ctx: JobRunContext, stage_key: str) -> float
         if setting_key in override:
             configured = float(override[setting_key]) * 60
             if (
-                stage_key == "wait_for_tools"
+                stage_key in ("wait_for_guest_os", "wait_for_tools")
                 and ctx.request.source_type == VmSourceType.BLANK
                 and ctx.request.guest.iso_id is not None
             ):
@@ -319,12 +326,42 @@ def _blank_guest_skip(ctx: JobRunContext, operation: str) -> StageOutcome | None
     ):
         return None
     return StageOutcome(
-        status="SKIPPED",
+        status="NOT_APPLICABLE",
         output=(
             f"{operation} is not applicable to a blank VM. The VM is left powered off "
             "until an operating system is installed."
         ),
     )
+
+
+def _tools_lifecycle(info: PowerStateInfo | None) -> VMwareToolsStatus:
+    if info is None:
+        return VMwareToolsStatus.UNKNOWN
+
+    version = info.tools_version_status
+    running = info.tools_running_status
+    if version == "guestToolsNotInstalled":
+        return VMwareToolsStatus.NOT_INSTALLED
+    if running == "guestToolsExecutingScripts":
+        return VMwareToolsStatus.INSTALLING
+    if running == "guestToolsNotRunning":
+        return VMwareToolsStatus.NOT_RUNNING
+    if running == "guestToolsRunning":
+        if version in {
+            "guestToolsNeedUpgrade",
+            "guestToolsTooOld",
+            "guestToolsSupportedOld",
+            "guestToolsBlacklisted",
+        }:
+            return VMwareToolsStatus.OUTDATED
+        return VMwareToolsStatus.RUNNING
+
+    return {
+        "toolsOk": VMwareToolsStatus.RUNNING,
+        "toolsOld": VMwareToolsStatus.OUTDATED,
+        "toolsNotRunning": VMwareToolsStatus.NOT_RUNNING,
+        "toolsNotInstalled": VMwareToolsStatus.NOT_INSTALLED,
+    }.get(info.tools_status, VMwareToolsStatus.UNKNOWN)
 
 
 async def _load_certificates(
@@ -385,6 +422,14 @@ def _definition_from_orm(app: Application) -> ApplicationDefinition:
 # ── stage handlers ───────────────────────────────────────────────────────────
 
 async def stage_validate_request(ctx: JobRunContext) -> StageOutcome:
+    ctx.job.infrastructure_status = InfrastructureStatus.PENDING.value
+    if ctx.request.source_type == VmSourceType.BLANK:
+        ctx.job.guest_os_status = (
+            GuestOsStatus.UNKNOWN.value
+            if ctx.request.guest.iso_id
+            else GuestOsStatus.NOT_PRESENT.value
+        )
+        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
     rows = await load_effective(ctx.db)
     policy = str(rows.get(SETTING_VM_NAME_POLICY) or "")
     if policy and re.fullmatch(policy, ctx.vm_name) is None:
@@ -565,9 +610,11 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
     from app.services.vmware.base import BlankVmSpec, CloneSpec, VmRef
 
     r = ctx.request
+    ctx.job.infrastructure_status = InfrastructureStatus.CREATING.value
     existing_id = await ctx.vmware.resolve_vm_id(ctx.target, ctx.vm_name)
     if existing_id is not None:
         ctx.vm_ref = VmRef(id=existing_id, name=ctx.vm_name)
+        ctx.job.infrastructure_status = InfrastructureStatus.READY.value
         return StageOutcome(
             status="SKIPPED",
             output=f"A VM named '{ctx.vm_name}' already exists — reusing it instead of cloning again.",
@@ -615,6 +662,11 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
         media = " with the selected ISO mounted" if r.guest.iso_id else " without installation media"
         output = f"Created blank virtual machine '{vm_ref.name}'{media} in powered-off state."
     ctx.vm_ref = vm_ref
+    ctx.job.infrastructure_status = InfrastructureStatus.READY.value
+    if r.source_type == VmSourceType.BLANK and r.guest.iso_id is None:
+        ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_REQUIRED.value
+        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
     await record_audit(ctx.db).record(
         AuditAction.VM_CREATED,
         resource_type="virtual_machine",
@@ -668,9 +720,14 @@ async def stage_attach_network_adapter(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Unattended Windows installation")
-    if skipped:
-        return skipped
+    if (
+        ctx.request.source_type != VmSourceType.BLANK
+        or ctx.request.guest.iso_id is None
+    ):
+        return StageOutcome(
+            status="NOT_APPLICABLE",
+            output="Unattended answer media applies only to a blank VM with a selected ISO.",
+        )
     vm_id = _require_vm_id(ctx)
     credentials = await ctx.resolve_guest_credentials()
     guest = ctx.request.guest
@@ -722,20 +779,151 @@ async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(output="Power-on task completed.")
 
 
-async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "VMware Tools readiness")
-    if skipped:
-        return skipped
+async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
+    """Prove guest readiness without equating VM existence or power with an OS."""
     vm_id = _require_vm_id(ctx)
-    timeout = await effective_timeout_seconds(ctx, "wait_for_tools")
-    await ctx.vmware.wait_for_tools(ctx.target, vm_id, timeout)
-    return StageOutcome(output=f"VMware Tools reported ready (waited up to {int(timeout)} s).")
+    request = ctx.request
+
+    if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
+        step = ctx.steps_by_key.get("wait_for_guest_os")
+        confirmed = bool((step.artifacts or {}).get("administrator_confirmed")) if step else False
+        if confirmed:
+            ctx.job.guest_os_status = GuestOsStatus.READY.value
+            ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+            return StageOutcome(
+                output="An administrator confirmed that the guest OS is installed and booted."
+            )
+        ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_REQUIRED.value
+        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
+        return StageOutcome(
+            status="WAITING_FOR_PREREQUISITE",
+            output=(
+                "VM hardware was created successfully. No operating system is installed by "
+                "InfraOps because no ISO was selected. Attach installation media, install and boot "
+                "the guest OS, then confirm readiness. VMware Tools and guest configuration are waiting."
+            ),
+            artifacts={"required_action": "INSTALL_AND_CONFIRM_GUEST_OS"},
+        )
+
+    timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
+    if request.source_type == VmSourceType.BLANK:
+        ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
+        try:
+            # Autounattend runs the installer *inside Windows* at first logon.
+            # The vCenter call only supplies its media; the heartbeat proves
+            # that both the OS and Tools service subsequently became ready.
+            await ctx.vmware.wait_for_tools(
+                ctx.target, vm_id, max(1.0, timeout - 5.0), mount_if_missing=True
+            )
+        except InfraOperationError as exc:
+            ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
+            ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
+            return StageOutcome(
+                status="WAITING_FOR_PREREQUISITE",
+                output=(
+                    "Windows Setup has not produced a verifiable guest. Inspect the VM console for "
+                    "installer or boot errors, then resume after Windows reaches first logon."
+                ),
+                artifacts={
+                    "required_action": "VERIFY_UNATTENDED_OS_INSTALLATION",
+                    "last_observation": exc.human_message,
+                },
+            )
+        ctx.job.guest_os_status = GuestOsStatus.READY.value
+        ctx.job.vmware_tools_status = VMwareToolsStatus.RUNNING.value
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
+        return StageOutcome(
+            output=(
+                "Unattended Windows Setup reached first logon and the in-guest Tools bootstrap "
+                "reported a heartbeat. Guest OS readiness is verified."
+            )
+        )
+
+    # An OVF/OVA deploy result proves only that the vCenter resource exists.
+    # Wait for an existing heartbeat and never mount/reinstall Tools silently.
+    try:
+        await ctx.vmware.wait_for_tools(
+            ctx.target, vm_id, max(1.0, min(timeout, 900.0) - 5.0), mount_if_missing=False
+        )
+    except InfraOperationError:
+        info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
+        tools = _tools_lifecycle(info)
+        ctx.job.guest_os_status = GuestOsStatus.UNKNOWN.value
+        ctx.job.vmware_tools_status = tools.value
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+        return StageOutcome(
+            status="WAITING_FOR_PREREQUISITE",
+            output=(
+                "The OVF/OVA resource was deployed, but InfraOps cannot verify a ready guest because "
+                "VMware Tools/open-vm-tools has no heartbeat. Verify that the package contains a "
+                "bootable OS and start or install its supported Tools implementation."
+            ),
+            artifacts={"required_action": "VERIFY_GUEST_OS_AND_TOOLS"},
+        )
+    info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
+    if info is not None and info.guest_family and "windows" not in info.guest_family.casefold():
+        ctx.job.guest_os_status = GuestOsStatus.READY.value
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.FAILED.value
+        return StageOutcome(
+            status="WAITING_FOR_PREREQUISITE",
+            output=(
+                f"The package booted a '{info.guest_family}' guest. This InfraOps workflow only "
+                "implements Windows guest commands, so Windows networking/domain/application "
+                "steps were not offered to the guest. Deploy it without Windows customization "
+                "when that capability is added, or choose a prepared Windows package."
+            ),
+            artifacts={"required_action": "SELECT_SUPPORTED_WINDOWS_PACKAGE"},
+        )
+    ctx.job.guest_os_status = GuestOsStatus.READY.value
+    ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
+    return StageOutcome(output="Prepared OVF/OVA guest is booted and reporting through VMware Tools.")
+
+
+async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
+    _require_vm_id(ctx)
+    info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
+    state = _tools_lifecycle(info)
+    ctx.job.vmware_tools_status = state.value
+    if state == VMwareToolsStatus.RUNNING:
+        return StageOutcome(output="VMware Tools is installed, current, and running.")
+    if state == VMwareToolsStatus.OUTDATED:
+        return StageOutcome(
+            status="WARNING",
+            output=(
+                "VMware Tools is running but outdated. InfraOps continued with a warning and did "
+                "not silently upgrade the guest."
+            ),
+        )
+    ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+    if state == VMwareToolsStatus.NOT_RUNNING:
+        message = (
+            "VMware Tools is installed but not running. Start or troubleshoot the guest service; "
+            "InfraOps will not reinstall it blindly."
+        )
+    else:
+        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_INSTALLED.value
+        message = (
+            "VMware Tools/open-vm-tools is not installed or has never reported. Install the "
+            "guest-appropriate implementation inside the confirmed OS, then resume. Merely "
+            "mounting the Tools ISO is not installation."
+        )
+    return StageOutcome(
+        status="WAITING_FOR_PREREQUISITE",
+        output=message,
+        artifacts={"required_action": "MAKE_VMWARE_TOOLS_READY"},
+    )
 
 
 async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Temporary unattended media cleanup")
-    if skipped:
-        return skipped
+    if (
+        ctx.request.source_type != VmSourceType.BLANK
+        or ctx.request.guest.iso_id is None
+    ):
+        return StageOutcome(
+            status="NOT_APPLICABLE",
+            output="No temporary unattended answer media was created for this deployment type.",
+        )
     prepare = ctx.steps_by_key.get("prepare_unattended_install")
     datastore_path = ((prepare.artifacts or {}).get("datastore_path") if prepare else None)
     if not datastore_path:
@@ -753,6 +941,7 @@ async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
     skipped = _blank_guest_skip(ctx, "Guest network configuration")
     if skipped:
         return skipped
+    ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
     credentials = await ctx.resolve_guest_credentials()
     net = ctx.request.network
     if net.mode == IpMode.STATIC and net.ipv4 is not None:
@@ -1391,6 +1580,13 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     for item in checklist:
         grouped_output.setdefault(item["group"], []).append(f"✓ {item['label']}")
     rendered = "\n\n".join(f"{group}\n" + "\n".join(items) for group, items in grouped_output.items())
+    if hasattr(ctx, "job"):
+        ctx.job.infrastructure_status = InfrastructureStatus.READY.value
+        ctx.job.guest_provisioning_status = (
+            GuestProvisioningStatus.COMPLETED.value
+            if automates_guest
+            else GuestProvisioningStatus.NOT_REQUESTED.value
+        )
     return StageOutcome(
         output=rendered,
         artifacts={
@@ -1423,6 +1619,7 @@ STAGE_HANDLERS: dict[str, StageHandler] = {
         stage_attach_network_adapter,
         stage_prepare_unattended_install,
         stage_power_on,
+        stage_wait_for_guest_os,
         stage_wait_for_tools,
         stage_cleanup_unattended_media,
         stage_configure_guest_network,

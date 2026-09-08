@@ -126,6 +126,8 @@ function jobActivity(job: JobOut): string {
       return 'Deployment completed'
     case 'PARTIALLY_COMPLETED':
       return 'Completed with follow-up required'
+    case 'ACTION_REQUIRED':
+      return 'Waiting for an administrator prerequisite'
     case 'FAILED':
       return 'Operator review required'
     case 'CANCELLED':

@@ -67,6 +67,9 @@ const STEP_TONES: Record<StepStatus, Parameters<typeof Badge>[0]['tone']> = {
   SUCCEEDED: 'success',
   FAILED: 'danger',
   SKIPPED: 'neutral',
+  WARNING: 'warning',
+  WAITING_FOR_PREREQUISITE: 'warning',
+  NOT_APPLICABLE: 'neutral',
   CANCELLED: 'warning',
 }
 
@@ -604,6 +607,29 @@ export function JobDetailPage() {
           {mutationMessage(actionError)}
         </Alert>
       )}
+
+      {job.status === 'ACTION_REQUIRED' && job.action_required && (
+        <Alert tone="warning" title="Administrator action is required">
+          <p>{job.action_required}</p>
+          {canRetry && (
+            <div className="mt-2">
+              <Button size="sm" loading={retryAll.isPending} onClick={() => retryAll.mutate()}>
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden /> Confirm prerequisite and resume
+              </Button>
+            </div>
+          )}
+        </Alert>
+      )}
+
+      <ConsolePanel>
+        <PanelHeader title="Deployment lifecycle" description="Infrastructure, guest OS, Tools, and guest provisioning are tracked independently." />
+        <div className="grid gap-px bg-[#e2e6e1] sm:grid-cols-2 lg:grid-cols-4">
+          <DataPoint label="Infrastructure" value={humanizeIdentifier(job.infrastructure_status)} detail="VM hardware and vCenter configuration" />
+          <DataPoint label="Guest OS" value={humanizeIdentifier(job.guest_os_status)} detail="Installed and booted operating system" />
+          <DataPoint label="VMware Tools" value={humanizeIdentifier(job.vmware_tools_status)} detail="In-guest service, not mounted media" />
+          <DataPoint label="Guest provisioning" value={humanizeIdentifier(job.guest_provisioning_status)} detail="Network, identity, domain, and software" />
+        </div>
+      </ConsolePanel>
 
       <ConsolePanel>
         <div className="grid xl:grid-cols-[minmax(0,1.6fr)_minmax(420px,1fr)]">

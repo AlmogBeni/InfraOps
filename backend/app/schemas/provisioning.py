@@ -247,13 +247,14 @@ class ProvisioningRequest(BaseModel):
             raise ValueError("guest.iso_id must be null when source_type is 'template'.")
         if self.source_type == VmSourceType.BLANK and self.guest.template_id is not None:
             raise ValueError("guest.template_id must be null when source_type is 'blank'.")
-        if (
-            self.identity_policy_version == IdentityPolicyVersion.V2
-            and self.source_type == VmSourceType.BLANK
-            and self.guest.iso_id is None
-        ):
-            raise ValueError("guest.iso_id is required to provision Windows on a blank VM.")
         if self.source_type == VmSourceType.BLANK and self.guest.iso_id is None:
+            if (
+                self.identity_policy_version == IdentityPolicyVersion.V2
+                and (self.network.mode != IpMode.DHCP or self.network.ipv4 is not None)
+            ):
+                raise ValueError(
+                    "Guest IP configuration is unavailable for a blank VM without an operating system."
+                )
             if self.guest.hostname or self.guest.timezone or self.guest.domain_join:
                 raise ValueError(
                     "Guest customization is unavailable for a blank VM until an operating system is installed."

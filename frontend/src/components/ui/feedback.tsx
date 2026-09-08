@@ -51,6 +51,7 @@ const JOB_STATUS_META: Record<JobStatus, { label: string; tone: Parameters<typeo
   RUNNING: { label: 'Running', tone: 'running', icon: Loader2 },
   COMPLETED: { label: 'Completed', tone: 'success', icon: OkIcon },
   PARTIALLY_COMPLETED: { label: 'Partially Completed', tone: 'warning', icon: AlertTriangleIcon },
+  ACTION_REQUIRED: { label: 'Action Required', tone: 'warning', icon: AlertTriangleIcon },
   FAILED: { label: 'Failed', tone: 'danger', icon: FailIcon },
   CANCELLED: { label: 'Cancelled', tone: 'neutral', icon: FailIcon },
 }
@@ -72,6 +73,9 @@ const STEP_STATUS_META: Record<StepStatus, { icon: typeof OkIcon; classes: strin
   SUCCEEDED: { icon: OkIcon, classes: 'text-emerald-600' },
   FAILED: { icon: FailIcon, classes: 'text-red-600' },
   SKIPPED: { icon: CircleDashed, classes: 'text-slate-400' },
+  WARNING: { icon: AlertTriangleIcon, classes: 'text-amber-600' },
+  WAITING_FOR_PREREQUISITE: { icon: CircleDashed, classes: 'text-amber-600' },
+  NOT_APPLICABLE: { icon: CircleDashed, classes: 'text-slate-400' },
   CANCELLED: { icon: FailIcon, classes: 'text-slate-500' },
 }
 

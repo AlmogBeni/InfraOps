@@ -10,6 +10,7 @@ import type { JobDetailOut, JobStatus, JobStepOut } from '@/types/api'
 const TERMINAL_STATUSES: JobStatus[] = [
   'COMPLETED',
   'PARTIALLY_COMPLETED',
+  'ACTION_REQUIRED',
   'FAILED',
   'CANCELLED',
 ]

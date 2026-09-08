@@ -2,7 +2,7 @@ import { Check, Disc3, FileArchive, HardDrive, MapPin, RefreshCw, Search } from 
 import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Badge, EmptyState, Spinner } from '@/components/ui/feedback'
+import { Alert, Badge, EmptyState, Spinner } from '@/components/ui/feedback'
 import { Input } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useIsos, useTemplates } from '@/features/vm-provisioning/hooks'
@@ -108,7 +108,7 @@ export function MediaStep() {
           <p>
             {isPackage
               ? 'Choose an actual OVF or OVA package from the selected vCenter library. The target datacenter is validated again before deployment.'
-              : 'Select a Windows ISO stored in the target datacenter. InfraOps will install it unattended and continue provisioning.'}
+              : 'Optionally select a Windows ISO for unattended installation, or create powered-off hardware and install the OS later.'}
           </p>
         </div>
         <Badge tone="info"><MapPin className="h-3 w-3" /> {isPackage ? 'Selected deployment target' : 'Selected datacenter only'}</Badge>
@@ -190,6 +190,30 @@ export function MediaStep() {
         )
       ) : (
         <div className="space-y-3">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!data.iso_id}
+            onClick={() => wizard.update({ iso_id: null })}
+            className={cn(
+              'flex w-full items-start gap-3 rounded-2xl border bg-white p-5 text-left',
+              !data.iso_id
+                ? 'border-amber-500 shadow-[0_0_0_2px_rgba(217,119,6,0.10)]'
+                : 'border-[#d8ddd7] hover:border-[#aeb9b1]',
+            )}
+          >
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-amber-50 text-amber-800"><Disc3 className="h-5 w-5" /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-[#1e2722]">Create hardware without an ISO</span>
+              <span className="mt-1 block text-xs leading-5 text-[#68736d]">The VM remains powered off. Overall status becomes Action required until an administrator installs and confirms a guest OS.</span>
+            </span>
+            <ChoiceMark selected={!data.iso_id} />
+          </button>
+          {!data.iso_id && (
+            <Alert tone="warning" title="Infrastructure ready does not mean provisioned">
+              VMware Tools, guest IP configuration, hostname, domain join, scripts, certificates, and applications will not run.
+            </Alert>
+          )}
           {isos.isLoading ? (
             <MediaInventoryLoading />
           ) : isos.isError ? (
@@ -199,7 +223,7 @@ export function MediaStep() {
               action={<Button type="button" variant="secondary" onClick={() => void isos.refetch()}><RefreshCw className="h-4 w-4" /> Try again</Button>}
             />
           ) : (isos.data ?? []).length === 0 ? (
-            <EmptyState title="No ISO images are available in this datacenter" description="Upload a Windows installation ISO to an accessible datastore, then refresh inventory." />
+            <EmptyState title="No ISO images are available in this datacenter" description="You can still create VM hardware without media, or upload a Windows ISO and refresh inventory." />
           ) : filteredIsos.length === 0 ? (
             <EmptyState title="No ISO images match your search" />
           ) : (

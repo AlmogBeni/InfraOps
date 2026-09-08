@@ -5,6 +5,7 @@ export type JobStatus =
   | 'RUNNING'
   | 'COMPLETED'
   | 'PARTIALLY_COMPLETED'
+  | 'ACTION_REQUIRED'
   | 'FAILED'
   | 'CANCELLED'
 
@@ -14,6 +15,9 @@ export type StepStatus =
   | 'SUCCEEDED'
   | 'FAILED'
   | 'SKIPPED'
+  | 'WARNING'
+  | 'WAITING_FOR_PREREQUISITE'
+  | 'NOT_APPLICABLE'
   | 'CANCELLED'
 
 export type JobType = 'vm_provisioning'
@@ -271,6 +275,11 @@ export interface JobOut {
   requested_by_username: string | null
   current_stage: string | null
   progress: number
+  infrastructure_status: string
+  guest_os_status: string
+  vmware_tools_status: string
+  guest_provisioning_status: string
+  action_required: string | null
   error_summary: string | null
   cancel_requested: boolean
   queued_at: string | null

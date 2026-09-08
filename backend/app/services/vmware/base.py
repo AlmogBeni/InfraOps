@@ -88,6 +88,11 @@ class TemporaryMediaRef:
 class PowerStateInfo:
     power_state: str  # poweredOn | poweredOff | suspended | unknown
     tools_status: str | None = None  # toolsOk | toolsOld | toolsNotRunning | None
+    tools_running_status: str | None = None
+    tools_version_status: str | None = None
+    guest_state: str | None = None
+    guest_operations_ready: bool = False
+    guest_family: str | None = None
     ip_addresses: list[str] = field(default_factory=list)
     host_id: str | None = None
 
@@ -207,5 +212,17 @@ class VMwareService(ABC):
     async def power_on(self, target: VCenterTarget, vm_id: str) -> None: ...
 
     @abstractmethod
-    async def wait_for_tools(self, target: VCenterTarget, vm_id: str, timeout_seconds: float) -> None:
-        """Block until VMware Tools reports ready; raise on timeout."""
+    async def wait_for_tools(
+        self,
+        target: VCenterTarget,
+        vm_id: str,
+        timeout_seconds: float,
+        *,
+        mount_if_missing: bool = False,
+    ) -> None:
+        """Block until Tools reports ready.
+
+        ``mount_if_missing`` only supplies the Tools installation media. It is
+        valid for InfraOps' Windows unattended bootstrap, whose installer runs
+        inside Windows at first logon; it must not be treated as installation.
+        """

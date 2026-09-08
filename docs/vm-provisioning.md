@@ -1,94 +1,75 @@
 # VM Provisioning Workflow
 
-The wizard guides an operator through eight visible steps; execution continues as an
-audited background job.
+The React wizard submits a validated request to FastAPI. A background worker persists and
+executes every stage; the job page receives live updates over SSE.
 
-## Steps
+## Wizard
 
-1. **Source** — choose a blank virtual machine or an OVF/OVA Content Library deployment.
-2. **Infrastructure** — vCenter, datacenter, cluster and dependent host placement.
-   Templates are selected here after the datacenter is known. Changing an upstream target
-   clears all stale downstream selections.
-3. **Media** — choose an OVF/OVA package or a mandatory datacenter-scoped Windows ISO.
-4. **Configuration** — compute, storage, Windows identity, locale, keyboard layout,
-   time zone, certificates, and applications.
-5. **Administrator credential** — choose the managed local credential used by Windows
-   Setup and later VMware Tools operations.
-6. **Network** — port group, adapter, DHCP/static IPv4, and conflict check.
-7. **Directory** — optionally choose the AD domain, OU and separate domain-join credential.
-8. **Review** — inspect source, infrastructure, compute, storage, network, OS, certificates
-   and applications, run a non-destructive preflight check, then explicitly create the VM.
+1. Choose blank hardware or a Content Library OVF/OVA package.
+2. Select vCenter, datacenter, compute placement, host/resource pool, and storage.
+3. For blank hardware, optionally select a datacenter-scoped Windows ISO. No ISO is a valid
+   infrastructure-only request. For packages, select an OVF/OVA Content Library item.
+4. Configure CPU, RAM, firmware, Secure Boot, disks, and the vNIC port group.
+5. Guest credentials, guest IP, identity, domain, certificates, and applications are shown
+   only as eligible automation when a guest installation/prepared package is expected.
+6. Run non-mutating preflight and submit with an idempotency key.
 
-Drafts persist in localStorage. Certificate file contents are never added to the wizard
-draft or browser storage.
+The vNIC port group and the IP settings inside a guest are separate operations. A blank VM
+without media accepts only the vNIC choice; the payload cannot request a static guest IP.
 
-## Source behavior
+## Blank VM branches
 
-Template mode retrieves actual OVF/OVA packages from the selected vCenter's
-Content Libraries and sends the opaque library-item identifier through the
-provisioning request to the OVF deployment operation. Classic inventory VM
-templates are not returned or accepted.
+Without an ISO, InfraOps creates VM hardware, disks, and the virtual network attachment,
+leaves the VM powered off, and pauses in `ACTION_REQUIRED`. The durable lifecycle is:
 
-Blank mode requires a Windows ISO from the chosen datacenter that is accessible to the
-target cluster. InfraOps creates the VM, mounts the Windows ISO plus a temporary
-`Autounattend.xml` ISO, powers it on, completes Setup/OOBE, requests the vSphere-provided
-VMware Tools installer, and waits up to two hours for Tools. It then deletes the answer
-media and continues with network configuration, optional AD join, certificates and apps.
+```text
+Infrastructure: READY
+Guest OS: INSTALLATION_REQUIRED
+VMware Tools: NOT_APPLICABLE_YET
+Guest provisioning: WAITING_FOR_OS
+```
 
-## Certificate registration
+No Tools, guest IP, hostname, domain, script, certificate, or application operation runs.
+After an administrator installs and boots an OS, the waiting OS stage can be explicitly
+confirmed and resumed. Successful VM creation remains complete, so retry cannot create a
+second VM.
 
-Administrators can retain the existing pasted-PEM method or choose a local public X.509
-certificate file. `.crt` and `.cer` uploads may use PEM or binary DER encoding; `.pem` is
-also supported. Files may be up to 100 KB. Private-key and PKCS#12 files are rejected. The
-authenticated registration API parses the normalized certificate and computes its fingerprint
-and validity dates server-side.
+With a Windows ISO, InfraOps mounts the selected installer plus temporary
+`Autounattend.xml` media and powers on the VM. Windows Setup performs the OS installation.
+At first logon, Windows runs the Tools installer from vSphere-provided media. A later Tools
+heartbeat and Guest Operations readiness prove that the OS and in-guest service are ready.
+Only then does guest provisioning continue. The temporary answer media is deleted after
+readiness; its plaintext Setup password is never persisted in InfraOps.
 
-## Execution sequence
+## OVF/OVA package branch
 
-The creation stage is source-aware: it clones the selected template or creates a blank VM.
-Both paths revalidate placement, duplicate names and capacity immediately before mutation.
-Both template and blank-Windows deployments then configure hardware, networking and
-supported guest automation. Historical blank jobs created without an ISO remain readable
-but keep their old powered-off behavior; new requests cannot choose that path.
+Current “template” scope is specifically a Content Library OVF/OVA package. Classic
+inventory VM templates and Content Library VM templates are not returned or accepted.
+InfraOps validates the package and destination, calls the OVF filter/deploy REST operations,
+then reconciles hardware and vNIC placement.
 
-Template guest networking uses PowerShell built from validated values. Certificates are
-probed by SHA-256 thumbprint, transferred into the managed guest temp directory, imported
-with `certutil`, and re-probed. Application dependencies are installed in topological order.
+The successful deploy result proves only that a vCenter resource was created. InfraOps
+powers it on and waits for an existing Tools/open-vm-tools heartbeat and Guest Operations
+readiness. It does not attach blank-VM answer media, reinstall Tools, or silently upgrade an
+outdated installation. Missing/not-running Tools pauses for operator action; outdated but
+running Tools continues with a warning. A reported non-Windows guest is stopped before any
+Windows PowerShell guest action.
 
-## Errors, retries and rollback
+## State, errors, and retry
 
-Every failure produces a human message, reason and recommended action plus technical detail
-that is visible only to administrators. Retrying preserves successful stages and reuses an
-already-created VM rather than creating it again. A post-creation failure keeps the VM and
-marks the job partially completed; deletion is never automatic.
+Job state includes `ACTION_REQUIRED`; step state includes `WARNING`,
+`WAITING_FOR_PREREQUISITE`, and `NOT_APPLICABLE`. The UI separately displays infrastructure,
+guest OS, VMware Tools, and guest-provisioning state. A missing prerequisite is not a red
+failure. Real failures retain human reason/action text and administrator-only diagnostics.
 
-The masking rule applies consistently to job details, the standalone job-step
-endpoint, SSE snapshots, structured logs and audit detail text. Infrastructure
-discovery failures return the human message, reason and recommended action but
-never the stored technical detail.
+Every pyVmomi `CreateVM_Task`, `ReconfigVM_Task`, and `PowerOnVM_Task` is awaited before its
+stage advances. Content Library deploy checks the structured `succeeded` result and created
+resource ID. Retry retains succeeded stages and resolves an existing VM ID before any create
+operation. VM deletion is never an automatic rollback.
 
-## Discovery, logs and audit API contracts
+The final-validation stage verifies the requested guest/network/identity state and creates
+a grouped checklist artifact. `COMPLETED` means requested provisioning and verification
+finished; it is never used for an empty-disk VM just because `CreateVM_Task` succeeded.
 
-All infrastructure discovery endpoints require `infrastructure.read`.
-Datacenter scope is mandatory for network and ISO discovery:
-
-* `GET /api/v1/infrastructure/networks?vcenter_id=...&datacenter_id=...`
-* `GET /api/v1/infrastructure/isos?vcenter_id=...&datacenter_id=...`
-* `GET /api/v1/infrastructure/templates?vcenter_id=...&datacenter_id=...`
-
-`GET /api/v1/logs` requires `jobs.read` and returns `items`, `total`, `page`
-and `page_size`. Durable provisioning-step rows are projected into structured
-events with timestamp, severity, component, message, resource, datacenter/job
-context and expandable details. Filters include severity, component,
-`datacenter` (a case-insensitive human-name search), job, text search, and
-since/until timestamps. The validated datacenter name is persisted on the job;
-the managed-object ID is secondary administrator-only log detail.
-
-`GET /api/v1/audit` supports action, actor, resource type, result,
-`datacenter`, job, text search, and since/until filters. It adds a readable
-`action_label` and resolves `datacenter_name` from durable job context; raw
-`detail_text`, internal IDs and artifacts remain administrator-only.
-
-The final-validation stage creates a grouped checklist in the job artifacts. Every new
-workflow must finish powered on with VMware Tools running and its requested guest/network
-identity verified.
+See [vm-deployment-lifecycle.md](vm-deployment-lifecycle.md) for the audit and state diagrams,
+and [vmware-integration.md](vmware-integration.md) for adapter details and privileges.

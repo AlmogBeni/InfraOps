@@ -16,6 +16,9 @@ LOGGABLE_STEP_STATUSES = (
     StepStatus.SUCCEEDED,
     StepStatus.FAILED,
     StepStatus.SKIPPED,
+    StepStatus.WARNING,
+    StepStatus.WAITING_FOR_PREREQUISITE,
+    StepStatus.NOT_APPLICABLE,
     StepStatus.CANCELLED,
 )
 
@@ -24,9 +27,13 @@ def severity_for_status(status: StepStatus | str) -> LogSeverity:
     value = status.value if isinstance(status, StepStatus) else str(status)
     if value == StepStatus.FAILED.value:
         return "ERROR"
-    if value == StepStatus.CANCELLED.value:
+    if value in (
+        StepStatus.CANCELLED.value,
+        StepStatus.WARNING.value,
+        StepStatus.WAITING_FOR_PREREQUISITE.value,
+    ):
         return "WARNING"
-    if value == StepStatus.SKIPPED.value:
+    if value in (StepStatus.SKIPPED.value, StepStatus.NOT_APPLICABLE.value):
         return "DEBUG"
     return "INFO"
 
@@ -98,9 +105,21 @@ class LogRepository:
         if severity == "ERROR":
             conditions.append(ProvisioningJobStep.status == StepStatus.FAILED)
         elif severity == "WARNING":
-            conditions.append(ProvisioningJobStep.status == StepStatus.CANCELLED)
+            conditions.append(
+                ProvisioningJobStep.status.in_(
+                    [
+                        StepStatus.CANCELLED,
+                        StepStatus.WARNING,
+                        StepStatus.WAITING_FOR_PREREQUISITE,
+                    ]
+                )
+            )
         elif severity == "DEBUG":
-            conditions.append(ProvisioningJobStep.status == StepStatus.SKIPPED)
+            conditions.append(
+                ProvisioningJobStep.status.in_(
+                    [StepStatus.SKIPPED, StepStatus.NOT_APPLICABLE]
+                )
+            )
         elif severity == "INFO":
             conditions.append(
                 ProvisioningJobStep.status.in_(

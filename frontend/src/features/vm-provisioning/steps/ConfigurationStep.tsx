@@ -6,6 +6,7 @@ import { HardwareStep } from '@/features/vm-provisioning/steps/HardwareStep'
 import { OsStep } from '@/features/vm-provisioning/steps/OsStep'
 import { StorageStep } from '@/features/vm-provisioning/steps/StorageStep'
 import { useWizard } from '@/features/vm-provisioning/context'
+import { Alert } from '@/components/ui/feedback'
 
 export function ConfigurationStep() {
   const { data } = useWizard()
@@ -20,7 +21,11 @@ export function ConfigurationStep() {
       <HardwareStep embedded />
       <StorageStep embedded />
 
-      <div className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]">
+      {data.source_type === 'blank' && !data.iso_id ? (
+        <Alert tone="warning" title="Guest configuration waits for an operating system">
+          CPU, memory, disks, firmware, and virtual network attachment are applied now. Hostname, guest IP, domain join, certificates, applications, and VMware Tools remain unavailable until an administrator installs and boots an OS.
+        </Alert>
+      ) : <div className="overflow-hidden rounded-2xl border border-[#d8ddd7] bg-white shadow-[var(--ui-shadow)]">
         <div className="flex items-center gap-3 border-b border-[#e2e6e1] bg-gradient-to-r from-[#f8faf6] to-[#eff6f0] px-5 py-4">
           <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-50 text-brand-700">
             <SlidersHorizontal className="h-4 w-4" aria-hidden />
@@ -40,7 +45,7 @@ export function ConfigurationStep() {
           <CertificatesStep embedded />
           <ApplicationsStep embedded />
         </div>
-      </div>
+      </div>}
     </section>
   )
 }

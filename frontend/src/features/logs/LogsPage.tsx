@@ -48,6 +48,7 @@ const COMPONENT_OPTIONS = [
   ['provisioning.configure_hardware', 'Hardware configuration'],
   ['provisioning.attach_network_adapter', 'Network adapter'],
   ['provisioning.power_on', 'Power on'],
+  ['provisioning.wait_for_guest_os', 'Guest operating system readiness'],
   ['provisioning.wait_for_tools', 'VMware Tools readiness'],
   ['provisioning.configure_guest_network', 'Guest network configuration'],
   ['provisioning.validate_network', 'Network validation'],

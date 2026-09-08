@@ -116,6 +116,26 @@ class PreflightValidator:
         if target is not None:
             await self._check_infrastructure(request, target, add)
 
+        if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
+            add(
+                "guest_lifecycle",
+                "Guest OS installation required",
+                CheckStatus.WARN,
+                "Only VM infrastructure will be created. The job will pause for an administrator "
+                "to install and boot an operating system; VMware Tools and guest actions are deferred.",
+                blocking=False,
+            )
+        elif request.source_type == VmSourceType.TEMPLATE:
+            add(
+                "guest_lifecycle",
+                "OVF/OVA guest prerequisites verified after deployment",
+                CheckStatus.WARN,
+                "Content Library package inventory does not prove that an OS is bootable or that "
+                "VMware Tools/open-vm-tools is healthy. InfraOps verifies those states after power-on "
+                "and pauses instead of running guest customization when they are unavailable.",
+                blocking=False,
+            )
+
         # ── VM name policy & uniqueness ──────────────────────────────────────
         policy = str(settings_rows.get(SETTING_VM_NAME_POLICY) or "")
         if policy:
