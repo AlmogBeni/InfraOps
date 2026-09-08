@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { API_BASE, ApiError, api, setAccessToken } from '@/lib/api'
+import { API_BASE, api, setAccessToken } from '@/lib/api'
 import type { UserOut } from '@/types/api'
 
 const USER: UserOut = {
@@ -70,7 +70,7 @@ describe('API session recovery', () => {
 
     const request = api.admin.createVCenter({ credential_secret_ref: 'vcenter/lab' })
 
-    await expect(request).rejects.toMatchObject<ApiError>({
+    await expect(request).rejects.toMatchObject({
       status: 422,
       code: 'schema_validation_failed',
       message: 'Request payload failed schema validation. credential_secret_ref: Extra inputs are not permitted',
