@@ -122,13 +122,17 @@ export function VCenterConnectionsPage() {
 
   const save = useMutation({
     mutationFn: async () => {
+      // credential_secret_ref is a UI-only convenience field. The API stores
+      // the username/password paths separately, so do not leak it into the
+      // strict request schema.
+      const { credential_secret_ref, ...connectionFields } = form
       const body = {
-        ...form,
+        ...connectionFields,
         name: form.name.trim(),
         host: form.host.trim(),
         port: Number(form.port),
-        username_secret_ref: `${form.credential_secret_ref}/username`,
-        password_secret_ref: `${form.credential_secret_ref}/password`,
+        username_secret_ref: `${credential_secret_ref}/username`,
+        password_secret_ref: `${credential_secret_ref}/password`,
       }
       if (editing) return api.admin.updateVCenter(editing.id, body)
       return api.admin.createVCenter(body)

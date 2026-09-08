@@ -73,6 +73,20 @@ async function parseError(response: Response): Promise<ApiError> {
       code = payload.error.code ?? code
       message = payload.error.message ?? message
       details = payload.error.details
+      const issues = payload.error.details?.issues
+      if (code === 'schema_validation_failed' && Array.isArray(issues) && issues.length > 0) {
+        const issueSummary = issues
+          .slice(0, 3)
+          .map((issue: { loc?: unknown; msg?: unknown }) => {
+            const location = Array.isArray(issue.loc)
+              ? issue.loc.filter((part) => part !== 'body').join('.')
+              : ''
+            const problem = typeof issue.msg === 'string' ? issue.msg : 'Invalid value'
+            return location ? `${location}: ${problem}` : problem
+          })
+          .join('; ')
+        message = `${message} ${issueSummary}`
+      }
     }
   } catch {
     /* non-JSON error body */

@@ -98,6 +98,31 @@ describe('admin infrastructure and settings redesign', () => {
     expect(saveButton).toBeEnabled()
   })
 
+  it('submits only API-supported fields when creating a vCenter connection', async () => {
+    vi.spyOn(api.admin, 'vcenters').mockResolvedValue([])
+    const create = vi.spyOn(api.admin, 'createVCenter').mockResolvedValue(connection)
+
+    renderWithQueryClient(<VCenterConnectionsPage />)
+
+    const addButtons = await screen.findAllByRole('button', { name: 'Add vCenter' })
+    fireEvent.click(addButtons[0])
+    fireEvent.change(screen.getByRole('textbox', { name: /Connection name/ }), { target: { value: ' Lab vCenter ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: /Server hostname/ }), { target: { value: ' lab-vcenter.example.test ' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /vCenter service account/ }), { target: { value: 'vcenter/lab' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add connection' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      name: 'Lab vCenter',
+      host: 'lab-vcenter.example.test',
+      port: 443,
+      username_secret_ref: 'vcenter/lab/username',
+      password_secret_ref: 'vcenter/lab/password',
+      verify_ssl: true,
+      notes: '',
+    }))
+    expect(create.mock.calls[0]?.[0]).not.toHaveProperty('credential_secret_ref')
+  })
+
   it('submits the established platform settings payload after an edit', async () => {
     vi.spyOn(api.admin, 'settings').mockResolvedValue(platformSettings)
     vi.spyOn(api.admin, 'roles').mockResolvedValue([])

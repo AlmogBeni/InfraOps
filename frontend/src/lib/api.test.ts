@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { API_BASE, api, setAccessToken } from '@/lib/api'
+import { API_BASE, ApiError, api, setAccessToken } from '@/lib/api'
 import type { UserOut } from '@/types/api'
 
 const USER: UserOut = {
@@ -50,5 +50,30 @@ describe('API session recovery', () => {
       credentials: 'include',
       headers: { Authorization: 'Bearer refreshed-access-token' },
     }))
+  })
+
+  it('includes backend field issues in schema-validation errors', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response(422, {
+      error: {
+        code: 'schema_validation_failed',
+        message: 'Request payload failed schema validation.',
+        details: {
+          issues: [{
+            loc: ['body', 'credential_secret_ref'],
+            msg: 'Extra inputs are not permitted',
+            type: 'extra_forbidden',
+          }],
+        },
+      },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const request = api.admin.createVCenter({ credential_secret_ref: 'vcenter/lab' })
+
+    await expect(request).rejects.toMatchObject<ApiError>({
+      status: 422,
+      code: 'schema_validation_failed',
+      message: 'Request payload failed schema validation. credential_secret_ref: Extra inputs are not permitted',
+    })
   })
 })
