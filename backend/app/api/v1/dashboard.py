@@ -13,7 +13,7 @@ from app.models.infrastructure import VCenterConnection
 from app.models.jobs import JobStatus, JobType, ProvisioningJob
 from app.schemas.common import HealthComponent
 from app.schemas.dashboard import DashboardResponse, DashboardStats
-from app.schemas.jobs import JobOut
+from app.schemas.jobs import job_out
 from app.secrets.service import get_secrets_service
 
 router = APIRouter(tags=["dashboard"])
@@ -115,18 +115,6 @@ async def dashboard(db: DbSession, user=require(Permission.JOBS_READ)) -> Dashbo
             failed_jobs=int(failed),
             active_jobs=int(active),
         ),
-        recent_jobs=[
-            JobOut(
-                id=str(job.id), job_type=job.job_type, status=job.status,
-                vm_name=job.vm_name, datacenter_id=job.datacenter_id,
-                datacenter_name=job.datacenter_name,
-                requested_by_username=usernames.get(job.requested_by_user_id),
-                current_stage=job.current_stage, progress=job.progress,
-                error_summary=job.error_summary, cancel_requested=job.cancel_requested,
-                queued_at=job.queued_at, started_at=job.started_at,
-                finished_at=job.finished_at, duration_seconds=job.duration_seconds,
-            )
-            for job in recent_jobs
-        ],
+        recent_jobs=[job_out(job, usernames) for job in recent_jobs],
         health=health,
     )

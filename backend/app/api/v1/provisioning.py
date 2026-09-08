@@ -22,7 +22,14 @@ from app.models.jobs import ProvisioningJob, ProvisioningJobStep
 from app.models.platform import SecretReference
 from app.models.user import User
 from app.repositories.jobs import JobRepository
-from app.schemas.jobs import JobDetailOut, JobListResponse, JobOut, JobStepOut, RetryRequest
+from app.schemas.jobs import (
+    JobDetailOut,
+    JobListResponse,
+    JobOut,
+    JobStepOut,
+    RetryRequest,
+    job_out,
+)
 from app.schemas.provisioning import (
     CredentialOptionOut,
     IpConflictCheckRequest,
@@ -72,31 +79,6 @@ async def list_provisioning_credentials(
 
 
 # ── serialisation helpers ────────────────────────────────────────────────────
-
-def _job_out(job: ProvisioningJob, usernames: dict[uuid.UUID, str] | None = None) -> JobOut:
-    return JobOut(
-        id=str(job.id),
-        job_type=job.job_type,
-        status=job.status,
-        vm_name=job.vm_name,
-        datacenter_id=job.datacenter_id,
-        datacenter_name=job.datacenter_name,
-        requested_by_username=(usernames or {}).get(job.requested_by_user_id),
-        current_stage=job.current_stage,
-        progress=job.progress,
-        infrastructure_status=getattr(job, "infrastructure_status", "PENDING"),
-        guest_os_status=getattr(job, "guest_os_status", "UNKNOWN"),
-        vmware_tools_status=getattr(job, "vmware_tools_status", "UNKNOWN"),
-        guest_provisioning_status=getattr(job, "guest_provisioning_status", "PENDING"),
-        action_required=getattr(job, "action_required", None),
-        error_summary=job.error_summary,
-        cancel_requested=job.cancel_requested,
-        queued_at=job.queued_at,
-        started_at=job.started_at,
-        finished_at=job.finished_at,
-        duration_seconds=job.duration_seconds,
-    )
-
 
 def _normalized_request_payload(payload: dict | None) -> dict | None:
     """Upgrade stored legacy request JSON to the current public contract."""
@@ -243,7 +225,7 @@ async def submit_job(
     )
     await db.commit()
     response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-    return _job_out(job)
+    return job_out(job)
 
 
 @router.get("/jobs", response_model=JobListResponse)
@@ -269,7 +251,7 @@ async def list_jobs(
                                        status=parsed_status, vm_name_contains=vm_name)
     usernames = await _username_map(db, jobs)
     return JobListResponse(
-        items=[_job_out(job, usernames) for job in jobs],
+        items=[job_out(job, usernames) for job in jobs],
         total=total, page=page, page_size=page_size,
     )
 
@@ -278,7 +260,7 @@ async def list_jobs(
 async def get_job(job_id: uuid.UUID, db: DbSession, user=require(Permission.JOBS_READ)):
     job = await _get_job(db, job_id)
     usernames = await _username_map(db, [job])
-    base = _job_out(job, usernames)
+    base = job_out(job, usernames)
     detail = JobDetailOut(
         **base.model_dump(),
         steps=[
@@ -335,7 +317,7 @@ async def retry_job(
     log_message = f"Retrying: {', '.join(reset)}"
     await get_publisher().publish_stage(str(job.id), stage=None, status="QUEUED",
                                         progress=job.progress, message=log_message)
-    return _job_out(job)
+    return job_out(job)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobOut)
@@ -346,7 +328,7 @@ async def cancel_job_endpoint(
     job = await _get_job(db, job_id)
     await cancel_job(db, user=user, job=job, source_ip=source_ip)
     await db.commit()
-    return _job_out(job)
+    return job_out(job)
 
 
 # ── live event stream (SSE) ──────────────────────────────────────────────────
@@ -377,7 +359,7 @@ async def stream_job_events(
         try:
             snapshot = {
                 "type": "snapshot",
-                "job": json.loads(_job_out(job).model_dump_json()),
+                "job": json.loads(job_out(job).model_dump_json()),
                 "steps": [json.loads(_step_out(s, include_technical=include_technical).model_dump_json())
                           for s in sorted(job.steps, key=lambda x: x.sequence)],
             }
