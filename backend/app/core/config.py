@@ -112,7 +112,7 @@ class Settings(BaseSettings):
         return self.environment == Environment.PRODUCTION
 
     @model_validator(mode="after")
-    def _validate_production_safety(self) -> "Settings":
+    def _validate_production_safety(self) -> Settings:
         if not self.is_production:
             return self
 

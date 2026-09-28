@@ -8,7 +8,8 @@ All vSphere access goes through `app/services/vmware/base.py::VMwareService`:
 test_connection / get_datacenters / get_clusters / get_hosts /
 get_resource_pools / get_datastores / get_datastore_clusters /
 get_networks / get_templates / get_isos
-vm_exists / get_vm_info / get_used_ips / resolve_vm_id
+vm_exists / get_vm_info / get_used_ips / resolve_vm_id /
+find_vm_ownership / tag_vm_owner
 clone_from_template / create_blank_vm / configure_hardware / attach_network /
 attach_temporary_floppy / mount_tools_installer / remove_temporary_floppy / power_on / wait_for_tools
 ```
@@ -16,6 +17,34 @@ attach_temporary_floppy / mount_tools_installer / remove_temporary_floppy / powe
 Callers pass a `VCenterTarget` (id, host, port, **secret references**, verify_ssl) — raw
 credential values are resolved from encrypted backend storage at connect time and never
 logged. A credential fingerprint invalidates cached sessions immediately after rotation.
+In production, connections with `verify_ssl=false` are rejected when saved and refused at
+connect time.
+
+## VM ownership marker
+
+Every VM InfraOps creates carries the id of the job that created it:
+
+* `extraConfig` key `infraops.job_id` (set in the `CreateVM_Task` config spec for blank VMs;
+  written by a reconfigure immediately after an OVF/OVA deployment), and
+* an `infraops-job-id: <uuid>` line in the VM annotation, applied atomically at creation
+  for both blank VMs and OVF/OVA deployments.
+
+`clone_vm` resumes only on a VM carrying the current job's marker. Any other VM with the
+requested name — untagged, or tagged by another job — fails the stage ("name taken") and is
+never reconfigured, powered on, renamed, re-addressed or joined to the domain. Name lookups
+refuse ambiguous names (duplicates in different folders) instead of picking one. The
+service account therefore also needs *Virtual machine → Change Configuration → Advanced
+configuration* (extraConfig) permission.
+
+## Task cancellation
+
+Blocking pyvmomi calls run in threads. When the awaiting coroutine is cancelled — stage
+timeout, user cancellation or worker shutdown — the thread's task poller calls
+`CancelTask()` on the in-flight vCenter task and stops polling. Tasks that vCenter cannot
+cancel may still complete; because the VM carries the job's marker, a later retry adopts
+it instead of treating it as foreign. Content Library OVF deployments are synchronous REST
+calls without a task handle: the request is aborted, and a VM that still appears is
+likewise adopted only by its own job.
 
 ## Development test double (`INFRASTRUCTURE_MODE=mock`)
 
@@ -55,8 +84,9 @@ Implementation notes:
   cluster when the VM mutation runs.
 * Unattended media is uploaded to `[datastore] infraops-unattend`, attached as a virtual
   floppy so the Windows installer remains the VM's only datastore-backed CD-ROM, then
-  detached and deleted when Tools reports ready. The service account therefore
-  also needs datastore file create/delete permission.
+  detached and deleted when Tools reports ready — or immediately when the job fails, is
+  cancelled or is interrupted. The service account therefore also needs datastore file
+  create/delete permission.
 * Hardware stage reconfigures CPU/memory, grows existing disks (never shrinks) and creates
   additional disks with thin/thick backing.
 * Network discovery is rooted at the selected datacenter's network folder. The

@@ -61,7 +61,7 @@ def validate_installer_path(value: str, installer_type: InstallerType | None = N
 
 
 def validate_installer_root(value: str) -> str:
-    return validate_windows_path(value, label="Approved installer root").rstrip("\\")
+    return validate_windows_path((value or "").strip().rstrip("\\"), label="Approved installer root")
 
 
 def _normalise(path: str) -> str:

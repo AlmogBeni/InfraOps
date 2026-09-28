@@ -8,13 +8,12 @@ reaches a command string.
 
 from __future__ import annotations
 
-import base64
 import binascii
 import datetime as dt
 import re
 
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 
 from app.core.errors import DomainValidationError
 from app.models.certificates import CertificateStore, CertificateType
@@ -43,7 +42,6 @@ def parse_certificate(pem_body: str) -> x509.Certificate:
 def certificate_metadata(pem_body: str) -> dict:
     """Extract fingerprint, subject CN and validity window from a PEM body."""
     cert = parse_certificate(pem_body)
-    der = cert.public_bytes(serialization.Encoding.DER)
     fingerprint = binascii.hexlify(cert.fingerprint(hashes.SHA256())).decode("ascii").upper()
     cn_attributes = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
     subject_cn = cn_attributes[0].value if cn_attributes else ""
@@ -52,7 +50,7 @@ def certificate_metadata(pem_body: str) -> dict:
         if value is None:
             return None
         if value.tzinfo is not None:
-            return value.astimezone(dt.timezone.utc).date()
+            return value.astimezone(dt.UTC).date()
         return value.date()
 
     not_before = getattr(cert, "not_valid_before_utc", None) or cert.not_valid_before

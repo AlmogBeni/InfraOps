@@ -1,7 +1,8 @@
 # InfraOps — Internal IT Infrastructure Automation Platform
 
 An internal web platform for IT infrastructure teams. **Phase 1** delivers a complete,
-auditable **VM Provisioning** workflow against VMware vSphere: template cloning, hardware
+auditable **VM Provisioning** workflow against VMware vSphere: OVF/OVA package deployment or
+blank-VM creation with unattended Windows installation, hardware
 customisation, Windows guest networking, corporate certificate deployment and approved
 application installation — with a dry-run validator, live job progress, safe retries and a
 tamper-resistant audit trail.
@@ -23,9 +24,9 @@ backend (FastAPI · Pydantic v2 · SQLAlchemy 2 async)
     ▼
 PostgreSQL (jobs, steps, catalogs, immutable audit_events)
     ▲
-    └── worker process (asyncio job engine, SKIP LOCKED queue)
+    └── worker process (asyncio job engine, SKIP LOCKED queue, heartbeats + reaper)
           ├── VMwareService      → pyvmomi vSphere adapter
-          ├── GuestOperations    → VMware Tools guest API
+          ├── GuestOperations    → VMware Tools guest API (uploaded .ps1, no cmd.exe)
           ├── CertificateDeployer→ certutil into LocalMachine Root/CA
           └── ApplicationInstaller → msiexec/EXE/PowerShell with detection
 ```
@@ -37,7 +38,8 @@ Key design rules:
 * Production requires `INFRASTRUCTURE_MODE=real`; mock adapters are retained only as
   explicitly selected development test doubles.
 * Administrators enter credential pairs in the UI. Values are encrypted in PostgreSQL
-  with a key derived from `SECRET_KEY`, never returned by the API, and resolved live.
+  with a key derived from `CREDENTIAL_ENCRYPTION_KEY` (or `SECRET_KEY` when unset), never
+  returned by the API, and resolved live.
 * Every provisioning stage is persisted with start/finish times, human-readable output,
   technical error detail and retry state.
 
@@ -62,15 +64,18 @@ This starts:
 
 | Service  | URL / port                | Notes                                   |
 |----------|---------------------------|-----------------------------------------|
-| frontend | http://localhost:8080     | nginx serving the built SPA + API proxy |
-| backend  | http://localhost:8000     | FastAPI, OpenAPI docs at `/api/docs`    |
-| worker   | —                         | provisioning job engine                 |
-| postgres | internal :5432            | migrations run automatically            |
-| redis    | internal :6379            | job event pub/sub                       |
+| frontend | http://127.0.0.1:8080     | nginx serving the built SPA + API proxy |
+| backend  | internal :8000            | FastAPI (OpenAPI docs at `/api/docs` only outside production) |
+| worker   | internal :9102            | provisioning job engine; `/metrics` + `/health` |
+| migrate  | one-shot                  | migrations, runtime DB role grants, bootstrap |
+| postgres | internal :5432            | source of truth                         |
+| redis    | internal :6379            | job events, SSE tickets, login rate limits |
 
-Migrations (`alembic upgrade head`) and minimal RBAC/bootstrap initialization run
-automatically on backend start. No infrastructure, certificate, application, or demo-user
-records are created.
+The one-shot `migrate` service runs `alembic upgrade head` as the schema owner, provisions
+the least-privilege runtime database role (`python -m app.db.roles`) and performs minimal
+RBAC/bootstrap initialization. The API and worker start only after it succeeds, so scaled
+replicas never race on migrations. No infrastructure, certificate, application, or
+demo-user records are created.
 
 ### First administrator
 
@@ -85,9 +90,13 @@ password from `.env` and restart. Subsequent starts detect the existing administ
 cd backend
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-export DATABASE_URL="postgresql+asyncpg://infraops:infraops@localhost:5432/infraops"
+export ENVIRONMENT=development INFRASTRUCTURE_MODE=mock COOKIE_SECURE=false
+export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export MIGRATION_DATABASE_URL="postgresql+asyncpg://infraops:infraops@localhost:5432/infraops"
+export DATABASE_URL="postgresql+asyncpg://infraops_app:app-password@localhost:5432/infraops"
 export REDIS_URL="redis://localhost:6379/0"
 alembic upgrade head
+python -m app.db.roles                   # creates/updates the runtime role from DATABASE_URL
 python -m app.bootstrap
 uvicorn app.main:app --reload            # terminal 1
 python -m app.workers.runner             # terminal 2
@@ -105,8 +114,12 @@ See [`.env.example`](.env.example) for the full annotated list. Highlights:
 | Variable | Purpose |
 |---|---|
 | `INFRASTRUCTURE_MODE` | Must be `real` in production (pyvmomi vSphere adapter) |
-| `DATABASE_URL` / `REDIS_URL` | PostgreSQL (asyncpg) and Redis DSNs |
-| `SECRET_KEY` | JWT signing and stored-credential root key; back it up and do not rotate casually |
+| `MIGRATION_DATABASE_URL` | schema-owner DSN, used only by migrations and `app.db.roles` |
+| `DATABASE_URL` / `REDIS_URL` | runtime-role PostgreSQL (asyncpg) and Redis DSNs |
+| `SECRET_KEY` | JWT signing key |
+| `CREDENTIAL_ENCRYPTION_KEY` | stored-credential root key (defaults to `SECRET_KEY`); rotate with `python -m app.secrets.rotate` |
+| `TRUSTED_PROXY_CIDR` / `BACKEND_TRUSTED_PROXY_CIDRS` | peers allowed to set `X-Forwarded-For` (nginx / API) |
+| `WORKER_*` | concurrency, heartbeat timeout, shutdown grace, metrics port |
 | `CORS_ORIGINS` | allowed browser origins |
 
 ## Database migrations
@@ -117,24 +130,36 @@ alembic upgrade head                      # apply
 alembic revision --autogenerate -m "..."  # create new migration after model changes
 ```
 
-The initial migration creates all tables plus a PostgreSQL trigger that makes
-`audit_events` append-only at the database level.
+Migrations create all tables plus PostgreSQL triggers that make `audit_events` append-only
+(UPDATE/DELETE/TRUNCATE are rejected). Run migrations as the schema owner; the application
+connects as a runtime role that owns nothing (see `docs/security.md`). CI checks that the
+models and migrations match (`alembic check`) and that the latest migration downgrades
+cleanly.
 
 ## Running tests
 
 ```bash
-# Inside the containerised environment (recommended):
-docker compose exec backend pip install -r requirements-dev.txt
-docker compose exec backend pytest
+# Backend (from backend/, with requirements-dev.txt installed)
+ruff check app tests migrations
+pytest                                   # unit tests
+INFRAOPS_TEST_DATABASE_URL=postgresql+asyncpg://... pytest tests/integration
+                                         # PostgreSQL guarantees (migrated database)
 
-# Frontend unit tests:
-cd frontend && npm install && npm test
+# Frontend
+cd frontend && npm ci && npm run typecheck && npm test
 ```
 
+GitHub Actions (`.github/workflows/ci.yml`) runs all of the above against PostgreSQL 16 and
+Redis 7, verifies migrations, builds both images and validates the rendered nginx
+configuration and the compose file.
+
 Covered areas include IP/subnet validation, provisioning request schemas, dependency
-resolution (cycles, missing/disabled deps), the RBAC matrix, certificate store logic and
-command construction safety, pipeline stage registry integrity, and adapter contract flows
-against test doubles.
+resolution (cycles, missing/disabled deps), the RBAC matrix, certificate store logic,
+shell-free guest command construction and secret handling, installer path policy, trusted
+client-IP resolution, VM ownership and vCenter task cancellation, unattended-media cleanup,
+pipeline stage registry integrity, adapter contract flows against test doubles, and — with a
+database — unique-reservation races, worker slot claiming/heartbeats, refresh-token reuse
+detection and the append-only audit trail.
 
 ## Production data
 
@@ -154,12 +179,16 @@ local-administrator or domain-join values. See [`docs/security.md`](docs/securit
 
 ## Security considerations (summary)
 
-* JWT access tokens (15 min) + HttpOnly refresh cookie; RBAC enforced server-side.
-* Rate-limited login; uniform authentication failures.
-* Audit log is append-only (DB trigger) with defensive redaction of sensitive keys.
-* Guest commands are assembled exclusively from validated structured values; installer
-  paths must match approved repository roots or execution is blocked; operators can never
-  supply commands.
+* JWT access tokens (15 min, `Authorization` header only) + rotating, server-registered
+  refresh tokens in an HttpOnly cookie with reuse detection; RBAC enforced server-side.
+* SSE uses single-use stream tickets, never tokens in URLs.
+* Rate-limited login (Redis, per trusted client IP and per username); uniform, constant-time
+  authentication failures. `X-Forwarded-For` is trusted only from configured proxies.
+* Audit log is append-only (DB triggers + least-privilege runtime role) with defensive
+  redaction of sensitive keys.
+* Guest commands never pass through `cmd.exe` and never carry secrets on a command line;
+  installer paths must be inside approved repository roots or execution is blocked;
+  operators can never supply commands.
 * Technical error detail is hidden from non-administrators.
 * Full list and deployment hardening checklist: [`docs/security.md`](docs/security.md).
 
@@ -169,10 +198,11 @@ local-administrator or domain-join values. See [`docs/security.md`](docs/securit
    publishes the frontend to `127.0.0.1:8080` by default and does not publish the backend.
 2. Use a dedicated vCenter service account restricted to the privileges listed in
    [`docs/vmware-integration.md`](docs/vmware-integration.md).
-3. Set and securely back up a strong `SECRET_KEY`; changing it makes stored credentials
-   unreadable. Keep `ENVIRONMENT=production`.
-4. Run one worker per host is unnecessary — a single worker handles concurrency via
-   `WORKER_CONCURRENCY`; scale out safely thanks to `SKIP LOCKED` claiming.
+3. Set strong `SECRET_KEY` and `CREDENTIAL_ENCRYPTION_KEY` values and back up the latter;
+   losing it makes stored credentials unreadable. Keep `ENVIRONMENT=production`.
+4. A single worker handles concurrency via `WORKER_CONCURRENCY`. Additional workers can be
+   added safely: each claims only as many jobs as it has free slots (`SKIP LOCKED`), and a
+   job whose worker dies is marked `INTERRUPTED` by the reaper and can be retried.
 5. Back up PostgreSQL; it holds the authoritative job history and audit trail.
 
 ## Adding new automation modules

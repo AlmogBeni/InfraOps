@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.workers.stages import STAGE_HANDLERS
 from app.workers.state_machine import (
     DEFAULT_STAGE_TIMEOUTS,
     ORDERED_STAGES,
@@ -11,7 +12,6 @@ from app.workers.state_machine import (
     stage_index,
     stage_timeout,
 )
-from app.workers.stages import STAGE_HANDLERS
 
 
 class TestStageRegistry:

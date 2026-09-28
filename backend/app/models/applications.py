@@ -14,12 +14,14 @@ import uuid
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
-    Enum as SaEnum,
     ForeignKey,
     Integer,
     String,
     Text,
     Uuid,
+)
+from sqlalchemy import (
+    Enum as SaEnum,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -66,7 +68,7 @@ class Application(Base):
     created_at: Mapped[dt.datetime] = created_at_column()
     updated_at: Mapped[dt.datetime] = updated_at_column()
 
-    dependencies: Mapped[list["ApplicationDependency"]] = relationship(
+    dependencies: Mapped[list[ApplicationDependency]] = relationship(
         foreign_keys="ApplicationDependency.app_id",
         cascade="all, delete-orphan",
         lazy="selectin",

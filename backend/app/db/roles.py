@@ -92,7 +92,9 @@ async def provision_runtime_role() -> int:
             for table in APPEND_ONLY_TABLES:
                 statements.append(("REVOKE UPDATE, DELETE, TRUNCATE ON TABLE %I FROM %I", (table, runtime_role)))
             for table in READ_ONLY_TABLES:
-                statements.append(("REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I FROM %I", (table, runtime_role)))
+                statements.append(
+                    ("REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I FROM %I", (table, runtime_role))
+                )
             for template, values in statements:
                 await conn.execute(text(await _quoted(conn, template, *values)))
             owned = (

@@ -11,8 +11,12 @@ no sample infrastructure, certificates, applications, credentials, or demo accou
    `0003_remove_sites` safely drops the obsolete `sites` table when present and also
    succeeds on deployments where that table was never created.
 2. Copy `.env.example` to `.env`, fill the required values, and run `chmod 600 .env`.
+   Use different strong passwords for the schema owner (`POSTGRES_PASSWORD` /
+   `MIGRATION_DATABASE_URL`) and the runtime role (`DATABASE_URL`, user `infraops_app`).
 3. Set a one-time bootstrap administrator username and password. Run
-   `docker compose up --build` and confirm that administrator can log in.
+   `docker compose up --build`. The one-shot `migrate` service applies migrations, creates
+   the runtime role with least-privilege grants and bootstraps the administrator; the API
+   and worker start only after it succeeds. Confirm that the administrator can log in.
 4. Remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env`, restart, and retain the password in your
    normal enterprise password manager.
 5. In **Administration → Credentials**, add encrypted pairs for vCenter, Windows
@@ -23,6 +27,36 @@ The frontend listens on `127.0.0.1:8080` by default for a host-level TLS reverse
 backend is available only on the private Compose network. Forward the original `Host`,
 `X-Forwarded-For`, and `X-Forwarded-Proto` headers and preserve long-lived, unbuffered SSE
 connections under `/api/v1/provisioning/jobs/*/events`.
+
+Client addresses: the bundled nginx accepts `X-Forwarded-For`/`X-Forwarded-Proto` only from
+`TRUSTED_PROXY_CIDR` — the address the host reverse proxy has as seen from the frontend
+container (normally the Docker bridge gateway, inside the default `172.16.0.0/12`). Narrow
+it to that exact address when known (`docker network inspect infraops_default`). nginx then
+overwrites the header towards the API, which trusts it only from the private Compose
+network (`BACKEND_TRUSTED_PROXY_CIDRS`). Direct clients can therefore not spoof their
+address to evade login rate limits or falsify audit records.
+
+## Upgrading to the hardening release (migration 0007)
+
+1. Back up PostgreSQL.
+2. Add `MIGRATION_DATABASE_URL` with the existing owner credentials (`POSTGRES_USER`) and
+   change `DATABASE_URL` to a new runtime role, e.g. `infraops_app`, with its own password.
+   `migrate` creates the role and grants. Keeping a single role still works but logs a
+   warning and forgoes the tamper-resistance of the audit trail.
+3. Optionally set `CREDENTIAL_ENCRYPTION_KEY`; existing ciphertext stays readable through
+   the `SECRET_KEY` fallback. Run `docker compose run --rm backend python -m
+   app.secrets.rotate` to re-encrypt under the new key.
+4. The migration closes duplicate active jobs for the same VM name (keeps the oldest) and
+   backfills static-IP reservations. Jobs left `RUNNING` by the previous worker become
+   `INTERRUPTED` once their heartbeat is stale and can be retried or cancelled.
+5. Refresh tokens issued before the upgrade are not registered; users sign in again once.
+6. In production, vCenter connections with TLS verification disabled are refused; enable
+   verification and provide the CA via `VCENTER_CA_FILE` before upgrading.
+7. VMs created before the upgrade carry no ownership marker. If an old job whose VM-creation
+   stage did not complete is retried and a VM with that name exists, the stage fails with
+   "name taken" instead of adopting it; inspect the VM and remove or rename it first.
+8. The vCenter service account additionally needs *Virtual machine → Change
+   Configuration → Advanced configuration* to write the `infraops.job_id` marker.
 
 ## Required operational data
 
@@ -51,6 +85,9 @@ connections under `/api/v1/provisioning/jobs/*/events`.
   verification.
 - A UNC software repository must be reachable from the Windows guest under the account used
   by VMware Tools guest operations. Validate share and NTFS permissions from the template.
-- `SECRET_KEY` is also the root for stored credential encryption. Back it up securely and
-  restore the same value during disaster recovery; changing it makes existing ciphertext
-  unreadable.
+- The stored-credential key root is `CREDENTIAL_ENCRYPTION_KEY` (or `SECRET_KEY` when
+  unset). Back it up securely and restore the same value during disaster recovery; losing
+  it makes existing ciphertext unreadable. Rotate with `python -m app.secrets.rotate`
+  while the old root is listed in `CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS`.
+- The worker exposes `/metrics` and `/health` on `WORKER_METRICS_PORT` (9102) inside the
+  Compose network; scrape it alongside the API's `/metrics`.

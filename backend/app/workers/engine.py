@@ -29,7 +29,7 @@ import uuid
 from app.audit.actions import AuditAction
 from app.audit.recorder import AuditRecorder
 from app.core.config import get_settings
-from app.core.logging import bind_logging_context, configure_logging, get_logger
+from app.core.logging import bind_logging_context, get_logger
 from app.core.metrics import jobs_total, render_metrics, worker_jobs_in_flight
 from app.db.session import session_factory
 from app.models.jobs import JobStatus, ProvisioningJob, StepStatus

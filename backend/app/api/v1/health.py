@@ -10,8 +10,8 @@ from app import __version__
 from app.core.config import get_settings
 from app.core.metrics import render_metrics
 from app.db.session import engine
-from app.secrets.service import get_secrets_service
 from app.schemas.common import HealthComponent, HealthReport, ReadinessReport
+from app.secrets.service import get_secrets_service
 
 router = APIRouter(tags=["health"])
 

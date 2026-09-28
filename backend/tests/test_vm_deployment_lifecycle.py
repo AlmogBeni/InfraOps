@@ -361,3 +361,30 @@ async def test_pipeline_stops_after_clone_failure_before_guest_operations() -> N
 
     assert pipeline.executed == ["clone_vm"]
     assert tools.status == StepStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_static_address_taken_after_submission_blocks_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.errors import InfraOperationError
+    from app.schemas.provisioning import ConflictProviderStatus, ProviderResult
+    from app.services.network import conflict
+    from app.workers.stages import assert_static_address_unclaimed
+
+    class Replies(conflict.IcmpPingProvider):
+        async def check(self, address, prefix):
+            return ProviderResult(provider="ICMP", status=ConflictProviderStatus.CONFLICT_DETECTED,
+                                  detail=f"A device responded to ICMP echo at {address}.")
+
+    monkeypatch.setattr(conflict, "IcmpPingProvider", Replies)
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOn", ip_addresses=[])),
+        get_used_ips=AsyncMock(return_value={"10.20.30.45": "SERVER-PROD-042"}),
+    )
+    ctx = context(request_for("template"), vmware)
+
+    with pytest.raises(InfraOperationError, match="already in use"):
+        await assert_static_address_unclaimed(ctx, "10.20.30.45", 24)
+
+    # The VM's own address (retry) is never reported as a conflict.
+    vmware.get_vm_info.return_value = PowerStateInfo(power_state="poweredOn", ip_addresses=["10.20.30.45"])
+    await assert_static_address_unclaimed(ctx, "10.20.30.45", 24)

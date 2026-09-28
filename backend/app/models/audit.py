@@ -1,7 +1,8 @@
 """Tamper-resistant audit trail.
 
-Rows are append-only: the initial migration installs a PostgreSQL trigger that
-rejects UPDATE/DELETE (row triggers) and TRUNCATE (statement trigger, 0007) on this table at the database level. Secrets must never
+Rows are append-only: PostgreSQL triggers reject UPDATE/DELETE (row triggers,
+0001) and TRUNCATE (statement trigger, 0007), and the runtime database role is
+granted only INSERT/SELECT on this table (see app/db/roles.py). Secrets must never
 be written here — :mod:`app.audit.recorder` redacts defensively before insert.
 """
 

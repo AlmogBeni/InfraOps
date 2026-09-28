@@ -129,7 +129,7 @@ async def test_vcenter(vcenter_id: uuid.UUID, db: DbSession, source_ip: ClientIp
         verify_ssl=row.verify_ssl,
     )
     result = await get_vmware_service().test_connection(target)
-    row.last_checked_at = dt.datetime.now(dt.timezone.utc)
+    row.last_checked_at = dt.datetime.now(dt.UTC)
     row.last_connection_state = "connected" if result.ok else "error"
     row.last_connection_error = None if result.ok else result.detail[:2000]
     await AuditRecorder(db).record(

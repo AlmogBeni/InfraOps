@@ -1150,6 +1150,39 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(status=status, output="\n".join(lines))
 
 
+async def assert_static_address_unclaimed(ctx: JobRunContext, address: str, prefix: int) -> None:
+    """Re-check the address right before it is applied.
+
+    Submission already ran the conflict providers and reserved the address in
+    the database, but a device can appear while the job waits in the queue.
+    """
+    from app.services.network.conflict import (
+        IcmpPingProvider,
+        VMwareInventoryProvider,
+        run_conflict_check,
+    )
+
+    info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
+    if info is not None and address in (info.ip_addresses or []):
+        return  # this VM already holds the address (retry after it was applied)
+    report = await run_conflict_check(
+        address,
+        prefix,
+        [IcmpPingProvider(), VMwareInventoryProvider(ctx.vmware, ctx.target, exclude_vm_name=ctx.vm_name)],
+    )
+    if report.conflict_detected:
+        conflicts = [p.detail for p in report.providers if p.status.value == "CONFLICT_DETECTED"]
+        raise InfraOperationError(
+            f"The address {address} is already in use on the network.",
+            reason=" ".join(conflicts) or "A conflict provider reported the address as in use.",
+            recommended_action=(
+                "Free the address (or choose another one and resubmit), then retry the network stage."
+            ),
+            technical_detail=json.dumps([p.model_dump(mode="json") for p in report.providers]),
+            retryable=True,
+        )
+
+
 async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
     skipped = _blank_guest_skip(ctx, "Guest network configuration")
     if skipped:
@@ -1159,6 +1192,7 @@ async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
     net = ctx.request.network
     if net.mode == IpMode.STATIC and net.ipv4 is not None:
         ipv4 = net.ipv4
+        await assert_static_address_unclaimed(ctx, ipv4.address, ipv4.prefix)
         script = build_static_ip_script(ipv4.address, ipv4.prefix, ipv4.gateway, ipv4.dns_servers)
         configured = {
             "mode": "STATIC",

@@ -9,11 +9,13 @@ import uuid
 from sqlalchemy import (
     Boolean,
     Date,
-    Enum as SaEnum,
     ForeignKey,
     String,
     Text,
     Uuid,
+)
+from sqlalchemy import (
+    Enum as SaEnum,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -45,7 +47,7 @@ class CertificatePackage(Base):
     created_at: Mapped[dt.datetime] = created_at_column()
     updated_at: Mapped[dt.datetime] = updated_at_column()
 
-    certificates: Mapped[list["Certificate"]] = relationship(
+    certificates: Mapped[list[Certificate]] = relationship(
         back_populates="package", cascade="all, delete-orphan", lazy="selectin"
     )
 
