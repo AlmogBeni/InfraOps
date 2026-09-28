@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import uuid
 from dataclasses import dataclass, field
@@ -37,6 +38,10 @@ class JobRunContext:
     publisher: JobEventPublisher
     actor_username: str | None = None
     settings: Settings = field(default_factory=get_settings)
+
+    # Set by the worker heartbeat when a user requests cancellation; the
+    # pipeline then cancels the running stage (and its vCenter task).
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     # Populated during execution:
     vm_ref: VmRef | None = None

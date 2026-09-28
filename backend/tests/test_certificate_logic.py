@@ -17,7 +17,7 @@ from app.services.certificates.store_logic import (
     is_expired,
     make_guest_cert_file_name,
     parse_presence_output,
-    presence_program,
+    presence_command,
 )
 
 
@@ -80,10 +80,10 @@ class TestCommandConstruction:
         with pytest.raises(ValueError):
             import_program("Root", r"C:\Users\evil\cert.cer")
 
-    def test_presence_program_shape(self):
-        program, args = presence_program("CA", "CD" * 32)
-        assert program.endswith("powershell.exe")
-        assert "-NoProfile" in args
+    def test_presence_command_is_an_uploaded_script(self):
+        command = presence_command("CA", "CD" * 32)
+        assert command.is_powershell
+        assert "Cert:\\LocalMachine\\CA" in command.script
 
 
 class TestPresenceParsing:

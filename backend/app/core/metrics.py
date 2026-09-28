@@ -1,17 +1,17 @@
-"""Lightweight metrics registry exposing Prometheus text format at ``/metrics``.
+"""Lightweight per-process metrics registry in Prometheus text format.
 
-The architecture is metrics-*ready*: instrumentation points exist throughout
-the job engine and service layers. Swapping in ``prometheus_client`` later
-requires only replacing this module's internals.
+Each process exposes its own registry: the API at ``/metrics`` (HTTP and
+vCenter/guest calls made by API requests) and the worker on
+``WORKER_METRICS_PORT`` (jobs, stage failures, durations, installs). Scrape
+both targets; see docs/architecture.md.
 """
 
 from __future__ import annotations
 
 import threading
-from typing import Dict, Tuple
 
 
-def _label_key(labels: Dict[str, str]) -> str:
+def _label_key(labels: dict[str, str]) -> str:
     return ",".join(f'{k}="{v}"' for k, v in sorted(labels.items()))
 
 
@@ -19,7 +19,7 @@ class Counter:
     def __init__(self, name: str, documentation: str) -> None:
         self.name = name
         self.documentation = documentation
-        self._values: Dict[str, float] = {}
+        self._values: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def inc(self, amount: float = 1.0, **labels: str) -> None:
@@ -36,18 +36,37 @@ class Counter:
         return lines
 
 
+class Gauge:
+    def __init__(self, name: str, documentation: str) -> None:
+        self.name = name
+        self.documentation = documentation
+        self._values: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def set(self, value: float, **labels: str) -> None:
+        with self._lock:
+            self._values[_label_key(labels)] = float(value)
+
+    def render(self) -> list[str]:
+        lines = [f"# HELP {self.name} {self.documentation}", f"# TYPE {self.name} gauge"]
+        with self._lock:
+            for key, value in sorted(self._values.items()):
+                lines.append(f"{self.name}{{{key}}} {value}" if key else f"{self.name} {value}")
+        return lines
+
+
 class Histogram:
     _DEFAULT_BUCKETS = (1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600)
 
     def __init__(
-        self, name: str, documentation: str, buckets: Tuple[float, ...] = _DEFAULT_BUCKETS
+        self, name: str, documentation: str, buckets: tuple[float, ...] = _DEFAULT_BUCKETS
     ) -> None:
         self.name = name
         self.documentation = documentation
         self.buckets = buckets
-        self._counts: Dict[Tuple[Tuple[str, str], ...], Dict[float, int]] = {}
-        self._sums: Dict[Tuple[Tuple[str, str], ...], float] = {}
-        self._totals: Dict[Tuple[Tuple[str, str], ...], int] = {}
+        self._counts: dict[tuple[tuple[str, str], ...], dict[float, int]] = {}
+        self._sums: dict[tuple[tuple[str, str], ...], float] = {}
+        self._totals: dict[tuple[tuple[str, str], ...], int] = {}
         self._lock = threading.Lock()
 
     def observe(self, value: float, **labels: str) -> None:
@@ -108,6 +127,9 @@ app_install_failures_total = Counter(
 http_requests_total = Counter(
     "infraops_http_requests_total", "HTTP requests processed by the API."
 )
+worker_jobs_in_flight = Gauge(
+    "infraops_worker_jobs_in_flight", "Jobs currently executing in this worker process."
+)
 job_duration_seconds = Histogram(
     "infraops_job_duration_seconds", "End-to-end duration of completed provisioning jobs."
 )
@@ -121,6 +143,7 @@ def render_metrics() -> str:
         guest_op_failures_total,
         app_install_failures_total,
         http_requests_total,
+        worker_jobs_in_flight,
     )
     lines: list[str] = []
     for collector in collectors:

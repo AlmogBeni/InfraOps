@@ -9,9 +9,11 @@ from app.models.applications import (
     InstallerType,
 )
 from app.models.audit import AuditEvent
+from app.models.auth_tokens import RefreshToken
 from app.models.certificates import Certificate, CertificatePackage, CertificateStore, CertificateType
 from app.models.infrastructure import VCenterConnection
 from app.models.jobs import (
+    ACTIVE_JOB_STATUSES,
     TERMINAL_JOB_STATUSES,
     JobStatus,
     JobType,
@@ -25,6 +27,7 @@ from app.models.rbac import Role, UserRole
 from app.models.user import User
 
 __all__ = [
+    "ACTIVE_JOB_STATUSES",
     "Application",
     "ApplicationDependency",
     "AuditEvent",
@@ -39,6 +42,7 @@ __all__ = [
     "PlatformSetting",
     "ProvisioningJob",
     "ProvisioningJobStep",
+    "RefreshToken",
     "Role",
     "SecretReference",
     "StepStatus",

@@ -37,6 +37,49 @@ class VCenterTarget:
     verify_ssl: bool
 
 
+# Every VM InfraOps creates carries the id of the job that created it, both in
+# ``extraConfig`` and (atomically at creation time) as an annotation line. A
+# job only ever resumes on a VM carrying its own marker; any other VM with the
+# requested name is treated as "name taken" and is never modified.
+OWNER_EXTRA_CONFIG_KEY = "infraops.job_id"
+OWNER_ANNOTATION_PREFIX = "infraops-job-id:"
+
+
+def owner_annotation(description: str, job_id: str | None) -> str:
+    """Return the VM annotation carrying the ownership marker."""
+    if not job_id:
+        return description
+    marker = f"{OWNER_ANNOTATION_PREFIX} {job_id}"
+    return f"{description}\n\n{marker}" if description else marker
+
+
+def owner_from_annotation(annotation: str | None) -> str | None:
+    for line in (annotation or "").splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith(OWNER_ANNOTATION_PREFIX):
+            value = stripped[len(OWNER_ANNOTATION_PREFIX):].strip()
+            return value or None
+    return None
+
+
+def ensure_tls_policy(target: VCenterTarget) -> None:
+    """Refuse unverified TLS to vCenter in production (defence in depth for
+    connections stored before the policy existed)."""
+    from app.core.config import get_settings
+    from app.core.errors import InfraOperationError
+
+    if not target.verify_ssl and get_settings().is_production:
+        raise InfraOperationError(
+            f"TLS verification is disabled for vCenter '{target.name}'.",
+            reason="Unverified TLS connections to vCenter are not permitted in production.",
+            recommended_action=(
+                "Enable 'Verify the TLS certificate' on the connection and trust the vCenter CA "
+                "through VCENTER_CA_FILE."
+            ),
+            retryable=False,
+        )
+
+
 @dataclass(frozen=True)
 class CloneSpec:
     template_id: str
@@ -54,6 +97,7 @@ class CloneSpec:
     adapter_type: AdapterType = AdapterType.VMXNET3
     firmware: FirmwareType = FirmwareType.EFI
     secure_boot: bool = False
+    job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,12 +115,22 @@ class BlankVmSpec:
     firmware: FirmwareType = FirmwareType.EFI
     secure_boot: bool = False
     iso_id: str | None = None
+    job_id: str | None = None
 
 
 @dataclass(frozen=True)
 class VmRef:
     id: str
     name: str
+
+
+@dataclass(frozen=True)
+class VmOwnership:
+    """A VM found by name together with the InfraOps job marker it carries."""
+
+    vm_id: str
+    name: str
+    owner_job_id: str | None
 
 
 @dataclass(frozen=True)
@@ -149,6 +203,14 @@ class VMwareService(ABC):
     @abstractmethod
     async def resolve_vm_id(self, target: VCenterTarget, vm_name: str) -> str | None:
         """Return the managed-object id for a VM name, or None when absent."""
+
+    @abstractmethod
+    async def find_vm_ownership(self, target: VCenterTarget, vm_name: str) -> VmOwnership | None:
+        """Return the VM with this name and its InfraOps job marker, or None."""
+
+    @abstractmethod
+    async def tag_vm_owner(self, target: VCenterTarget, vm_id: str, job_id: str) -> None:
+        """Write the ownership marker into the VM's ``extraConfig``."""
 
     # ── Lifecycle operations ─────────────────────────────────────────────────
 

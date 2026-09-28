@@ -241,6 +241,10 @@ export const api = {
     }),
   cancelJob: (id: string) =>
     request<JobOut>(`/provisioning/jobs/${id}/cancel`, { method: 'POST' }),
+  jobEventsTicket: (id: string) =>
+    request<{ ticket: string; expires_in: number }>(`/provisioning/jobs/${id}/events/ticket`, {
+      method: 'POST',
+    }),
 
   // Catalogs (operator view)
   applications: (enabledOnly = true) =>

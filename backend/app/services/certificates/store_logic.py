@@ -19,10 +19,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from app.core.errors import DomainValidationError
 from app.models.certificates import CertificateStore, CertificateType
 from app.schemas.provisioning import THUMBPRINT_PATTERN
+from app.services.guest.scripts import GUEST_TEMP_DIR, GuestCommand
 
-POWERSHELL_PATH = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 CERTUTIL_PATH = r"C:\Windows\System32\certutil.exe"
-GUEST_TEMP_DIR = r"C:\Windows\Temp"
 
 STORE_FOR_TYPE: dict[CertificateType, CertificateStore] = {
     CertificateType.ROOT: CertificateStore.ROOT,
@@ -86,16 +85,16 @@ def build_presence_script(store: str, thumbprint: str) -> str:
     )
 
 
-def presence_program(store: str, thumbprint: str) -> tuple[str, str]:
-    script = build_presence_script(store, thumbprint)
-    return POWERSHELL_PATH, f"-NoProfile -NonInteractive -Command {script}"
+def presence_command(store: str, thumbprint: str) -> GuestCommand:
+    """PowerShell presence probe, run as an uploaded script file."""
+    return GuestCommand.powershell(build_presence_script(store, thumbprint))
 
 
 def import_program(store: str, guest_cert_path: str) -> tuple[str, str]:
     """certutil import into the LocalMachine computer-account store."""
     if store not in (CertificateStore.ROOT.value, CertificateStore.CA.value):
         raise ValueError("Invalid certificate store.")
-    if not guest_cert_path.startswith(GUEST_TEMP_DIR + "\\"):
+    if not guest_cert_path.startswith(GUEST_TEMP_DIR + "\\") or '"' in guest_cert_path:
         raise ValueError("Certificate files must be staged inside the managed temp directory.")
     return CERTUTIL_PATH, f'-addstore -f {store} "{guest_cert_path}"'
 

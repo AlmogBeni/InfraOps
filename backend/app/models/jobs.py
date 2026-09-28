@@ -16,11 +16,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    func,
+    text,
 )
 from sqlalchemy import (
     Enum as SaEnum,
@@ -43,6 +46,9 @@ class JobStatus(str, enum.Enum):
     ACTION_REQUIRED = "ACTION_REQUIRED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    # The worker that owned a RUNNING job stopped heartbeating (crash, OOM,
+    # SIGKILL). The reaper parks the job here so it can be retried or cancelled.
+    INTERRUPTED = "INTERRUPTED"
 
 
 class StepStatus(str, enum.Enum):
@@ -104,9 +110,37 @@ TERMINAL_JOB_STATUSES = frozenset(
     }
 )
 
+# Statuses that hold the VM name. Enforced by a partial unique index so two
+# concurrent submissions can never both pass the read-then-insert check.
+ACTIVE_JOB_STATUSES = (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.INTERRUPTED)
+# Statuses that hold a static IPv4 reservation (the job may still configure it).
+IP_RESERVING_JOB_STATUSES = (*ACTIVE_JOB_STATUSES, JobStatus.ACTION_REQUIRED)
+
+
+def _status_predicate(statuses: tuple[JobStatus, ...]):
+    values = ", ".join(f"'{status.value}'" for status in statuses)
+    return text(f"status IN ({values})")
+
 
 class ProvisioningJob(Base):
     __tablename__ = "provisioning_jobs"
+    __table_args__ = (
+        Index(
+            "uq_provisioning_jobs_active_vm_name",
+            func.lower(text("vm_name")),
+            unique=True,
+            postgresql_where=_status_predicate(ACTIVE_JOB_STATUSES),
+        ),
+        Index(
+            "uq_provisioning_jobs_reserved_ipv4",
+            "reserved_ipv4",
+            unique=True,
+            postgresql_where=text(
+                "reserved_ipv4 IS NOT NULL AND "
+                + str(_status_predicate(IP_RESERVING_JOB_STATUSES))
+            ),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = uuid_primary_key()
     job_type: Mapped[JobType] = mapped_column(
@@ -152,6 +186,13 @@ class ProvisioningJob(Base):
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True)
+    # SHA-256 of the canonical request body; a reused Idempotency-Key must match it.
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Static IPv4 address this job will configure (NULL for DHCP).
+    reserved_ipv4: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    # Liveness of the worker executing a RUNNING job (see workers/engine.py).
+    worker_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    heartbeat_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = created_at_column()
     updated_at: Mapped[dt.datetime] = updated_at_column()
 

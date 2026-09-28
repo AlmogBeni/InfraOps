@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, created_at_column
@@ -22,7 +22,7 @@ class Role(Base):
 
 class UserRole(Base):
     __tablename__ = "user_roles"
-    __table_args__ = (UniqueConstraint("user_id", "role_id", name="uq_user_role"),)
+    # (user_id, role_id) is the composite primary key, which already enforces uniqueness.
 
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True

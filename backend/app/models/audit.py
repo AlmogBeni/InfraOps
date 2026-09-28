@@ -1,7 +1,7 @@
 """Tamper-resistant audit trail.
 
 Rows are append-only: the initial migration installs a PostgreSQL trigger that
-rejects UPDATE/DELETE on this table at the database level. Secrets must never
+rejects UPDATE/DELETE (row triggers) and TRUNCATE (statement trigger, 0007) on this table at the database level. Secrets must never
 be written here — :mod:`app.audit.recorder` redacts defensively before insert.
 """
 
@@ -27,12 +27,12 @@ class AuditEvent(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     username: Mapped[str | None] = mapped_column(String(100), nullable=True)
     action: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
-    resource_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    resource_type: Mapped[str | None] = mapped_column(String(60), nullable=True, index=True)
     resource_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     datacenter_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     datacenter_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    result: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    result: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     detail_text: Mapped[str | None] = mapped_column(Text, nullable=True)

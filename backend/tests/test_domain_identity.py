@@ -72,7 +72,7 @@ async def test_domain_join_defers_rename_to_atomic_add_computer_operation() -> N
     ctx = SimpleNamespace(
         request=request,
         vm_name=request.vm.name,
-        guest_ops=SimpleNamespace(run_program=run_program),
+        guest_ops=SimpleNamespace(run_powershell=run_program),
         target=object(),
         resolve_guest_credentials=resolve_credentials,
     )
@@ -126,14 +126,18 @@ async def test_add_computer_receives_short_vm_name_never_fqdn(
         resolve_guest_credentials=AsyncMock(
             return_value=GuestCredentials(username="local-admin", password="local-password")
         ),
-        guest_ops=SimpleNamespace(run_program=run_program),
+        guest_ops=SimpleNamespace(run_powershell=run_program),
         target=object(),
         reboot_required=False,
     )
 
     outcome = await stage_join_domain(ctx)
 
-    arguments = run_program.await_args_list[1].args[4]
+    join_call = run_program.await_args_list[1]
+    arguments = join_call.args[3]
+    # The password travels only as a self-deleting secret file.
+    assert join_call.kwargs["secrets"] == {"domain_join_password": "join-password"}
+    assert "join-password" not in arguments
     assert "Add-Computer" in arguments
     assert "-DomainName 'corp.deltagalil.com'" in arguments
     assert "-NewName 'SRVILDC55'" in arguments
@@ -164,7 +168,7 @@ async def test_join_retry_is_noop_when_windows_already_reports_exact_identity() 
         resolve_guest_credentials=AsyncMock(
             return_value=GuestCredentials(username="local-admin", password="local-password")
         ),
-        guest_ops=SimpleNamespace(run_program=run_program),
+        guest_ops=SimpleNamespace(run_powershell=run_program),
         target=object(),
         reboot_required=True,
     )
@@ -200,7 +204,7 @@ async def test_join_retry_stops_on_pending_name_without_touching_ad() -> None:
         resolve_guest_credentials=AsyncMock(
             return_value=GuestCredentials(username="local-admin", password="local-password")
         ),
-        guest_ops=SimpleNamespace(run_program=run_program),
+        guest_ops=SimpleNamespace(run_powershell=run_program),
         target=object(),
         reboot_required=False,
     )
@@ -233,7 +237,7 @@ async def test_join_retry_stops_on_pending_domain_join_without_touching_ad() -> 
         resolve_guest_credentials=AsyncMock(
             return_value=GuestCredentials(username="local-admin", password="local-password")
         ),
-        guest_ops=SimpleNamespace(run_program=run_program),
+        guest_ops=SimpleNamespace(run_powershell=run_program),
         target=object(),
         reboot_required=False,
     )
@@ -265,12 +269,11 @@ async def test_mock_guest_probe_tracks_join_as_pending_until_reboot(
     credentials = GuestCredentials(username="local-admin", password="local-password")
 
     async def run(script: str) -> CommandResult:
-        return await guest_ops.run_program(
+        return await guest_ops.run_powershell(
             target,
             "template-vm",
             credentials,
-            "powershell.exe",
-            f"-NoProfile -NonInteractive -Command {script}",
+            script,
             60,
         )
 
@@ -285,7 +288,6 @@ async def test_mock_guest_probe_tracks_join_as_pending_until_reboot(
         build_domain_join_script(
             "corp.example.com",
             "join-user",
-            "join-password",
             None,
             "SRVILDC55",
         )
@@ -322,7 +324,7 @@ def final_validation_context(identity: CommandResult) -> SimpleNamespace:
                 )
             )
         ),
-        guest_ops=SimpleNamespace(run_program=AsyncMock(return_value=identity)),
+        guest_ops=SimpleNamespace(run_powershell=AsyncMock(return_value=identity)),
         resolve_guest_credentials=AsyncMock(
             return_value=GuestCredentials(username="local-admin", password="local-password")
         ),

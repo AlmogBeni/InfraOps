@@ -12,11 +12,11 @@ from app.audit.actions import AuditAction
 from app.audit.recorder import AuditRecorder
 from app.auth.dependencies import get_current_user
 from app.auth.permissions import permissions_for_roles
-from app.auth.service import auth_service
+from app.auth.service import RefreshTokenReuseError, auth_service
 from app.core.config import get_settings
 from app.core.errors import AuthenticationError, RateLimitError
 from app.core.logging import bind_logging_context, get_logger
-from app.core.rate_limit import login_rate_limiter
+from app.core.rate_limit import get_login_rate_limiter
 from app.models.user import User
 from app.schemas.auth import LoginRequest, TokenResponse, UserOut
 
@@ -41,8 +41,13 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
 
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, response: Response, db: DbSession, source_ip: ClientIp) -> TokenResponse:
-    if not login_rate_limiter.allow(f"login:{source_ip or 'unknown'}",
-                                    get_settings().rate_limit_login_per_minute):
+    limiter = get_login_rate_limiter()
+    limit = get_settings().rate_limit_login_per_minute
+    # Per client IP and per username: the second bounds distributed guessing
+    # against one account even if many source addresses are used.
+    allowed_ip = await limiter.allow(f"login-ip:{source_ip or 'unknown'}", limit)
+    allowed_user = await limiter.allow(f"login-user:{payload.username.casefold()}", limit)
+    if not (allowed_ip and allowed_user):
         raise RateLimitError("Too many login attempts — try again shortly.")
 
     try:
@@ -56,10 +61,16 @@ async def login(payload: LoginRequest, response: Response, db: DbSession, source
             result="failure",
             source_ip=source_ip,
         )
+        # Commit explicitly: the request session rolls back on the raised error.
+        await db.commit()
         raise
 
-    access_token, expires_at, refresh_token = await auth_service.issue_tokens(user)
-    user.last_login_at = dt.datetime.now(dt.timezone.utc)
+    await auth_service.purge_expired_refresh_tokens(db)
+    tokens = await auth_service.issue_tokens(db, user)
+    access_token, expires_at, refresh_token = (
+        tokens.access_token, tokens.access_expires_at, tokens.refresh_token
+    )
+    user.last_login_at = dt.datetime.now(dt.UTC)
     db.add(user)
 
     await AuditRecorder(db).record(
@@ -76,7 +87,7 @@ async def login(payload: LoginRequest, response: Response, db: DbSession, source
 
     return TokenResponse(
         access_token=access_token,
-        expires_in=max(0, int((expires_at - dt.datetime.now(dt.timezone.utc)).total_seconds())),
+        expires_in=max(0, int((expires_at - dt.datetime.now(dt.UTC)).total_seconds())),
         user=UserOut(
             id=str(user.id),
             username=user.username,
@@ -95,12 +106,29 @@ async def refresh_tokens(
     refresh_token = request.cookies.get(REFRESH_COOKIE)
     if not refresh_token:
         raise AuthenticationError("Missing refresh token.")
-    user = await auth_service.user_from_refresh_token(db, refresh_token)
-    access_token, expires_at, new_refresh = await auth_service.issue_tokens(user)
-    _set_refresh_cookie(response, new_refresh)
+    try:
+        user, tokens = await auth_service.rotate_refresh_token(db, refresh_token)
+    except RefreshTokenReuseError as exc:
+        await AuditRecorder(db).record(
+            AuditAction.AUTH_REFRESH_REUSE_DETECTED,
+            resource_type="user",
+            resource_name=str(exc.user_id),
+            result="revoked",
+            source_ip=source_ip,
+            details={"user_id": str(exc.user_id)},
+        )
+        # Persist the family revocation and the audit row despite the 401.
+        await db.commit()
+        raise
+    except AuthenticationError:
+        await db.commit()
+        raise
+    access_token, expires_at = tokens.access_token, tokens.access_expires_at
+    await db.commit()
+    _set_refresh_cookie(response, tokens.refresh_token)
     return TokenResponse(
         access_token=access_token,
-        expires_in=max(0, int((expires_at - dt.datetime.now(dt.timezone.utc)).total_seconds())),
+        expires_in=max(0, int((expires_at - dt.datetime.now(dt.UTC)).total_seconds())),
         user=UserOut(
             id=str(user.id),
             username=user.username,
@@ -118,17 +146,24 @@ async def refresh_tokens(
     response_class=Response,
     response_model=None,
 )
-async def logout(db: DbSession, source_ip: ClientIp) -> Response:
+async def logout(request: Request, db: DbSession, source_ip: ClientIp) -> Response:
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
+    user_id = (
+        await auth_service.revoke_refresh_token(db, refresh_token) if refresh_token else None
+    )
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.delete_cookie(
         REFRESH_COOKIE,
         path=f"{get_settings().api_v1_prefix}/auth",
     )
+    user = await db.get(User, user_id) if user_id else None
     await AuditRecorder(db).record(
         AuditAction.AUTH_LOGOUT,
+        user=user,
         result="success",
         source_ip=source_ip,
     )
+    await db.commit()
     return response
 
 

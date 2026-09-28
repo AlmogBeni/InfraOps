@@ -54,6 +54,7 @@ const JOB_STATUS_META: Record<JobStatus, { label: string; tone: Parameters<typeo
   ACTION_REQUIRED: { label: 'Action Required', tone: 'warning', icon: AlertTriangleIcon },
   FAILED: { label: 'Failed', tone: 'danger', icon: FailIcon },
   CANCELLED: { label: 'Cancelled', tone: 'neutral', icon: FailIcon },
+  INTERRUPTED: { label: 'Interrupted', tone: 'warning', icon: AlertTriangleIcon },
 }
 
 export function JobStatusBadge({ status }: { status: JobStatus }) {

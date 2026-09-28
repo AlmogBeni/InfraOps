@@ -12,6 +12,7 @@ never logged or exposed. Credential fingerprints invalidate rotated sessions.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime as dt
 import hashlib
 import ssl
@@ -39,13 +40,18 @@ from app.schemas.infrastructure import (
 from app.schemas.provisioning import AdapterType, FirmwareType
 from app.secrets.service import SecretsService
 from app.services.vmware.base import (
+    OWNER_EXTRA_CONFIG_KEY,
     BlankVmSpec,
     CloneSpec,
     PowerStateInfo,
     TemporaryMediaRef,
     VCenterTarget,
+    VmOwnership,
     VmRef,
     VMwareService,
+    ensure_tls_policy,
+    owner_annotation,
+    owner_from_annotation,
 )
 from app.services.vmware.content_library import ContentLibraryClient
 from app.services.vmware.inventory_refs import decode_iso_id, encode_iso_id
@@ -63,6 +69,18 @@ except ImportError:  # pragma: no cover - exercised only without pyvmomi install
 _CONNECTION_TTL_SECONDS = 1800.0
 _TOOLS_POLL_INTERVAL = 5.0
 _TASK_POLL_INTERVAL = 0.5
+
+# Set by ``_with_session`` for the duration of one blocking call. ``asyncio``
+# copies the current context into ``to_thread`` workers, so the blocking task
+# poller sees the event and cancels the vCenter task when the awaiting
+# coroutine is cancelled (stage timeout, job cancellation, worker shutdown).
+_CANCEL_EVENT: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
+    "infraops_vsphere_cancel_event", default=None
+)
+
+
+class VCenterTaskCancelled(Exception):
+    """Raised inside a worker thread after the vCenter task was cancelled."""
 
 
 def _require_pyvmomi() -> None:
@@ -160,6 +178,7 @@ class VsphereVMwareService(VMwareService):
     # ── Connection handling ──────────────────────────────────────────────────
 
     async def _get_session(self, target: VCenterTarget):
+        ensure_tls_policy(target)
         username, password = await self._secrets.get_credentials(
             target.username_secret_ref, target.password_secret_ref
         )
@@ -207,8 +226,15 @@ class VsphereVMwareService(VMwareService):
     async def _with_session(self, target: VCenterTarget, fn, *, operation: str = "session-call"):
         """Run ``fn(si)`` in a thread; evict the session on connection errors."""
         si = await self._get_session(target)
+        cancel_event = threading.Event()
+        token = _CANCEL_EVENT.set(cancel_event)
         try:
             return await asyncio.to_thread(fn, si)
+        except asyncio.CancelledError:
+            # The coroutine is gone but the thread keeps running; tell it to
+            # cancel the vCenter task it is waiting on and stop polling.
+            cancel_event.set()
+            raise
         except (InfraOperationError, NotFoundError):
             raise
         except (vim.fault.NoPermission, vim.fault.InvalidLogin) as exc:
@@ -237,6 +263,8 @@ class VsphereVMwareService(VMwareService):
                 target.host,
             )
             raise _wrap(operation, exc) from exc
+        finally:
+            _CANCEL_EVENT.reset(token)
 
     # ── pyvmomi helpers (blocking, run inside threads) ───────────────────────
 
@@ -246,7 +274,15 @@ class VsphereVMwareService(VMwareService):
 
     @staticmethod
     def _wait_for_task(task) -> None:
+        cancel_event = _CANCEL_EVENT.get()
         while task.info.state in (vim.TaskInfo.State.running, vim.TaskInfo.State.queued):
+            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    task.CancelTask()
+                    log.warning("Cancelled vCenter task %s after its caller was cancelled", task._moId)
+                except Exception:  # noqa: BLE001 - not every task type is cancellable
+                    log.warning("vCenter task %s could not be cancelled", getattr(task, "_moId", "?"))
+                raise VCenterTaskCancelled(getattr(task, "_moId", "task"))
             time.sleep(_TASK_POLL_INTERVAL)
         if task.info.state == vim.TaskInfo.State.error:
             error = task.info.error
@@ -279,15 +315,38 @@ class VsphereVMwareService(VMwareService):
         return None
 
     @classmethod
-    def _find_vm_by_name(cls, content, name: str):
+    def _find_vms_by_name(cls, content, name: str) -> list:
         view = cls._container_view(content, vim.VirtualMachine)
         try:
-            for vm in view.view:
-                if vm.name.lower() == name.lower():
-                    return vm
+            return [vm for vm in view.view if vm.name.lower() == name.lower()]
         finally:
             view.Destroy()
-        return None
+
+    @classmethod
+    def _find_vm_by_name(cls, content, name: str):
+        """Return the single VM with this name; refuse to guess between duplicates."""
+        matches = cls._find_vms_by_name(content, name)
+        if len(matches) > 1:
+            raise InfraOperationError(
+                f"More than one virtual machine is named '{name}'.",
+                reason="VM names are unique only per folder; InfraOps will not guess which VM to act on.",
+                recommended_action="Rename or remove the duplicate VM in vCenter, then retry.",
+                technical_detail=", ".join(vm._moId for vm in matches),
+                retryable=False,
+            )
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _vm_owner_job_id(vm) -> str | None:
+        config = getattr(vm, "config", None)
+        for option in getattr(config, "extraConfig", None) or []:
+            if getattr(option, "key", None) == OWNER_EXTRA_CONFIG_KEY and option.value:
+                return str(option.value)
+        return owner_from_annotation(getattr(config, "annotation", None))
+
+    @staticmethod
+    def _owner_extra_config(job_id: str) -> list:
+        return [vim.option.OptionValue(key=OWNER_EXTRA_CONFIG_KEY, value=job_id)]
 
     @staticmethod
     def _owning_datacenter(entity):
@@ -637,7 +696,7 @@ class VsphereVMwareService(VMwareService):
 
     async def vm_exists(self, target: VCenterTarget, vm_name: str) -> bool:
         def op(si):
-            return self._find_vm_by_name(self._content(si), vm_name) is not None
+            return bool(self._find_vms_by_name(self._content(si), vm_name))
 
         return await self._with_session(target, op)
 
@@ -707,6 +766,39 @@ class VsphereVMwareService(VMwareService):
             return vm._moId if vm is not None else None
 
         return await self._with_session(target, op)
+
+    async def find_vm_ownership(self, target: VCenterTarget, vm_name: str) -> VmOwnership | None:
+        def op(si):
+            vm = self._find_vm_by_name(self._content(si), vm_name)
+            if vm is None:
+                return None
+            return VmOwnership(vm_id=vm._moId, name=vm.name, owner_job_id=self._vm_owner_job_id(vm))
+
+        return await self._with_session(target, op, operation="find-vm-ownership")
+
+    async def tag_vm_owner(self, target: VCenterTarget, vm_id: str, job_id: str) -> None:
+        def op(si):
+            vm = self._find_by_moref(self._content(si), vm_id)
+            if vm is None:
+                raise InfraOperationError(
+                    f"VM '{vm_id}' was not found while recording its InfraOps owner.",
+                    reason="VM removed immediately after creation.",
+                    recommended_action="Inspect recent vCenter tasks before retrying.",
+                    retryable=True,
+                )
+            existing = self._vm_owner_job_id(vm)
+            if existing is not None and existing != job_id:
+                raise InfraOperationError(
+                    f"VM '{vm.name}' belongs to another InfraOps job.",
+                    reason=f"Ownership marker {existing!r} does not match this job.",
+                    recommended_action="Choose a different VM name.",
+                    retryable=False,
+                )
+            self._wait_for_task(
+                vm.ReconfigVM_Task(spec=vim.vm.ConfigSpec(extraConfig=self._owner_extra_config(job_id)))
+            )
+
+        await self._with_session(target, op, operation="tag-vm-owner")
 
     # ── Lifecycle operations ─────────────────────────────────────────────────
 
@@ -788,7 +880,7 @@ class VsphereVMwareService(VMwareService):
                         retryable=False,
                     )
                 pool = candidate
-            if self._find_vm_by_name(content, spec.vm_name) is not None:
+            if self._find_vms_by_name(content, spec.vm_name):
                 raise InfraOperationError(
                     f"A virtual machine named '{spec.vm_name}' already exists.",
                     reason="Duplicate VM name in the vCenter inventory.",
@@ -800,9 +892,14 @@ class VsphereVMwareService(VMwareService):
         pool_id = await self._with_session(
             target, resolve_pool, operation="resolve-ovf-placement"
         )
-        return await self._content_library.deploy_ovf_package(
+        # The annotation marker is applied atomically by the OVF deployment;
+        # the extraConfig marker follows immediately afterwards.
+        vm_ref = await self._content_library.deploy_ovf_package(
             target, spec, resource_pool_id=pool_id
         )
+        if spec.job_id:
+            await self.tag_vm_owner(target, vm_ref.id, spec.job_id)
+        return vm_ref
 
     async def create_blank_vm(self, target: VCenterTarget, spec: BlankVmSpec) -> VmRef:
         iso_reference: tuple[str, str] | None = None
@@ -819,7 +916,7 @@ class VsphereVMwareService(VMwareService):
 
         def op(si):
             content = self._content(si)
-            if self._find_vm_by_name(content, spec.vm_name) is not None:
+            if self._find_vms_by_name(content, spec.vm_name):
                 raise InfraOperationError(
                     f"A virtual machine named '{spec.vm_name}' already exists.",
                     reason="Duplicate VM name in the vCenter inventory.",
@@ -919,7 +1016,9 @@ class VsphereVMwareService(VMwareService):
 
             config = vim.vm.ConfigSpec()
             config.name = spec.vm_name
-            config.annotation = spec.description
+            config.annotation = owner_annotation(spec.description, spec.job_id)
+            if spec.job_id:
+                config.extraConfig = self._owner_extra_config(spec.job_id)
             config.guestId = "windows9Server64Guest"
             config.numCPUs = spec.cpu
             config.memoryMB = spec.memory_mb
@@ -990,7 +1089,9 @@ class VsphereVMwareService(VMwareService):
             except Exception as exc:  # noqa: BLE001
                 raise _wrap("create_blank_vm", exc) from exc
 
-            created = self._find_vm_by_name(content, spec.vm_name)
+            # Use the task result (the new VM's moref), never a name lookup
+            # that could match an unrelated VM with the same name.
+            created = task.info.result
             if created is None:
                 raise InfraOperationError(
                     f"Create task completed but VM '{spec.vm_name}' was not found.",

@@ -16,7 +16,7 @@ from app.core.errors import InfraOperationError
 from app.core.logging import get_logger
 from app.schemas.infrastructure import TemplateOut
 from app.secrets.service import SecretsService
-from app.services.vmware.base import CloneSpec, VCenterTarget, VmRef
+from app.services.vmware.base import CloneSpec, VCenterTarget, VmRef, ensure_tls_policy, owner_annotation
 
 log = get_logger(__name__)
 
@@ -75,6 +75,7 @@ class ContentLibraryClient:
 
     @asynccontextmanager
     async def _client(self, target: VCenterTarget):
+        ensure_tls_policy(target)
         username, password = await self._secrets.get_credentials(
             target.username_secret_ref, target.password_secret_ref
         )
@@ -215,7 +216,7 @@ class ContentLibraryClient:
 
             deployment_spec: dict[str, object] = {
                 "name": spec.vm_name,
-                "annotation": spec.description,
+                "annotation": owner_annotation(spec.description, spec.job_id),
                 # A provisioning submission is an explicit deployment action.
                 # vCenter still validates every EULA and returns structured errors.
                 "accept_all_eula": True,

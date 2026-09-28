@@ -53,14 +53,14 @@ class TestProgramConstruction:
             DetectionMethod.MSI_PRODUCT_CODE, {"product_code": "{A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D}"}
         )
         programs = detection_programs(DetectionMethod.MSI_PRODUCT_CODE, config)
-        assert all(p[0].endswith("reg.exe") for p in programs)
-        assert any("/reg:32" in p[1] for p in programs)
+        assert all(p.program.endswith("reg.exe") and not p.is_powershell for p in programs)
+        assert any("/reg:32" in p.arguments for p in programs)
 
     def test_file_exists_uses_test_path(self):
         config = validate_detection_config(DetectionMethod.FILE_EXISTS, {"path": r"C:\Tools\a.dll"})
-        program, args = detection_programs(DetectionMethod.FILE_EXISTS, config)[0]
-        assert "Test-Path" in args
-        assert program.endswith("powershell.exe")
+        probe = detection_programs(DetectionMethod.FILE_EXISTS, config)[0]
+        assert probe.is_powershell
+        assert "Test-Path" in probe.script
 
     def test_ps_quote_escapes_single_quotes(self):
         assert ps_quote("it's") == "'it''s'"

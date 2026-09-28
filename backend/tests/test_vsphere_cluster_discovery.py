@@ -277,6 +277,7 @@ async def test_ovf_placement_accepts_a_scoped_standalone_compute_resource(
     service._content_library = FakeContentLibrary()
     service._find_by_moref = lambda _content, moref: references.get(moref)
     service._find_vm_by_name = lambda _content, _name: None
+    service._find_vms_by_name = lambda _content, _name: []
 
     async def with_session(_target, callback, **_kwargs):
         return callback(service_instance)

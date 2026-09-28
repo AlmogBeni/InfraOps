@@ -21,6 +21,7 @@ from app.services.applications.detection_rules import (
     _CONTROL_CHARS,
     detection_programs,
 )
+from app.services.applications.paths import validate_installer_path
 from app.services.guest.base import GuestCredentials, GuestOperations
 from app.services.vmware.base import VCenterTarget
 
@@ -64,13 +65,24 @@ def _sanitize_arguments(arguments: str) -> str:
 
 
 def build_install_program(app: ApplicationDefinition) -> tuple[str, str]:
+    """Program and argument string, started directly (never through a shell)."""
     arguments = _sanitize_arguments(app.install_arguments)
-    quoted_path = f'"{app.installer_path}"'
+    try:
+        installer_path = validate_installer_path(app.installer_path, app.installer_type)
+    except ValueError as exc:
+        raise InfraOperationError(
+            "An application definition has an invalid installer path.",
+            reason=str(exc),
+            recommended_action="Ask an administrator to correct the application definition.",
+            technical_detail=f"installer_path={app.installer_path!r}",
+            retryable=False,
+        ) from exc
+    quoted_path = f'"{installer_path}"'
     if app.installer_type == InstallerType.MSI:
         extra = f" {arguments}" if arguments else ""
         return MSIEXEC_PATH, f"/i {quoted_path}{extra} /qn /norestart"
     if app.installer_type == InstallerType.EXE:
-        return app.installer_path, arguments
+        return installer_path, arguments
     if app.installer_type == InstallerType.POWERSHELL:
         return POWERSHELL_PATH, f"-NoProfile -ExecutionPolicy Bypass -File {quoted_path} {arguments}".rstrip()
     raise InfraOperationError(
@@ -99,9 +111,9 @@ class ApplicationInstaller:
         method = DetectionMethod(app.detection_method)
         probes = detection_programs(method, app.detection_config)
         last_output = ""
-        for program, arguments in probes:
-            result = await self._guest.run_program(
-                target, vm_name, credentials, program, arguments, min(app.timeout_seconds, 300)
+        for probe in probes:
+            result = await self._guest.run_command(
+                target, vm_name, credentials, probe, min(app.timeout_seconds, 300)
             )
             if result.exit_code == 0:
                 return True
@@ -110,7 +122,7 @@ class ApplicationInstaller:
                 continue
             raise InfraOperationError(
                 f"Detection for '{app.name}' could not run inside the guest.",
-                reason=f"'{program}' exited with unexpected code {result.exit_code}.",
+                reason=f"'{probe.display}' exited with unexpected code {result.exit_code}.",
                 recommended_action="Inspect the stage output and retry application installation.",
                 technical_detail=(result.stdout + result.stderr)[-1500:],
                 retryable=True,

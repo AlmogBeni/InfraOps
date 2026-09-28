@@ -17,6 +17,8 @@ async def run() -> None:
     configure_logging(settings.log_level, settings.log_format)
     engine = JobEngine()
 
+    # SIGTERM (docker stop) / SIGINT: stop claiming immediately, then drain
+    # running jobs for WORKER_SHUTDOWN_GRACE_SECONDS before interrupting them.
     loop = asyncio.get_running_loop()
     for sig_name in ("SIGTERM", "SIGINT"):
         sig = getattr(signal, sig_name, None)

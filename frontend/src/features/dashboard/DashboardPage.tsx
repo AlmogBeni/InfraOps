@@ -132,6 +132,8 @@ function jobActivity(job: JobOut): string {
       return 'Operator review required'
     case 'CANCELLED':
       return 'Stopped by operator'
+    case 'INTERRUPTED':
+      return 'Worker stopped — retry to resume'
   }
 }
 

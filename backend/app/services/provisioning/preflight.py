@@ -28,6 +28,7 @@ from app.schemas.provisioning import (
 )
 from app.secrets.base import SecretNotFoundError
 from app.secrets.service import SecretsService, get_secrets_service
+from app.services.applications.paths import path_within_roots
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.network.conflict import (
     DnsForwardProvider,
@@ -211,13 +212,13 @@ class PreflightValidator:
         await self._check_applications(request, add)
 
         # ── Installer repository reachability policy ─────────────────────────
-        allowed_roots = [str(root).lower() for root in
+        allowed_roots = [str(root) for root in
                          (settings_rows.get(SETTING_ALLOWED_INSTALLER_ROOTS) or [])]
         selected_applications = await self._selected_applications(request)
         outside = [
             app.installer_path
             for app in selected_applications
-            if allowed_roots and not any(app.installer_path.lower().startswith(root) for root in allowed_roots)
+            if allowed_roots and not path_within_roots(app.installer_path, allowed_roots)
         ]
         if selected_applications and not allowed_roots:
             add("installer_policy", "Installer repository policy", CheckStatus.FAIL,

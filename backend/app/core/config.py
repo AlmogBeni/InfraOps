@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     app_name: str = "InfraOps"
     environment: Environment = Environment.PRODUCTION
     secret_key: str = ""
+    # Root of the credential-encryption key (defaults to SECRET_KEY for
+    # backward compatibility). Former roots stay decryptable while rotating.
+    credential_encryption_key: str = ""
+    credential_encryption_previous_keys: str = ""
     api_v1_prefix: str = "/api/v1"
 
     # ── Logging ──────────────────────────────────────────────────────────────
@@ -51,6 +55,9 @@ class Settings(BaseSettings):
 
     # ── Database / cache ─────────────────────────────────────────────────────
     database_url: str = "postgresql+asyncpg://infraops:infraops@localhost:5432/infraops"
+    # Schema-owner connection used only by migrations and app.db.roles. When
+    # set, DATABASE_URL should be a separate least-privilege runtime role.
+    migration_database_url: str = ""
     redis_url: str = "redis://localhost:6379/0"
     db_pool_size: int = 10
     db_max_overflow: int = 5
@@ -69,8 +76,21 @@ class Settings(BaseSettings):
     # ── Job worker ───────────────────────────────────────────────────────────
     worker_concurrency: int = 2
     worker_poll_interval_seconds: float = 2.0
+    # A RUNNING job whose heartbeat is older than the timeout is considered
+    # abandoned (worker crash / SIGKILL) and is marked INTERRUPTED.
+    worker_heartbeat_interval_seconds: float = 15.0
+    worker_heartbeat_timeout_seconds: float = 120.0
+    worker_reaper_interval_seconds: float = 30.0
+    # After SIGTERM the worker stops claiming work and waits this long for
+    # running jobs before interrupting them (keep below compose stop_grace_period).
+    worker_shutdown_grace_seconds: float = 60.0
+    # Prometheus metrics + liveness for the worker process (0 disables).
+    worker_metrics_port: int = 9102
 
     # ── HTTP ─────────────────────────────────────────────────────────────────
+    # Direct peers allowed to supply X-Forwarded-For (comma-separated CIDRs).
+    # Only the bundled nginx should be in this range; see core/client_ip.py.
+    trusted_proxy_cidrs: str = "127.0.0.1/32,::1/128"
     # Comma-separated list of allowed browser origins (kept as a raw string so
     # environment parsing never requires JSON).
     cors_origins: str = ""
@@ -101,6 +121,8 @@ class Settings(BaseSettings):
             problems.append("INFRASTRUCTURE_MODE must be 'real' in production")
         if len(self.secret_key) < 32:
             problems.append("SECRET_KEY must contain at least 32 characters in production")
+        if self.credential_encryption_key and len(self.credential_encryption_key) < 32:
+            problems.append("CREDENTIAL_ENCRYPTION_KEY must contain at least 32 characters")
         if not self.cookie_secure:
             problems.append("COOKIE_SECURE must be true in production")
         if self.auth_mode != AuthMode.LOCAL:

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, UUID4, model_validator
 
 from app.models.applications import DetectionMethod, InstallerType
 from app.services.applications.detection_rules import validate_detection_config
+from app.services.applications.paths import validate_installer_path
 
 
 class ApplicationOut(BaseModel):
@@ -48,7 +49,8 @@ class ApplicationCreate(BaseModel):
     dependency_ids: list[UUID4] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
-    def _validate_detection(self) -> "ApplicationCreate":
+    def _validate_detection(self) -> ApplicationCreate:
+        self.installer_path = validate_installer_path(self.installer_path, self.installer_type)
         self.detection_config = validate_detection_config(self.detection_method, self.detection_config)
         return self
 
@@ -70,7 +72,11 @@ class ApplicationUpdate(BaseModel):
     dependency_ids: list[uuid.UUID] | None = Field(default=None, max_length=20)
 
     @model_validator(mode="after")
-    def _validate_detection_pair(self) -> "ApplicationUpdate":
+    def _validate_detection_pair(self) -> ApplicationUpdate:
+        if self.installer_path is not None:
+            # The installer type may be unchanged; the extension is re-checked
+            # against the stored type when the definition is executed.
+            self.installer_path = validate_installer_path(self.installer_path, self.installer_type)
         if self.detection_method is not None and self.detection_config is not None:
             self.detection_config = validate_detection_config(self.detection_method, self.detection_config)
         return self

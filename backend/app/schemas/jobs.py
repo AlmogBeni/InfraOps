@@ -101,3 +101,8 @@ class RetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stage_key: str | None = Field(default=None, max_length=80)
+
+
+class StreamTicketOut(BaseModel):
+    ticket: str
+    expires_in: int
