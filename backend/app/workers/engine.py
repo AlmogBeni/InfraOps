@@ -321,11 +321,6 @@ class JobEngine:
         if job.started_at:
             job.duration_seconds = (now - job.started_at).total_seconds()
         job.progress = JobRepository.compute_progress(job)
-        try:
-            ctx = await self._build_context(db, job)
-            await release_unattended_media(ctx, reason="job interrupted")
-        except Exception:  # noqa: BLE001 - never block the state transition
-            log.exception("Unattended media cleanup failed for interrupted job %s", job.id)
         jobs_total.inc(status=JobStatus.INTERRUPTED.value)
         await AuditRecorder(db).record(
             AuditAction.JOB_INTERRUPTED,
@@ -336,11 +331,20 @@ class JobEngine:
             result="interrupted",
             detail_text=reason,
         )
+        # Persist the state transition before any slow cleanup so a second
+        # interruption (e.g. SIGKILL during shutdown) cannot lose it.
         await db.commit()
         await self._publisher.publish_stage(
             str(job.id), stage=job.current_stage, status=JobStatus.INTERRUPTED.value,
             progress=job.progress, message=reason,
         )
+        try:
+            ctx = await self._build_context(db, job)
+            if await release_unattended_media(ctx, reason="job interrupted"):
+                await db.commit()
+        except Exception:  # noqa: BLE001 - cancelling the job retries the cleanup
+            await db.rollback()
+            log.exception("Unattended media cleanup failed for interrupted job %s", job.id)
 
     async def _mark_interrupted(self, job_id: uuid.UUID, reason: str) -> None:
         try:

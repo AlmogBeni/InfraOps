@@ -55,9 +55,10 @@ and `NOT_APPLICABLE`.
 
 * Retry is allowed from `FAILED`, `PARTIALLY_COMPLETED`, `ACTION_REQUIRED` (confirm the
   prerequisite and resume), `CANCELLED` and `INTERRUPTED`.
-* Cancel is allowed from `QUEUED` and `INTERRUPTED` (immediate), `RUNNING` (the running
-  stage and its vCenter task are cancelled within one heartbeat) and `ACTION_REQUIRED`
-  (a worker removes any temporary answer media, then finalises the cancellation).
+* Cancel is allowed from `QUEUED`, `INTERRUPTED` and `ACTION_REQUIRED` (immediate — unless
+  the job may still hold temporary answer media, in which case it is handed to a worker
+  that removes the media and then finalises the cancellation) and from `RUNNING` (the
+  running stage and its vCenter task are cancelled within one heartbeat).
 
 Four independent job fields are exposed:
 

@@ -73,3 +73,22 @@ async def test_already_cleaned_media_is_left_alone(kwargs) -> None:
 
     assert await release_unattended_media(ctx, reason="job cancelled") is False
     ctx.vmware.remove_temporary_floppy.assert_not_awaited()
+
+
+def test_cancel_routing_detects_media_that_may_still_be_attached() -> None:
+    from app.repositories.jobs import JobRepository
+
+    def job(prepare_artifacts, cleanup_status=StepStatus.PENDING):
+        return SimpleNamespace(
+            steps=[
+                SimpleNamespace(stage_key="prepare_unattended_install", artifacts=prepare_artifacts),
+                SimpleNamespace(stage_key="cleanup_unattended_media", status=cleanup_status, artifacts={}),
+            ]
+        )
+
+    assert JobRepository.may_hold_unattended_media(job({"datastore_path": "[ds] x.flp"}))
+    assert not JobRepository.may_hold_unattended_media(job({}))
+    assert not JobRepository.may_hold_unattended_media(job({"datastore_path": "[ds] x.flp", "media_removed": True}))
+    assert not JobRepository.may_hold_unattended_media(
+        job({"datastore_path": "[ds] x.flp"}, cleanup_status=StepStatus.SUCCEEDED)
+    )

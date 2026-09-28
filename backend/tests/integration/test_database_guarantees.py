@@ -82,6 +82,15 @@ async def test_worker_claims_only_free_slots_and_loses_ownership_when_interrupte
     async with sessions() as db:
         assert await JobRepository(db).heartbeat(job_id, "worker-a") is False
         assert await JobRepository(db).heartbeat(job_id, "worker-b") is None
+    # A job this worker finished itself is not "lost ownership".
+    other = await _create_job(sessions, f"DONE-{uuid.uuid4().hex[:6]}")
+    async with sessions() as db:
+        await db.execute(
+            text("UPDATE provisioning_jobs SET status = 'COMPLETED', worker_id = 'worker-a' WHERE id = :id"),
+            {"id": other},
+        )
+        await db.commit()
+        assert await JobRepository(db).heartbeat(other, "worker-a") is False
     async with sessions() as db:
         stale = await JobRepository(db).claim_stale_running_jobs(
             stale_before=dt.datetime.now(dt.UTC) + dt.timedelta(seconds=1), limit=50
