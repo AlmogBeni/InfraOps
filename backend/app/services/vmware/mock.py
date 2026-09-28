@@ -34,6 +34,7 @@ from app.services.vmware.base import (
     PowerStateInfo,
     TemporaryMediaRef,
     VCenterTarget,
+    VmOwnership,
     VmRef,
     VMwareService,
 )
@@ -120,6 +121,7 @@ class _MockVM:
         self.powered_on_at: dt.datetime | None = None
         self.temporary_media: set[str] = set()
         self.tools_installer_requested = False
+        self.owner_job_id: str | None = None
 
 
 class _MockInventory:
@@ -462,6 +464,24 @@ class MockVMwareService(VMwareService):
         vm = _estate(target.id).find_vm_by_name(vm_name)
         return vm.id if vm is not None else None
 
+    async def find_vm_ownership(self, target: VCenterTarget, vm_name: str) -> VmOwnership | None:
+        await asyncio.sleep(_LATENCY_DISCOVERY)
+        vm = _estate(target.id).find_vm_by_name(vm_name)
+        if vm is None:
+            return None
+        return VmOwnership(vm_id=vm.id, name=vm.name, owner_job_id=vm.owner_job_id)
+
+    async def tag_vm_owner(self, target: VCenterTarget, vm_id: str, job_id: str) -> None:
+        vm = self._require_vm(target, vm_id)
+        if vm.owner_job_id is not None and vm.owner_job_id != job_id:
+            raise InfraOperationError(
+                f"VM '{vm.name}' belongs to another InfraOps job.",
+                reason="Ownership marker mismatch.",
+                recommended_action="Choose a different VM name.",
+                retryable=False,
+            )
+        vm.owner_job_id = job_id
+
     # ── Lifecycle operations ─────────────────────────────────────────────────
 
     async def clone_from_template(self, target: VCenterTarget, spec: CloneSpec) -> VmRef:
@@ -567,6 +587,7 @@ class MockVMwareService(VMwareService):
         vm.memory_mb = spec.memory_mb
         vm.disks_gb = [disk.size_gb for disk in spec.disks]
         vm.network_id = spec.network_id or None
+        vm.owner_job_id = spec.job_id
         inv.existing_vms[spec.vm_name.upper()] = vm
         return VmRef(id=vm_id, name=spec.vm_name)
 
@@ -655,6 +676,7 @@ class MockVMwareService(VMwareService):
         vm.memory_mb = spec.memory_mb
         vm.disks_gb = [disk.size_gb for disk in spec.disks]
         vm.iso_id = selected_iso.id if selected_iso else None
+        vm.owner_job_id = spec.job_id
         inv.existing_vms[spec.vm_name.upper()] = vm
         return VmRef(id=vm_id, name=spec.vm_name)
 

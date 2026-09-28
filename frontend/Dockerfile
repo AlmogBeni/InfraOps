@@ -21,7 +21,11 @@ FROM nginx:1.27-alpine AS runtime
 
 RUN apk add --no-cache curl
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# The CIDR of the host TLS reverse proxy as seen from inside this container
+# (the Docker bridge gateway by default). Override at runtime to narrow it.
+ENV TRUSTED_PROXY_CIDR=172.16.0.0/12
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+RUN rm -f /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80

@@ -576,12 +576,16 @@ export function JobDetailPage() {
         description={`Requested by ${job.requested_by_username ?? 'system automation'} and queued ${formatDateTime(job.queued_at)}.`}
         actions={(
           <>
-            {(job.status === 'FAILED' || job.status === 'PARTIALLY_COMPLETED') && canRetry && failedSteps.length > 0 && (
+            {(job.status === 'FAILED' || job.status === 'PARTIALLY_COMPLETED' || job.status === 'INTERRUPTED') &&
+              canRetry &&
+              failedSteps.length > 0 && (
               <Button size="sm" loading={retryAll.isPending} onClick={() => retryAll.mutate()}>
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden /> Retry failed stages
               </Button>
             )}
-            {isActive && canCancel && !job.cancel_requested && (
+            {(isActive || job.status === 'INTERRUPTED' || job.status === 'ACTION_REQUIRED') &&
+              canCancel &&
+              !job.cancel_requested && (
               <Button size="sm" variant="danger" loading={cancel.isPending} onClick={() => cancel.mutate()}>
                 <XCircle className="h-3.5 w-3.5" aria-hidden /> Cancel deployment
               </Button>
@@ -605,6 +609,16 @@ export function JobDetailPage() {
       {actionError && (
         <Alert tone="danger" title="Deployment action could not be completed">
           {mutationMessage(actionError)}
+        </Alert>
+      )}
+
+      {job.status === 'INTERRUPTED' && (
+        <Alert tone="warning" title="Deployment was interrupted">
+          <p>
+            The worker executing this deployment stopped before it finished
+            {job.error_summary ? ` (${job.error_summary})` : ''}. Completed stages are kept; retry to
+            resume from the interrupted stage, or cancel the deployment.
+          </p>
         </Alert>
       )}
 

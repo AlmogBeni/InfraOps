@@ -3,18 +3,20 @@
 ENVIRONMENT DEPENDENT — requires VMware Tools running inside the target VM
 and valid guest credentials resolved live from encrypted backend storage.
 
-Output capture: ``StartProgramInGuest`` cannot stream stdout, so commands are
-wrapped through ``cmd.exe /c "... > tempfile 2>&1"`` and the temporary output
-file is downloaded and deleted afterwards. Only validated structured values
-ever reach argument strings.
+Output capture: ``StartProgramInGuest`` cannot stream stdout. Every program is
+therefore started by an uploaded PowerShell runner script (``powershell.exe
+-File``, never ``cmd.exe``) that launches it without a shell, captures its
+output into a temporary file and exits with the program's exit code. The
+runner, script and output files are downloaded/deleted afterwards. See
+:mod:`app.services.guest.scripts`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import re
 import ssl
-import uuid
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -24,6 +26,14 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.secrets.service import SecretsService
 from app.services.guest.base import CommandResult, GuestCredentials, GuestOperations
+from app.services.guest.scripts import (
+    POWERSHELL_PATH,
+    build_process_runner,
+    encode_script,
+    new_temp_path,
+    new_token,
+    powershell_file_arguments,
+)
 from app.services.vmware.base import VCenterTarget
 from app.services.vmware.vsphere import HAS_PYVMOMI, VsphereVMwareService
 
@@ -31,6 +41,9 @@ log = get_logger(__name__)
 
 _PROCESS_POLL_SECONDS = 2.0
 _TRANSFER_TIMEOUT_SECONDS = 60.0
+# The runner enforces the program timeout itself; the outer deadline only
+# covers a runner that cannot report back.
+_RUNNER_GRACE_SECONDS = 30.0
 
 if HAS_PYVMOMI:
     from pyVmomi import vim
@@ -100,17 +113,10 @@ class VMwareToolsGuestOperations(GuestOperations):
 
     async def _find_vm(self, target: VCenterTarget, vm_name: str):
         def op(si):
-            content = si.RetrieveContent()
-            view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
-            try:
-                for vm in view.view:
-                    if vm.name.lower() == vm_name.lower():
-                        return vm
-            finally:
-                view.Destroy()
-            return None
+            # Refuses ambiguous names instead of acting on an arbitrary match.
+            return self._vsphere._find_vm_by_name(si.RetrieveContent(), vm_name)
 
-        vm = await self._vsphere._with_session(target, op)
+        vm = await self._vsphere._with_session(target, op, operation="guest-find-vm")
         if vm is None:
             raise InfraOperationError(
                 f"VM '{vm_name}' was not found while performing guest operations.",
@@ -130,19 +136,74 @@ class VMwareToolsGuestOperations(GuestOperations):
         timeout_seconds: float,
         working_directory: str | None = None,
     ) -> CommandResult:
-        started = dt.datetime.now(dt.timezone.utc)
+        started = dt.datetime.now(dt.UTC)
+        token = new_token()
+        runner_path = new_temp_path(f"{token}-run", "ps1")
+        output_path = new_temp_path(token, "log")
+        try:
+            runner = build_process_runner(
+                program_path,
+                arguments,
+                output_path,
+                timeout_seconds,
+                working_directory=working_directory,
+                utf8_output=program_path.lower() == POWERSHELL_PATH.lower(),
+            )
+        except ValueError as exc:
+            raise InfraOperationError(
+                "A guest command contained invalid characters.",
+                reason=str(exc),
+                recommended_action="Ask an administrator to correct the definition that produced it.",
+                retryable=False,
+            ) from exc
+
+        await self.upload_file(target, vm_name, credentials, encode_script(runner), runner_path)
+        try:
+            exit_code = await self._start_and_wait(
+                target,
+                vm_name,
+                credentials,
+                POWERSHELL_PATH,
+                powershell_file_arguments(runner_path),
+                timeout_seconds + _RUNNER_GRACE_SECONDS,
+                program_label=program_path,
+            )
+            stdout_text = ""
+            try:
+                blob = await self.download_file(target, vm_name, credentials, output_path)
+                stdout_text = blob.decode("utf-8", errors="replace")
+            except InfraOperationError:
+                stdout_text = "[output capture unavailable]"
+        finally:
+            for path in (output_path, runner_path):
+                try:
+                    await self.delete_file(target, vm_name, credentials, path)
+                except InfraOperationError:
+                    pass
+
+        duration = (dt.datetime.now(dt.UTC) - started).total_seconds()
+        return CommandResult(exit_code=exit_code, stdout=stdout_text[-8000:], stderr="", duration_seconds=duration)
+
+    async def _start_and_wait(
+        self,
+        target: VCenterTarget,
+        vm_name: str,
+        credentials: GuestCredentials,
+        program_path: str,
+        arguments: str,
+        timeout_seconds: float,
+        *,
+        program_label: str,
+    ) -> int:
+        """Start one process directly through the Tools API and wait for its exit code."""
         vm = await self._find_vm(target, vm_name)
         auth = vim.vm.guest.NamePasswordAuthentication(
             username=credentials.username, password=credentials.password
         )
         process_manager = vm._stub.host.guestOperationsManager.processManager  # type: ignore[attr-defined]
-
-        output_path = rf"C:\Windows\Temp\infraops-{uuid.uuid4().hex}.log"
-        wrapped_arguments = f'/c ""{program_path}" {arguments} > "{output_path}" 2>&1"'
         spec = vim.vm.guest.ProcessManager.ProgramSpec(
-            programPath=r"C:\Windows\System32\cmd.exe",
-            arguments=wrapped_arguments,
-            workingDirectory=working_directory,
+            programPath=program_path,
+            arguments=arguments,
         )
 
         def start():
@@ -157,13 +218,24 @@ class VMwareToolsGuestOperations(GuestOperations):
             procs = process_manager.ListProcessesInGuest(vm, auth, [pid])
             return procs[0] if procs else None
 
-        deadline = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=timeout_seconds)
+        def terminate():
+            process_manager.TerminateProcessInGuest(vm, auth, pid)
+
+        deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=timeout_seconds)
         proc_info = None
-        while dt.datetime.now(dt.timezone.utc) < deadline:
-            proc_info = await asyncio.to_thread(poll_processes)
-            if proc_info is None or proc_info.endTime is not None:
-                break
-            await asyncio.sleep(_PROCESS_POLL_SECONDS)
+        try:
+            while dt.datetime.now(dt.UTC) < deadline:
+                proc_info = await asyncio.to_thread(poll_processes)
+                if proc_info is None or proc_info.endTime is not None:
+                    break
+                await asyncio.sleep(_PROCESS_POLL_SECONDS)
+        except asyncio.CancelledError:
+            # Stage timeout or job cancellation: do not leave work running.
+            try:
+                await asyncio.shield(asyncio.to_thread(terminate))
+            except Exception:  # noqa: BLE001 - best effort
+                pass
+            raise
 
         if proc_info is None:
             raise InfraOperationError(
@@ -174,29 +246,18 @@ class VMwareToolsGuestOperations(GuestOperations):
                 retryable=True,
             )
         if proc_info.endTime is None:
+            try:
+                await asyncio.to_thread(terminate)
+            except Exception:  # noqa: BLE001 - best effort
+                pass
             raise InfraOperationError(
                 f"The guest operation exceeded its {int(timeout_seconds)} second timeout.",
-                reason=f"'{program_path}' did not finish in time.",
+                reason=f"'{program_label}' did not finish in time.",
                 recommended_action="Increase the configured timeout or investigate the guest.",
-                technical_detail=f"pid={pid} program={program_path}",
+                technical_detail=f"pid={pid} program={program_label}",
                 retryable=True,
             )
-
-        exit_code = int(proc_info.exitCode or 0)
-        stdout_text = ""
-        try:
-            blob = await self.download_file(target, vm_name, credentials, output_path)
-            stdout_text = blob.decode("utf-8", errors="replace")
-        except InfraOperationError:
-            stdout_text = "[output capture unavailable]"
-        finally:
-            try:
-                await self.delete_file(target, vm_name, credentials, output_path)
-            except InfraOperationError:
-                pass
-
-        duration = (dt.datetime.now(dt.timezone.utc) - started).total_seconds()
-        return CommandResult(exit_code=exit_code, stdout=stdout_text[-8000:], stderr="", duration_seconds=duration)
+        return int(proc_info.exitCode or 0)
 
     async def upload_file(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials,
@@ -275,12 +336,15 @@ class VMwareToolsGuestOperations(GuestOperations):
         )
         file_manager = vm._stub.host.guestOperationsManager.fileManager  # type: ignore[attr-defined]
 
+        directory, _, file_name = guest_path.rpartition("\\")
+        pattern = "^" + re.escape(file_name) + "$"
+
         def listing():
-            file_manager.ListFilesInGuest(vm, auth, guest_path.rsplit("\\", 1)[0], 10, False, None)
+            return file_manager.ListFilesInGuest(vm, auth, directory, 0, 1, pattern)
 
         try:
-            await asyncio.to_thread(listing)
-            return True
+            result = await asyncio.to_thread(listing)
+            return bool(getattr(result, "files", None))
         except Exception as exc:  # noqa: BLE001
             if HAS_PYVMOMI and isinstance(exc, vim.fault.FileNotFoundFault):
                 return False

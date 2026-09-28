@@ -16,6 +16,17 @@ HOSTNAME_PATTERN = re.compile(
 SECRET_NAME_PATTERN = SECRET_REFERENCE_PATTERN
 
 
+def _require_tls_verification_in_production(value: bool | None) -> bool | None:
+    from app.core.config import get_settings
+
+    if value is False and get_settings().is_production:
+        raise ValueError(
+            "TLS certificate verification cannot be disabled in production. "
+            "Trust the vCenter CA (VCENTER_CA_FILE) instead."
+        )
+    return value
+
+
 class VCenterConnectionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -26,6 +37,11 @@ class VCenterConnectionCreate(BaseModel):
     password_secret_ref: str = Field(min_length=2, max_length=150, pattern=SECRET_NAME_PATTERN.pattern)
     verify_ssl: bool = True
     notes: str = Field(default="", max_length=2000)
+
+    @field_validator("verify_ssl")
+    @classmethod
+    def _tls_policy(cls, value: bool | None) -> bool | None:
+        return _require_tls_verification_in_production(value)
 
 
 class VCenterConnectionUpdate(BaseModel):
@@ -43,6 +59,11 @@ class VCenterConnectionUpdate(BaseModel):
     verify_ssl: bool | None = None
     enabled: bool | None = None
     notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("verify_ssl")
+    @classmethod
+    def _tls_policy(cls, value: bool | None) -> bool | None:
+        return _require_tls_verification_in_production(value)
 
 
 class VCenterConnectionAdminOut(BaseModel):
@@ -132,6 +153,15 @@ class PlatformSettingsUpdate(BaseModel):
         if value is not None:
             re.compile(value)
         return value
+
+    @field_validator("allowed_installer_roots")
+    @classmethod
+    def _roots_must_be_paths(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        from app.services.applications.paths import validate_installer_root
+
+        return [validate_installer_root(root) for root in value]
 
 
 class RoleOut(BaseModel):

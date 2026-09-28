@@ -1,5 +1,18 @@
 name: infraops
 
+# Database roles:
+#   POSTGRES_USER / MIGRATION_DATABASE_URL  schema owner, used only by `migrate`
+#   DATABASE_URL                            least-privilege runtime role (API + worker)
+# `migrate` runs once per deployment (migrations, runtime-role grants, bootstrap);
+# API replicas and workers start only after it succeeds, so they never race.
+
+x-backend-env: &backend-env
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  REDIS_URL: redis://redis:6379/0
+  # Only containers on the private Compose network (i.e. the bundled nginx)
+  # can reach the API, so only they may supply X-Forwarded-For.
+  TRUSTED_PROXY_CIDRS: ${BACKEND_TRUSTED_PROXY_CIDRS:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -26,6 +39,25 @@ services:
       timeout: 3s
       retries: 12
 
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: "no"
+    env_file: .env
+    environment:
+      <<: *backend-env
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m app.db.roles &&
+             python -m app.bootstrap"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   backend:
     build:
       context: ./backend
@@ -33,17 +65,12 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
-      REDIS_URL: redis://redis:6379/0
-    command: >
-      sh -c "alembic upgrade head &&
-             python -m app.bootstrap &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      <<: *backend-env
+      MIGRATION_DATABASE_URL: ""
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -57,16 +84,21 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
-      REDIS_URL: redis://redis:6379/0
+      <<: *backend-env
+      MIGRATION_DATABASE_URL: ""
     command: ["python", "-m", "app.workers.runner"]
+    # SIGTERM stops claiming work; running jobs get WORKER_SHUTDOWN_GRACE_SECONDS
+    # (default 60) to finish before they are cleanly marked INTERRUPTED.
+    # Keep this longer than that grace period.
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('WORKER_METRICS_PORT', '9102'))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      backend:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:
@@ -76,6 +108,9 @@ services:
         VITE_API_BASE: /api/v1
         VITE_ENVIRONMENT_LABEL: ${VITE_ENVIRONMENT_LABEL:-PROD}
     restart: unless-stopped
+    environment:
+      # Address range of the host TLS reverse proxy as seen by this container.
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-172.16.0.0/12}
     ports:
       - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
     depends_on:

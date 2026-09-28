@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, require_permission
 from app.auth.permissions import Permission
+from app.core.client_ip import client_ip_from_request
 from app.db.session import get_db
 from app.models.user import User
 
@@ -22,10 +23,7 @@ def require(permission: Permission):  # noqa: ANN201 - returns a Depends wrapper
 
 
 async def get_client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
+    return client_ip_from_request(request)
 
 
 ClientIp = Annotated[str | None, Depends(get_client_ip)]

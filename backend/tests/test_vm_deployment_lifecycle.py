@@ -16,7 +16,7 @@ from app.models.jobs import (
     VMwareToolsStatus,
 )
 from app.schemas.provisioning import ProvisioningRequest
-from app.services.vmware.base import PowerStateInfo, TemporaryMediaRef, VmRef
+from app.services.vmware.base import PowerStateInfo, TemporaryMediaRef, VmOwnership, VmRef
 from app.workers.stages import (
     stage_clone_vm,
     stage_prepare_unattended_install,
@@ -256,14 +256,25 @@ async def test_modern_tools_fields_take_precedence_over_deprecated_status() -> N
     assert ctx.job.vmware_tools_status == VMwareToolsStatus.OUTDATED.value
 
 
+JOB_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
+
+
+def clone_context(vmware) -> SimpleNamespace:
+    ctx = context(request_for("template"), vmware)
+    ctx.job_id = JOB_ID
+    return ctx
+
+
 @pytest.mark.asyncio
-async def test_retry_reuses_existing_vm_instead_of_creating_a_duplicate() -> None:
+async def test_retry_resumes_only_a_vm_created_by_this_job() -> None:
     vmware = SimpleNamespace(
-        resolve_vm_id=AsyncMock(return_value="vm-existing"),
+        find_vm_ownership=AsyncMock(
+            return_value=VmOwnership(vm_id="vm-existing", name="SERVER-PROD-042", owner_job_id=str(JOB_ID))
+        ),
         clone_from_template=AsyncMock(),
         create_blank_vm=AsyncMock(),
     )
-    ctx = context(request_for("template"), vmware)
+    ctx = clone_context(vmware)
 
     outcome = await stage_clone_vm(ctx)
 
@@ -271,6 +282,52 @@ async def test_retry_reuses_existing_vm_instead_of_creating_a_duplicate() -> Non
     assert outcome.artifacts["vm_id"] == "vm-existing"
     vmware.clone_from_template.assert_not_awaited()
     vmware.create_blank_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [None, "33333333-3333-4333-8333-333333333333"])
+async def test_existing_vm_not_created_by_this_job_is_never_adopted(owner) -> None:
+    from app.core.errors import InfraOperationError
+
+    vmware = SimpleNamespace(
+        find_vm_ownership=AsyncMock(
+            return_value=VmOwnership(vm_id="vm-prod", name="SERVER-PROD-042", owner_job_id=owner)
+        ),
+        clone_from_template=AsyncMock(),
+        create_blank_vm=AsyncMock(),
+    )
+    ctx = clone_context(vmware)
+
+    with pytest.raises(InfraOperationError) as raised:
+        await stage_clone_vm(ctx)
+
+    assert raised.value.retryable is False
+    assert "not created by this job" in raised.value.human_message
+    vmware.clone_from_template.assert_not_awaited()
+    vmware.create_blank_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_created_vm_carries_the_job_ownership_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.audit import recorder as recorder_module
+
+    monkeypatch.setattr(
+        recorder_module, "record_audit", lambda _db: SimpleNamespace(record=AsyncMock())
+    )
+    vmware = SimpleNamespace(
+        find_vm_ownership=AsyncMock(return_value=None),
+        clone_from_template=AsyncMock(return_value=VmRef(id="vm-new", name="SERVER-PROD-042")),
+    )
+    ctx = clone_context(vmware)
+    ctx.db = object()
+    ctx.actor_username = "operator"
+    ctx.job.datacenter_name = "DC01"
+
+    outcome = await stage_clone_vm(ctx)
+
+    spec = vmware.clone_from_template.await_args.args[1]
+    assert spec.job_id == str(JOB_ID)
+    assert outcome.artifacts["owner_job_id"] == str(JOB_ID)
 
 
 @pytest.mark.asyncio

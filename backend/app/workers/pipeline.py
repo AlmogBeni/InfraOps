@@ -23,12 +23,16 @@ from app.models.jobs import (
 from app.repositories.jobs import JobRepository
 from app.workers.context import JobRunContext
 from app.workers.events import JobEventPublisher
-from app.workers.stages import STAGE_HANDLERS, effective_timeout_seconds
+from app.workers.stages import STAGE_HANDLERS, effective_timeout_seconds, release_unattended_media
 from app.workers.state_machine import ORDERED_STAGES, StageDefinition
 
 log = get_logger(__name__)
 
 _MAX_OUTPUT_CHARS = 8000
+
+
+class _StageCancelled(Exception):
+    """The user cancelled the job while this stage was running."""
 
 
 def _utcnow() -> dt.datetime:
@@ -97,7 +101,13 @@ class ProvisioningPipeline:
                     recommended_action="Report this incident to the platform administrators.",
                     retryable=False,
                 )
-            outcome = await asyncio.wait_for(handler(ctx), timeout=timeout)
+            outcome = await self._run_handler(ctx, handler, timeout)
+        except _StageCancelled:
+            step.status = StepStatus.CANCELLED
+            step.finished_at = _utcnow()
+            step.output = "Cancelled by user request while running."
+            await self._apply_cancellation(ctx)
+            return
         except TimeoutError:
             failure = InfraOperationError(
                 f"'{stage.name}' exceeded its {int(timeout)} second timeout.",
@@ -148,6 +158,35 @@ class ProvisioningPipeline:
             status=step.status.value,
             message=outcome.output.splitlines()[0][:200] if outcome.output else stage.name,
         )
+
+    async def _run_handler(self, ctx: JobRunContext, handler, timeout: float):
+        """Run one stage, honouring its timeout and live cancellation.
+
+        Cancelling the handler propagates ``CancelledError`` into the VMware
+        adapters, which cancel their in-flight vCenter task / guest process.
+        """
+        cancel_event: asyncio.Event | None = getattr(ctx, "cancel_event", None)
+        stage_task = asyncio.ensure_future(asyncio.wait_for(handler(ctx), timeout=timeout))
+        if cancel_event is None:
+            return await stage_task
+        cancel_wait = asyncio.ensure_future(cancel_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {stage_task, cancel_wait}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            stage_task.cancel()
+            cancel_wait.cancel()
+            raise
+        if stage_task in done:
+            cancel_wait.cancel()
+            return stage_task.result()
+        stage_task.cancel()
+        try:
+            await stage_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - superseded by cancellation
+            pass
+        raise _StageCancelled()
 
     async def _handle_failure(
         self,
@@ -203,6 +242,7 @@ class ProvisioningPipeline:
 
         stage_failures_total.inc(stage=stage.key)
         jobs_total.inc(status=ctx.job.status.value)
+        await release_unattended_media(ctx, reason=f"stage '{stage.key}' failed")
 
         recorder = AuditRecorder(ctx.db)
         await recorder.record(
@@ -230,6 +270,8 @@ class ProvisioningPipeline:
         finished_at = _utcnow()
         ctx.job.status = JobStatus.COMPLETED
         ctx.job.action_required = None
+        ctx.job.error_summary = None
+        ctx.job.error_detail = None
         ctx.job.finished_at = finished_at
         ctx.job.progress = 100
         ctx.job.current_stage = "final_validation"
@@ -311,11 +353,17 @@ class ProvisioningPipeline:
 
     async def _apply_cancellation(self, ctx: JobRunContext) -> None:
         finished_at = _utcnow()
+        await release_unattended_media(ctx, reason="job cancelled")
         for step in ctx.job.steps:
-            if step.status in (StepStatus.PENDING, StepStatus.RUNNING):
+            if step.status in (
+                StepStatus.PENDING,
+                StepStatus.RUNNING,
+                StepStatus.WAITING_FOR_PREREQUISITE,
+            ):
                 step.status = StepStatus.CANCELLED
                 step.finished_at = finished_at
         ctx.job.status = JobStatus.CANCELLED
+        ctx.job.action_required = None
         ctx.job.finished_at = finished_at
         if ctx.job.started_at:
             ctx.job.duration_seconds = (finished_at - ctx.job.started_at).total_seconds()

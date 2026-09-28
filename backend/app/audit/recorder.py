@@ -80,9 +80,7 @@ def record_audit(session: AsyncSession) -> AuditRecorder:
 
 
 def client_ip(request) -> str | None:
-    if request.client is None:
-        return None
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host
+    """Trusted client address (see :mod:`app.core.client_ip`)."""
+    from app.core.client_ip import client_ip_from_request
+
+    return client_ip_from_request(request)

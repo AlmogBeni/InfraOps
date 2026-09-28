@@ -29,6 +29,7 @@ const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'ACTION_REQUIRED', label: 'Action required' },
   { value: 'FAILED', label: 'Failed' },
   { value: 'CANCELLED', label: 'Cancelled' },
+  { value: 'INTERRUPTED', label: 'Interrupted' },
 ]
 
 const PAGE_SIZE = 25
@@ -40,6 +41,7 @@ function executionLabel(job: JobOut): string {
   if (job.status === 'PARTIALLY_COMPLETED') return 'Completed with follow-up required'
   if (job.status === 'ACTION_REQUIRED') return 'Waiting for an administrator prerequisite'
   if (job.status === 'CANCELLED') return 'Execution cancelled'
+  if (job.status === 'INTERRUPTED') return 'Worker stopped — retry to resume'
   return job.status === 'QUEUED' ? 'Waiting for an execution slot' : 'Preparing next stage'
 }
 
@@ -65,7 +67,9 @@ function ProgressCell({ job }: { job: JobOut }) {
             'h-full rounded-full transition-[width] duration-300',
             job.status === 'FAILED'
               ? 'bg-red-500'
-              : job.status === 'PARTIALLY_COMPLETED' || job.status === 'ACTION_REQUIRED'
+              : job.status === 'PARTIALLY_COMPLETED' ||
+                  job.status === 'ACTION_REQUIRED' ||
+                  job.status === 'INTERRUPTED'
                 ? 'bg-amber-500'
                 : 'bg-brand-600',
           )}
@@ -109,7 +113,11 @@ export function JobsListPage() {
     (job) => job.status === 'RUNNING' || job.status === 'QUEUED',
   ).length ?? 0
   const attentionOnPage = data?.items.filter(
-    (job) => job.status === 'FAILED' || job.status === 'PARTIALLY_COMPLETED' || job.status === 'ACTION_REQUIRED',
+    (job) =>
+      job.status === 'FAILED' ||
+      job.status === 'PARTIALLY_COMPLETED' ||
+      job.status === 'ACTION_REQUIRED' ||
+      job.status === 'INTERRUPTED',
   ).length ?? 0
 
   function clearFilters() {

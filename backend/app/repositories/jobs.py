@@ -5,11 +5,13 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.jobs import (
+    ACTIVE_JOB_STATUSES,
+    IP_RESERVING_JOB_STATUSES,
     TERMINAL_JOB_STATUSES,
     JobStatus,
     JobType,
@@ -32,14 +34,31 @@ class JobRepository:
         )
         return result.scalar_one_or_none()
 
-    async def has_active_job_for_vm(self, vm_name: str) -> bool:
+    async def has_active_job_for_vm(
+        self, vm_name: str, *, exclude_job_id: uuid.UUID | None = None
+    ) -> bool:
+        conditions = [
+            func.lower(ProvisioningJob.vm_name) == vm_name.lower(),
+            ProvisioningJob.status.in_(ACTIVE_JOB_STATUSES),
+        ]
+        if exclude_job_id is not None:
+            conditions.append(ProvisioningJob.id != exclude_job_id)
         result = await self.session.execute(
-            select(func.count())
-            .select_from(ProvisioningJob)
-            .where(
-                ProvisioningJob.vm_name == vm_name,
-                ProvisioningJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-            )
+            select(func.count()).select_from(ProvisioningJob).where(*conditions)
+        )
+        return bool((result.scalar_one() or 0) > 0)
+
+    async def has_ipv4_reservation(
+        self, address: str, *, exclude_job_id: uuid.UUID | None = None
+    ) -> bool:
+        conditions = [
+            ProvisioningJob.reserved_ipv4 == address,
+            ProvisioningJob.status.in_(IP_RESERVING_JOB_STATUSES),
+        ]
+        if exclude_job_id is not None:
+            conditions.append(ProvisioningJob.id != exclude_job_id)
+        result = await self.session.execute(
+            select(func.count()).select_from(ProvisioningJob).where(*conditions)
         )
         return bool((result.scalar_one() or 0) > 0)
 
@@ -51,6 +70,8 @@ class JobRepository:
         requested_by_user_id: uuid.UUID | None,
         idempotency_key: str | None,
         request_payload: dict,
+        request_fingerprint: str | None = None,
+        reserved_ipv4: str | None = None,
     ) -> ProvisioningJob:
         job = ProvisioningJob(
             job_type=JobType.VM_PROVISIONING,
@@ -59,6 +80,8 @@ class JobRepository:
             datacenter_id=datacenter_id,
             requested_by_user_id=requested_by_user_id,
             idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            reserved_ipv4=reserved_ipv4,
             queued_at=dt.datetime.now(dt.UTC),
         )
         self.session.add(job)
@@ -73,8 +96,14 @@ class JobRepository:
 
     # ── Queue operations ─────────────────────────────────────────────────────
 
-    async def claim_due_jobs(self, limit: int) -> list[ProvisioningJob]:
-        """Atomically claim queued jobs (SKIP LOCKED — safe for N workers)."""
+    async def claim_due_jobs(self, limit: int, *, worker_id: str) -> list[ProvisioningJob]:
+        """Atomically claim up to ``limit`` queued jobs (SKIP LOCKED — safe for N workers).
+
+        Callers pass only their number of free execution slots, so a worker
+        never holds RUNNING jobs it is not actually executing.
+        """
+        if limit <= 0:
+            return []
         now = dt.datetime.now(dt.UTC)
         result = await self.session.execute(
             select(ProvisioningJob)
@@ -86,10 +115,61 @@ class JobRepository:
         jobs = list(result.scalars().all())
         for job in jobs:
             job.status = JobStatus.RUNNING
+            job.worker_id = worker_id
+            job.heartbeat_at = now
             if job.started_at is None:
                 job.started_at = now
         await self.session.commit()
         return jobs
+
+    async def heartbeat(self, job_id: uuid.UUID, worker_id: str) -> bool | None:
+        """Refresh a RUNNING job's heartbeat.
+
+        Returns the job's ``cancel_requested`` flag, or ``None`` when this
+        worker no longer owns the job (e.g. the reaper interrupted it).
+        """
+        now = dt.datetime.now(dt.UTC)
+        result = await self.session.execute(
+            update(ProvisioningJob)
+            .where(
+                ProvisioningJob.id == job_id,
+                ProvisioningJob.worker_id == worker_id,
+                ProvisioningJob.status == JobStatus.RUNNING,
+            )
+            .values(heartbeat_at=now)
+            .returning(ProvisioningJob.cancel_requested)
+        )
+        row = result.first()
+        await self.session.commit()
+        return None if row is None else bool(row[0])
+
+    async def claim_stale_running_jobs(
+        self,
+        *,
+        stale_before: dt.datetime,
+        limit: int = 20,
+        exclude_ids: list[uuid.UUID] | None = None,
+    ) -> list[ProvisioningJob]:
+        """Lock RUNNING jobs whose worker stopped heartbeating (SKIP LOCKED).
+
+        Jobs without any heartbeat (claimed by a pre-heartbeat release) fall
+        back to ``updated_at``.
+        """
+        conditions = [
+            ProvisioningJob.status == JobStatus.RUNNING,
+            func.coalesce(ProvisioningJob.heartbeat_at, ProvisioningJob.updated_at) < stale_before,
+        ]
+        if exclude_ids:
+            conditions.append(ProvisioningJob.id.not_in(exclude_ids))
+        result = await self.session.execute(
+            select(ProvisioningJob)
+            .options(selectinload(ProvisioningJob.steps), selectinload(ProvisioningJob.request))
+            .where(*conditions)
+            .order_by(ProvisioningJob.queued_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True, of=ProvisioningJob)
+        )
+        return list(result.scalars().all())
 
     # ── Queries ──────────────────────────────────────────────────────────────
 
@@ -186,7 +266,9 @@ class JobRepository:
                 StepStatus.FAILED,
                 StepStatus.CANCELLED,
                 StepStatus.WAITING_FOR_PREREQUISITE,
-            )
+                # A stage interrupted by a dead worker is resumable.
+                StepStatus.RUNNING,
+            ) and (step.status != StepStatus.RUNNING or job.status == JobStatus.INTERRUPTED)
             selected = (
                 stage_keys is None
                 or step.stage_key in stage_keys
@@ -198,12 +280,16 @@ class JobRepository:
             )
             should_reset = eligible_status and selected
             if should_reset:
+                # ``attempt`` is incremented when the stage starts again.
                 step.status = StepStatus.PENDING
-                step.attempt += 0  # attempt incremented when the stage starts
                 reset.append(step.stage_key)
         if reset:
             job.status = JobStatus.QUEUED
             job.cancel_requested = False
+            job.worker_id = None
+            job.heartbeat_at = None
+            job.error_summary = None
+            job.error_detail = None
             job.finished_at = None
             job.duration_seconds = None
             job.action_required = None
@@ -214,11 +300,13 @@ class JobRepository:
 
     async def request_cancel(self, job: ProvisioningJob) -> None:
         job.cancel_requested = True
-        if job.status == JobStatus.QUEUED:
+        # No worker executes QUEUED or INTERRUPTED jobs, so nothing would ever
+        # read the flag: finalise them immediately.
+        if job.status in (JobStatus.QUEUED, JobStatus.INTERRUPTED):
             job.status = JobStatus.CANCELLED
             job.finished_at = dt.datetime.now(dt.UTC)
             for step in job.steps:
-                if step.status == StepStatus.PENDING:
+                if step.status in (StepStatus.PENDING, StepStatus.RUNNING):
                     step.status = StepStatus.CANCELLED
         await self.session.commit()
 

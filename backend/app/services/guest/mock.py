@@ -11,6 +11,7 @@ import asyncio
 import datetime as dt
 import json
 import re
+from collections.abc import Mapping
 
 from app.core.logging import get_logger
 from app.services.guest.base import CommandResult, GuestCredentials, GuestOperations
@@ -42,6 +43,7 @@ class _MockGuestState:
         self.ip_address: str | None = None
         self.reboot_pending: bool = False
         self.files: dict[str, bytes] = {}
+        self.last_secret_names: list[str] = []
 
 
 _MOCK_GUESTS: dict[str, _MockGuestState] = {}
@@ -71,7 +73,7 @@ class MockGuestOperations(GuestOperations):
         timeout_seconds: float,
         working_directory: str | None = None,
     ) -> CommandResult:
-        started = dt.datetime.now(dt.timezone.utc)
+        started = dt.datetime.now(dt.UTC)
         await asyncio.sleep(_LATENCY_PROGRAM)
 
         state = mock_guest_state(vm_name)
@@ -83,14 +85,45 @@ class MockGuestOperations(GuestOperations):
                 exit_code=1603,
                 stdout="",
                 stderr="Simulated installation failure (mock).",
-                duration_seconds=(dt.datetime.now(dt.timezone.utc) - started).total_seconds(),
+                duration_seconds=(dt.datetime.now(dt.UTC) - started).total_seconds(),
             )
 
         lowered = f"{program_path} {arguments}".lower()
         stdout = self._simulate(lowered, arguments, state, target, vm_name)
-        duration = (dt.datetime.now(dt.timezone.utc) - started).total_seconds()
+        duration = (dt.datetime.now(dt.UTC) - started).total_seconds()
         log.info("MOCK guest exec on %s (%.2fs)", vm_name, duration)
         return CommandResult(exit_code=0, stdout=stdout, stderr="", duration_seconds=duration)
+
+    async def run_powershell(
+        self,
+        target: VCenterTarget,
+        vm_name: str,
+        credentials: GuestCredentials,
+        script: str,
+        timeout_seconds: float,
+        *,
+        secrets: Mapping[str, str] | None = None,
+    ) -> CommandResult:
+        """Simulate an uploaded ``.ps1`` run. Secret values are never recorded."""
+        started = dt.datetime.now(dt.UTC)
+        await asyncio.sleep(_LATENCY_PROGRAM)
+        state = mock_guest_state(vm_name)
+        state.executed_commands.append(_scrub_for_log(f"[ps1] {script}"))
+        state.last_secret_names = sorted(secrets or {})
+        if "__FAIL__" in script:
+            return CommandResult(
+                exit_code=1603,
+                stdout="",
+                stderr="Simulated script failure (mock).",
+                duration_seconds=(dt.datetime.now(dt.UTC) - started).total_seconds(),
+            )
+        stdout = self._simulate(script.lower(), script, state, target, vm_name)
+        return CommandResult(
+            exit_code=0,
+            stdout=stdout,
+            stderr="",
+            duration_seconds=(dt.datetime.now(dt.UTC) - started).total_seconds(),
+        )
 
     # ── behaviour simulation ─────────────────────────────────────────────────
 

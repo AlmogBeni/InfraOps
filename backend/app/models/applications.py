@@ -19,7 +19,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -78,8 +77,8 @@ class ApplicationDependency(Base):
     """Directed edge: ``app`` requires ``depends_on`` to be installed first."""
 
     __tablename__ = "application_dependencies"
+    # (app_id, depends_on_id) is the composite primary key.
     __table_args__ = (
-        UniqueConstraint("app_id", "depends_on_id", name="uq_application_dependency"),
         CheckConstraint("app_id <> depends_on_id", name="ck_no_self_dependency"),
     )
 

@@ -14,6 +14,7 @@ from app.auth.permissions import Permission
 from app.core.errors import ConflictError, DomainValidationError, NotFoundError
 from app.models.applications import Application, ApplicationDependency
 from app.schemas.applications import ApplicationCreate, ApplicationOut, ApplicationUpdate
+from app.services.applications.paths import validate_installer_path
 from app.services.applications.resolver import AppNode, resolve_install_order
 
 router = APIRouter(prefix="/admin/applications", tags=["admin-applications"])
@@ -106,6 +107,11 @@ async def update_application(application_id: uuid.UUID, payload: ApplicationUpda
     new_dependency_ids = changes.pop("dependency_ids", None)
     for field, value in changes.items():
         setattr(app, field, value)
+    # Re-check the final path/type pair (either may have changed alone).
+    try:
+        validate_installer_path(app.installer_path, app.installer_type)
+    except ValueError as exc:
+        raise DomainValidationError(str(exc), details={"field": "installer_path"}) from exc
     if new_dependency_ids is not None:
         parsed = [uuid.UUID(str(d)) for d in new_dependency_ids]
         await _replace_dependencies(db, app, parsed)

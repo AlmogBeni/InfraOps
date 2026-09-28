@@ -3,6 +3,7 @@ submission/inspection/retry/cancellation and the SSE live-event stream."""
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import uuid
@@ -16,7 +17,11 @@ from app.api.deps import ClientIp, DbSession, require
 from app.audit.actions import AuditAction
 from app.audit.recorder import AuditRecorder
 from app.auth.permissions import Permission, roles_grant
-from app.core.errors import NotFoundError
+from app.auth.service import auth_service
+from app.auth.stream_tickets import TICKET_TTL_SECONDS, get_stream_ticket_store
+from app.core.config import get_settings
+from app.core.errors import AuthenticationError, AuthorizationError, NotFoundError
+from app.db.session import session_factory
 from app.models.infrastructure import VCenterConnection
 from app.models.jobs import ProvisioningJob, ProvisioningJobStep
 from app.models.platform import SecretReference
@@ -28,6 +33,7 @@ from app.schemas.jobs import (
     JobOut,
     JobStepOut,
     RetryRequest,
+    StreamTicketOut,
     job_out,
 )
 from app.schemas.provisioning import (
@@ -220,8 +226,9 @@ async def submit_job(
 ):
     job, created = await submit_provisioning(
         db, user=user, request=payload,
-        idempotency_key=(idempotency_key or None)[:120] if idempotency_key else None,
+        idempotency_key=idempotency_key[:120] if idempotency_key else None,
         source_ip=source_ip,
+        vmware=get_vmware_service(),
     )
     await db.commit()
     response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
@@ -308,15 +315,12 @@ async def retry_job(
     payload: RetryRequest | None = None,
 ):
     job = await _get_job(db, job_id)
-    reset = await retry_stages(
+    await retry_stages(
         db, user=user, job=job,
         stage_key=payload.stage_key if payload else None,
         source_ip=source_ip,
     )
     await db.commit()
-    log_message = f"Retrying: {', '.join(reset)}"
-    await get_publisher().publish_stage(str(job.id), stage=None, status="QUEUED",
-                                        progress=job.progress, message=log_message)
     return job_out(job)
 
 
@@ -343,29 +347,71 @@ def get_publisher() -> JobEventPublisher:
     return _publisher_singleton
 
 
+@router.post("/jobs/{job_id}/events/ticket", response_model=StreamTicketOut)
+async def issue_event_stream_ticket(
+    job_id: uuid.UUID, db: DbSession, user=require(Permission.JOBS_READ)
+) -> StreamTicketOut:
+    """Exchange the bearer token for a single-use ticket for one SSE connection."""
+    await _get_job(db, job_id)
+    ticket = await get_stream_ticket_store().issue(user_id=user.id, job_id=job_id)
+    return StreamTicketOut(ticket=ticket, expires_in=TICKET_TTL_SECONDS)
+
+
+async def _user_from_ticket(db, job_id: uuid.UUID, ticket: str | None) -> User:
+    user_id = await get_stream_ticket_store().consume(ticket or "", job_id=job_id)
+    user = await auth_service.get_active_user(db, str(user_id)) if user_id else None
+    if user is None:
+        raise AuthenticationError("Invalid or expired stream ticket.")
+    if not roles_grant(user.role_names, Permission.JOBS_READ):
+        raise AuthorizationError("Your roles do not grant 'jobs.read'.")
+    return user
+
+
+async def _snapshot_event(job_id: uuid.UUID, include_technical: bool) -> str | None:
+    async with session_factory() as snapshot_db:
+        job = await JobRepository(snapshot_db).get(job_id)
+        if job is None:
+            return None
+        usernames = await _username_map(snapshot_db, [job])
+        snapshot = {
+            "type": "snapshot",
+            "job": json.loads(job_out(job, usernames).model_dump_json()),
+            "steps": [
+                json.loads(_step_out(s, include_technical=include_technical).model_dump_json())
+                for s in sorted(job.steps, key=lambda x: x.sequence)
+            ],
+        }
+    return f"event: snapshot\ndata: {json.dumps(snapshot, default=str)}\n\n"
+
+
 @router.get("/jobs/{job_id}/events")
 async def stream_job_events(
     job_id: uuid.UUID,
     request: Request,
     db: DbSession,
-    user=require(Permission.JOBS_READ),
+    ticket: str | None = Query(default=None, max_length=128),
 ) -> StreamingResponse:
-    job = await _get_job(db, job_id)
+    user = await _user_from_ticket(db, job_id, ticket)
+    await _get_job(db, job_id)
     include_technical = roles_grant(user.role_names, Permission.ADMIN_SETTINGS)
+    # Re-authenticate periodically: the client reconnects with a new ticket,
+    # which requires a currently valid access token.
+    max_lifetime = max(60, get_settings().access_token_expire_minutes * 60)
 
     async def event_stream():
         publisher = get_publisher()
-        pubsub = await publisher.subscribe(str(job.id))
+        # Subscribe *before* reading the snapshot so no event published in
+        # between is lost (duplicates are harmless; the client refetches).
+        pubsub = await publisher.subscribe(str(job_id))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max_lifetime
         try:
-            snapshot = {
-                "type": "snapshot",
-                "job": json.loads(job_out(job).model_dump_json()),
-                "steps": [json.loads(_step_out(s, include_technical=include_technical).model_dump_json())
-                          for s in sorted(job.steps, key=lambda x: x.sequence)],
-            }
-            yield f"event: snapshot\ndata: {json.dumps(snapshot, default=str)}\n\n"
+            snapshot = await _snapshot_event(job_id, include_technical)
+            if snapshot is None:
+                return
+            yield snapshot
 
-            while True:
+            while loop.time() < deadline:
                 if await request.is_disconnected():
                     break
                 message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
@@ -376,6 +422,7 @@ async def stream_job_events(
                 if isinstance(data, bytes):
                     data = data.decode("utf-8", errors="replace")
                 yield f"event: job-update\ndata: {data}\n\n"
+            yield "event: reauthenticate\ndata: {}\n\n"
         finally:
             try:
                 await pubsub.unsubscribe()

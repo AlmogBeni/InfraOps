@@ -28,7 +28,7 @@ from app.services.certificates.store_logic import (
     is_expired,
     make_guest_cert_file_name,
     parse_presence_output,
-    presence_program,
+    presence_command,
 )
 from app.services.guest.base import GuestCredentials, GuestOperations
 from app.services.vmware.base import VCenterTarget
@@ -173,9 +173,8 @@ class CertificateDeployer:
         store: str,
         thumbprint: str,
     ) -> bool:
-        program, arguments = presence_program(store, thumbprint)
-        result = await self._guest.run_program(
-            target, vm_name, credentials, program, arguments, _PRESENCE_TIMEOUT_SECONDS
+        result = await self._guest.run_command(
+            target, vm_name, credentials, presence_command(store, thumbprint), _PRESENCE_TIMEOUT_SECONDS
         )
         if not result.succeeded:
             raise InfraOperationError(

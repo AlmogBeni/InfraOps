@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.core.config import get_settings
 
 # Import the declarative base AND all models so metadata is complete.
-from app.db.base import Base
 import app.models  # noqa: F401
+from app.db.base import Base
 
 config = context.config
 
@@ -22,7 +22,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", get_settings().database_url)
+    # Migrations run as the schema owner; the application uses a runtime role.
+    settings = get_settings()
+    url = settings.migration_database_url or settings.database_url
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

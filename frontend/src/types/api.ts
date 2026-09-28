@@ -8,6 +8,7 @@ export type JobStatus =
   | 'ACTION_REQUIRED'
   | 'FAILED'
   | 'CANCELLED'
+  | 'INTERRUPTED'
 
 export type StepStatus =
   | 'PENDING'

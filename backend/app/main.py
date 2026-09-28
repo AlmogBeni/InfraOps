@@ -73,9 +73,11 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(api_v1_router, prefix=settings.api_v1_prefix)
 
-    @app.get("/", include_in_schema=False)
-    async def root() -> RedirectResponse:
-        return RedirectResponse(url="/api/docs")
+    if not settings.is_production:
+        # Interactive API docs exist only outside production.
+        @app.get("/", include_in_schema=False)
+        async def root() -> RedirectResponse:
+            return RedirectResponse(url="/api/docs")
 
     return app
 

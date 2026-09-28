@@ -5,10 +5,12 @@ concern, and returns a :class:`StageOutcome`. Handlers raise
 :class:`InfraOperationError` on failure — the pipeline converts that into the
 human/technical error pair persisted on the job step.
 
-Every command string reaching a guest is assembled exclusively from typed,
-validated values (IP octets, enum stores, GUIDs, server-generated paths);
-credentials are interpolated only into scripts transferred through the
-encrypted VMware channel and are never logged or persisted.
+Every script reaching a guest is assembled exclusively from typed, validated
+values (IP octets, enum stores, GUIDs, server-generated paths) quoted as
+PowerShell literals, uploaded as a ``.ps1`` file and run with ``-File`` —
+never through ``cmd.exe``. Credentials are never part of a script or command
+line: they are delivered as self-deleting secret files (see
+:mod:`app.services.guest.scripts`) and are never logged or persisted.
 """
 
 from __future__ import annotations
@@ -37,9 +39,11 @@ from app.models.jobs import (
 )
 from app.schemas.provisioning import IpMode, VmSourceType
 from app.services.applications.installer import ApplicationDefinition
+from app.services.applications.paths import path_within_roots
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
-from app.services.certificates.store_logic import POWERSHELL_PATH
+from app.services.guest.scripts import HOSTNAME_PATH
+from app.services.guest.scripts import ps_quote as ps_single_quote
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
     SETTING_VM_NAME_POLICY,
@@ -56,7 +60,7 @@ from app.workers.state_machine import ORDERED_STAGES
 
 log = get_logger(__name__)
 
-CMD_PATH = r"C:\Windows\System32\cmd.exe"
+SHUTDOWN_PATH = r"C:\Windows\System32\shutdown.exe"
 
 
 @dataclass
@@ -95,35 +99,58 @@ StageHandler = Callable[[JobRunContext], Awaitable[StageOutcome]]
 
 # ── pure script builders (unit-testable) ─────────────────────────────────────
 
-def ps_single_quote(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+_SELECT_ADAPTER = (
+    "$adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1\n"
+    "if (-not $adapter) { throw 'No connected network adapter found' }\n"
+)
 
 
 def build_static_ip_script(address: str, prefix: int, gateway: str, dns_servers: list[str]) -> str:
-    dns_list = ",".join(ps_single_quote(d) for d in dns_servers) or "''"
+    """Idempotent static IPv4 configuration (safe to re-run on retry)."""
+    if dns_servers:
+        dns_line = (
+            "Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses "
+            + ",".join(ps_single_quote(d) for d in dns_servers)
+            + " | Out-Null\n"
+        )
+    else:
+        dns_line = "Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ResetServerAddresses | Out-Null\n"
     return (
-        "$adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1; "
-        "if (-not $adapter) { throw 'No connected network adapter found' }; "
-        "Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -Dhcp Disabled; "
+        "$ErrorActionPreference = 'Stop'\n"
+        + _SELECT_ADAPTER
+        + "Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -Dhcp Disabled\n"
+        "Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |\n"
+        "    Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n"
+        "Get-NetRoute -InterfaceIndex $adapter.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |\n"
+        "    Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue\n"
         f"New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress {ps_single_quote(address)} "
-        f"-PrefixLength {int(prefix)} -DefaultGateway {ps_single_quote(gateway)} | Out-Null; "
-        f"Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses {dns_list} | Out-Null; "
-        "'NETWORK-CONFIGURED'"
+        f"-PrefixLength {int(prefix)} -DefaultGateway {ps_single_quote(gateway)} | Out-Null\n"
+        + dns_line
+        + "'NETWORK-CONFIGURED'"
     )
 
 
 def build_dhcp_script() -> str:
     return (
-        "$adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1; "
-        "if (-not $adapter) { throw 'No connected network adapter found' }; "
-        "Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -Dhcp Enabled; "
-        "Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ResetServerAddresses | Out-Null; "
+        "$ErrorActionPreference = 'Stop'\n"
+        + _SELECT_ADAPTER
+        + "Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -Dhcp Enabled\n"
+        "Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ResetServerAddresses | Out-Null\n"
         "'NETWORK-DHCP-ENABLED'"
     )
 
 
+def build_dhcp_probe_script() -> str:
+    return (
+        "$ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {\n"
+        "    $_.IPAddress -notlike '169.254*' -and $_.IPAddress -ne '127.0.0.1'\n"
+        "} | Select-Object -First 1).IPAddress\n"
+        "if ($ip) { \"DHCP-IP:$ip\" } else { exit 1 }"
+    )
+
+
 def build_rename_script(new_name: str) -> str:
-    return f"Rename-Computer -NewName {ps_single_quote(new_name)} -Force -ErrorAction Stop | Out-Null; 'RENAMED'"
+    return f"Rename-Computer -NewName {ps_single_quote(new_name)} -Force -ErrorAction Stop | Out-Null\n'RENAMED'"
 
 
 def build_windows_identity_probe_script() -> str:
@@ -219,12 +246,11 @@ async def probe_windows_identity(
     *,
     operation: str,
 ) -> WindowsIdentityState:
-    result = await ctx.guest_ops.run_program(
+    result = await ctx.guest_ops.run_powershell(
         ctx.target,
         ctx.vm_name,
         credentials,
-        POWERSHELL_PATH,
-        f"-NoProfile -NonInteractive -Command {build_windows_identity_probe_script()}",
+        build_windows_identity_probe_script(),
         60,
     )
     if not result.succeeded:
@@ -247,20 +273,28 @@ async def probe_windows_identity(
         ) from exc
 
 
+DOMAIN_JOIN_PASSWORD_SECRET = "domain_join_password"
+
+
 def build_domain_join_script(
     domain: str,
     username: str,
-    password: str,
     ou: str | None,
     new_name: str,
 ) -> str:
+    """Add-Computer script. The password is read from a self-deleting secret
+    file (``$InfraOpsSecrets``) and never appears in the script text, on a
+    command line, or in PowerShell script-block logs."""
     ou_clause = f" -OUPath {ps_single_quote(ou)}" if ou else ""
     return (
-        f"$secpw = ConvertTo-SecureString {ps_single_quote(password)} -AsPlainText -Force; "
-        f"$cred = New-Object System.Management.Automation.PSCredential({ps_single_quote(username)}, $secpw); "
+        "$secpw = ConvertTo-SecureString "
+        f"$InfraOpsSecrets[{ps_single_quote(DOMAIN_JOIN_PASSWORD_SECRET)}] -AsPlainText -Force\n"
+        f"$InfraOpsSecrets.Remove({ps_single_quote(DOMAIN_JOIN_PASSWORD_SECRET)})\n"
+        "$cred = New-Object System.Management.Automation.PSCredential("
+        f"{ps_single_quote(username)}, $secpw)\n"
         f"Add-Computer -DomainName {ps_single_quote(domain)} "
         f"-NewName {ps_single_quote(new_name)}{ou_clause} -Credential $cred "
-        "-Force -ErrorAction Stop | Out-Null; 'DOMAIN-JOINED'"
+        "-Force -ErrorAction Stop | Out-Null\n'DOMAIN-JOINED'"
     )
 
 
@@ -461,13 +495,11 @@ async def stage_validate_request(ctx: JobRunContext) -> StageOutcome:
             select(Application).where(Application.id.in_(r.application_ids))
         )
         applications = list(selected.scalars().all())
-        allowed_roots = [
-            str(root).lower() for root in rows.get(SETTING_ALLOWED_INSTALLER_ROOTS, [])
-        ]
+        allowed_roots = [str(root) for root in rows.get(SETTING_ALLOWED_INSTALLER_ROOTS, [])]
         outside = [
             app.installer_path
             for app in applications
-            if not any(app.installer_path.lower().startswith(root) for root in allowed_roots)
+            if not path_within_roots(app.installer_path, allowed_roots)
         ]
         if not allowed_roots or outside:
             raise InfraOperationError(
@@ -610,15 +642,39 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
     from app.services.vmware.base import BlankVmSpec, CloneSpec, VmRef
 
     r = ctx.request
+    job_marker = str(ctx.job_id)
     ctx.job.infrastructure_status = InfrastructureStatus.CREATING.value
-    existing_id = await ctx.vmware.resolve_vm_id(ctx.target, ctx.vm_name)
-    if existing_id is not None:
-        ctx.vm_ref = VmRef(id=existing_id, name=ctx.vm_name)
+    existing = await ctx.vmware.find_vm_ownership(ctx.target, ctx.vm_name)
+    if existing is not None:
+        if existing.owner_job_id != job_marker:
+            # Never adopt, reconfigure or power on a VM this job did not create.
+            ctx.job.infrastructure_status = InfrastructureStatus.FAILED.value
+            raise InfraOperationError(
+                f"A virtual machine named '{ctx.vm_name}' already exists and was not created by this job.",
+                reason=(
+                    "The VM name is taken by an existing VM"
+                    + (
+                        f" created by another InfraOps job ({existing.owner_job_id})."
+                        if existing.owner_job_id
+                        else " that carries no InfraOps ownership marker."
+                    )
+                ),
+                recommended_action=(
+                    "Choose a different VM name and submit a new request. InfraOps did not modify "
+                    "the existing VM."
+                ),
+                technical_detail=f"vm_id={existing.vm_id} owner={existing.owner_job_id!r} job={job_marker}",
+                retryable=False,
+            )
+        ctx.vm_ref = VmRef(id=existing.vm_id, name=existing.name)
         ctx.job.infrastructure_status = InfrastructureStatus.READY.value
         return StageOutcome(
             status="SKIPPED",
-            output=f"A VM named '{ctx.vm_name}' already exists — reusing it instead of cloning again.",
-            artifacts={"vm_id": existing_id, "vm_name": ctx.vm_name},
+            output=(
+                f"VM '{ctx.vm_name}' was already created by this job (ownership marker verified) — "
+                "resuming with it instead of creating it again."
+            ),
+            artifacts={"vm_id": existing.vm_id, "vm_name": existing.name, "owner_job_id": job_marker},
         )
 
     datastore_id = next((d.datastore_id for d in r.hardware.disks if d.datastore_id), None)
@@ -639,6 +695,7 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
             adapter_type=r.network.adapter_type,
             firmware=r.hardware.firmware,
             secure_boot=r.hardware.secure_boot,
+            job_id=job_marker,
         )
         vm_ref = await ctx.vmware.clone_from_template(ctx.target, spec)
         output = f"Deployed '{vm_ref.name}' from the selected OVF/OVA package."
@@ -657,6 +714,7 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
             firmware=r.hardware.firmware,
             secure_boot=r.hardware.secure_boot,
             iso_id=r.guest.iso_id,
+            job_id=job_marker,
         )
         vm_ref = await ctx.vmware.create_blank_vm(ctx.target, blank_spec)
         media = " with the selected ISO mounted" if r.guest.iso_id else " without installation media"
@@ -687,7 +745,7 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
     )
     return StageOutcome(
         output=output,
-        artifacts={"vm_id": vm_ref.id, "vm_name": vm_ref.name},
+        artifacts={"vm_id": vm_ref.id, "vm_name": vm_ref.name, "owner_job_id": job_marker},
     )
 
 
@@ -966,26 +1024,130 @@ async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
     )
 
 
+ANSWER_FILE_SCRUB_SCRIPT = (
+    "$paths = @(\n"
+    "    'C:\\Windows\\Panther\\unattend.xml',\n"
+    "    'C:\\Windows\\Panther\\Unattend\\unattend.xml',\n"
+    "    'C:\\Windows\\Panther\\Unattend\\autounattend.xml',\n"
+    "    'C:\\Windows\\Panther\\autounattend.xml',\n"
+    "    'C:\\Windows\\System32\\Sysprep\\unattend.xml',\n"
+    "    'C:\\Windows\\System32\\Sysprep\\Panther\\unattend.xml'\n"
+    ")\n"
+    "foreach ($path in $paths) {\n"
+    "    if (Test-Path -LiteralPath $path) {\n"
+    "        Remove-Item -LiteralPath $path -Force -ErrorAction Stop\n"
+    "        \"REMOVED $path\"\n"
+    "    }\n"
+    "}\n"
+    "$winlogon = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'\n"
+    "Remove-ItemProperty -Path $winlogon -Name DefaultPassword -ErrorAction SilentlyContinue\n"
+    "Set-ItemProperty -Path $winlogon -Name AutoAdminLogon -Value '0' -ErrorAction SilentlyContinue\n"
+    "'ANSWER-FILE-SCRUBBED'"
+)
+
+
+def _uses_unattended_media(ctx: JobRunContext) -> bool:
+    return ctx.request.source_type == VmSourceType.BLANK and ctx.request.guest.iso_id is not None
+
+
+async def release_unattended_media(ctx: JobRunContext, *, reason: str) -> bool:
+    """Detach and delete the answer-file floppy on a failure/cancel/interrupt path.
+
+    The floppy holds the local administrator password in plain text, so it
+    must never outlive a job that stops before the cleanup stage. When the VM
+    has not booted from it yet, the preparation stage is reset so a retry
+    regenerates the media. Returns True when media was removed.
+    """
+    from app.models.jobs import StepStatus
+
+    prepare = ctx.steps_by_key.get("prepare_unattended_install")
+    cleanup = ctx.steps_by_key.get("cleanup_unattended_media")
+    if prepare is None:
+        return False
+    artifacts = dict(prepare.artifacts or {})
+    datastore_path = artifacts.get("datastore_path")
+    if not datastore_path or artifacts.get("media_removed"):
+        return False
+    if cleanup is not None and cleanup.status == StepStatus.SUCCEEDED:
+        return False
+    try:
+        vm_id = _require_vm_id(ctx)
+        await asyncio.wait_for(
+            ctx.vmware.remove_temporary_floppy(
+                ctx.target,
+                vm_id,
+                datacenter_id=ctx.request.compute.datacenter_id,
+                datastore_path=str(datastore_path),
+            ),
+            timeout=300,
+        )
+    except Exception:  # noqa: BLE001 - never mask the original failure
+        log.exception("Could not remove unattended media for job %s (%s)", ctx.job_id, reason)
+        return False
+
+    artifacts.update(media_removed=True, media_removed_reason=reason)
+    prepare.artifacts = artifacts
+    power_on = ctx.steps_by_key.get("power_on")
+    booted = power_on is not None and power_on.status in (StepStatus.SUCCEEDED, StepStatus.SKIPPED)
+    if prepare.status == StepStatus.SUCCEEDED and not booted:
+        prepare.status = StepStatus.PENDING
+        prepare.output = "Answer media removed after the job stopped; it is regenerated on retry."
+    from app.audit.recorder import record_audit
+
+    await record_audit(ctx.db).record(
+        AuditAction.UNATTENDED_MEDIA_REMOVED,
+        resource_type="virtual_machine",
+        resource_name=ctx.vm_name,
+        job_id=ctx.job_id,
+        username=ctx.actor_username,
+        datacenter_id=ctx.request.compute.datacenter_id,
+        datacenter_name=ctx.job.datacenter_name,
+        result="success",
+        details={"reason": reason},
+    )
+    return True
+
+
 async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
-    if (
-        ctx.request.source_type != VmSourceType.BLANK
-        or ctx.request.guest.iso_id is None
-    ):
+    if not _uses_unattended_media(ctx):
         return StageOutcome(
             status="NOT_APPLICABLE",
             output="No temporary unattended answer media was created for this deployment type.",
         )
     prepare = ctx.steps_by_key.get("prepare_unattended_install")
     datastore_path = ((prepare.artifacts or {}).get("datastore_path") if prepare else None)
-    if not datastore_path:
-        return StageOutcome(status="SKIPPED", output="No temporary unattended media was recorded.")
-    await ctx.vmware.remove_temporary_floppy(
-        ctx.target,
-        _require_vm_id(ctx),
-        datacenter_id=ctx.request.compute.datacenter_id,
-        datastore_path=str(datastore_path),
-    )
-    return StageOutcome(output="Temporary unattended answer media was detached and deleted.")
+    lines: list[str] = []
+    if datastore_path:
+        await ctx.vmware.remove_temporary_floppy(
+            ctx.target,
+            _require_vm_id(ctx),
+            datacenter_id=ctx.request.compute.datacenter_id,
+            datastore_path=str(datastore_path),
+        )
+        lines.append("Temporary unattended answer media was detached and deleted.")
+    else:
+        lines.append("No temporary unattended media was recorded.")
+
+    # Windows Setup caches the answer file inside the guest. Remove every copy
+    # and any AutoLogon residue so the plaintext password does not survive.
+    status = "SUCCEEDED"
+    try:
+        credentials = await ctx.resolve_guest_credentials()
+        result = await ctx.guest_ops.run_powershell(
+            ctx.target, ctx.vm_name, credentials, ANSWER_FILE_SCRUB_SCRIPT, 120
+        )
+        if result.succeeded:
+            lines.append("Cached answer-file copies and AutoLogon residue were removed from the guest.")
+        else:
+            status = "WARNING"
+            lines.append(
+                f"The in-guest answer-file scrub exited with code {result.exit_code}; "
+                "remove C:\\Windows\\Panther\\unattend.xml manually."
+            )
+    except InfraOperationError as exc:
+        status = "WARNING"
+        lines.append(f"The in-guest answer-file scrub could not run: {exc.human_message}")
+    return StageOutcome(status=status, output="\n".join(lines))
 
 
 async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
@@ -1016,9 +1178,8 @@ async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
         human = "DHCP enabled on the guest adapter."
 
     timeout = await effective_timeout_seconds(ctx, "configure_guest_network")
-    result = await ctx.guest_ops.run_program(
-        ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-        f"-NoProfile -NonInteractive -Command {script}", timeout,
+    result = await ctx.guest_ops.run_powershell(
+        ctx.target, ctx.vm_name, credentials, script, timeout,
     )
     if not result.succeeded:
         raise InfraOperationError(
@@ -1045,9 +1206,8 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
             f"if (Test-Connection -ComputerName {ps_single_quote(gateway)} -Count 2 -Quiet) "
             f"{{ 'GW-REACHABLE' }} else {{ exit 1 }}"
         )
-        result = await ctx.guest_ops.run_program(
-            ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-            f"-NoProfile -NonInteractive -Command {gw_script}", 120,
+        result = await ctx.guest_ops.run_powershell(
+            ctx.target, ctx.vm_name, credentials, gw_script, 120,
         )
         if not result.succeeded:
             raise InfraOperationError(
@@ -1066,11 +1226,10 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
             fqdn = ctx.request.guest.domain_join.domain
             dns_script = (
                 f"$r = Resolve-DnsName -Name {ps_single_quote(fqdn)} -Server {ps_single_quote(dns)} "
-                "-ErrorAction SilentlyContinue; if ($r) { 'DNS-OK' } else { exit 1 }"
+                "-ErrorAction SilentlyContinue\nif ($r) { 'DNS-OK' } else { exit 1 }"
             )
-            result = await ctx.guest_ops.run_program(
-                ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-                f"-NoProfile -NonInteractive -Command {dns_script}", 120,
+            result = await ctx.guest_ops.run_powershell(
+                ctx.target, ctx.vm_name, credentials, dns_script, 120,
             )
             if not result.succeeded:
                 raise InfraOperationError(
@@ -1084,15 +1243,8 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
         elif net.ipv4.dns_servers:
             checks.append("DNS servers configured; name-resolution probe skipped (no domain supplied)")
     else:
-        probe = (
-            "'$ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { "
-            "$_.IPAddress -notlike '169.254*' -and $_.IPAddress -ne '127.0.0.1' "
-            '} | Select-Object -First 1).IPAddress; if ($ip) { "DHCP-IP:$ip" } '
-            "else { exit 1 }"
-        )
-        result = await ctx.guest_ops.run_program(
-            ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-            f"-NoProfile -NonInteractive -Command {probe}", 180,
+        result = await ctx.guest_ops.run_powershell(
+            ctx.target, ctx.vm_name, credentials, build_dhcp_probe_script(), 180,
         )
         if not result.succeeded:
             raise InfraOperationError(
@@ -1129,9 +1281,8 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
 
     credentials = await ctx.resolve_guest_credentials()
 
-    probe = await ctx.guest_ops.run_program(
-        ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-        "-NoProfile -NonInteractive -Command $env:COMPUTERNAME", 60,
+    probe = await ctx.guest_ops.run_powershell(
+        ctx.target, ctx.vm_name, credentials, "$env:COMPUTERNAME", 60,
     )
     current = (probe.stdout or "").strip().upper().splitlines()[-1] if probe.stdout else ""
     if probe.succeeded and current == desired:
@@ -1141,9 +1292,8 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
             artifacts=identity_artifacts,
         )
 
-    result = await ctx.guest_ops.run_program(
-        ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-        f"-NoProfile -NonInteractive -Command {build_rename_script(desired)}", 180,
+    result = await ctx.guest_ops.run_powershell(
+        ctx.target, ctx.vm_name, credentials, build_rename_script(desired), 180,
     )
     if not result.succeeded:
         raise InfraOperationError(
@@ -1225,17 +1375,15 @@ async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
     username = await ctx.secrets.get_secret(f"{base}/username")
     password = await ctx.secrets.get_secret(f"{base}/password")
 
-    script = build_domain_join_script(
-        join.domain,
-        username,
-        password,
-        join.ou,
-        desired_name,
-    )
+    script = build_domain_join_script(join.domain, username, join.ou, desired_name)
     timeout = await effective_timeout_seconds(ctx, "join_domain")
-    result = await ctx.guest_ops.run_program(
-        ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-        f"-NoProfile -NonInteractive -Command {script}", timeout,
+    result = await ctx.guest_ops.run_powershell(
+        ctx.target,
+        ctx.vm_name,
+        credentials,
+        script,
+        timeout,
+        secrets={DOMAIN_JOIN_PASSWORD_SECRET: password},
     )
     if not result.succeeded:
         raise InfraOperationError(
@@ -1283,11 +1431,21 @@ async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
         return StageOutcome(status="SKIPPED", output="No pending changes require a reboot.")
 
     credentials = await ctx.resolve_guest_credentials()
-    await ctx.guest_ops.run_program(
-        ctx.target, ctx.vm_name, credentials, POWERSHELL_PATH,
-        "-NoProfile -NonInteractive -Command Restart-Computer -Force", 60,
+    # A delayed restart lets the command return cleanly before the guest
+    # (and VMware Tools) goes down.
+    result = await ctx.guest_ops.run_program(
+        ctx.target, ctx.vm_name, credentials, SHUTDOWN_PATH,
+        '/r /t 10 /d p:4:1 /c "InfraOps provisioning restart"', 60,
     )
-    await asyncio.sleep(6)
+    if not result.succeeded:
+        raise InfraOperationError(
+            "The guest restart could not be scheduled.",
+            reason=f"shutdown.exe exited with code {result.exit_code}.",
+            recommended_action="Restart the VM from the console, then retry this stage.",
+            technical_detail=result.stdout[-1000:],
+            retryable=True,
+        )
+    await asyncio.sleep(20)
     return StageOutcome(output="Guest restart initiated.")
 
 
@@ -1306,17 +1464,23 @@ async def stage_wait_guest_ready(ctx: JobRunContext) -> StageOutcome:
     credentials = await ctx.resolve_guest_credentials()
     deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=600)
     attempts = 0
+    last_error = ""
     while dt.datetime.now(dt.UTC) < deadline:
         attempts += 1
-        probe = await ctx.guest_ops.run_program(
-            ctx.target, ctx.vm_name, credentials, CMD_PATH, "/c exit 0", 60,
-        )
-        if probe.succeeded:
-            return StageOutcome(output=f"Guest responsive after restart ({attempts} probe(s)).")
+        try:
+            probe = await ctx.guest_ops.run_program(
+                ctx.target, ctx.vm_name, credentials, HOSTNAME_PATH, "", 60,
+            )
+            if probe.succeeded:
+                return StageOutcome(output=f"Guest responsive after restart ({attempts} probe(s)).")
+            last_error = f"exit code {probe.exit_code}"
+        except InfraOperationError as exc:
+            # Expected while the guest is restarting and Tools is unavailable.
+            last_error = exc.human_message
         await asyncio.sleep(10)
     raise InfraOperationError(
         "The guest did not become responsive after the scheduled restart.",
-        reason="Guest operations probes timed out after 10 minutes.",
+        reason=f"Guest operations probes timed out after 10 minutes (last: {last_error or 'n/a'}).",
         recommended_action="Check the VM console in vCenter, then retry the availability stage.",
         retryable=True,
     )

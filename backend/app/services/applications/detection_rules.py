@@ -12,8 +12,11 @@ import re
 
 from app.models.applications import DetectionMethod
 from app.schemas.provisioning import GUID_PATTERN
+from app.services.guest.scripts import POWERSHELL_PATH, GuestCommand
+from app.services.guest.scripts import ps_quote as ps_quote
 
-POWERSHELL_PATH = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+__all__ = ["POWERSHELL_PATH", "ps_quote"]
+
 REG_PATH = r"C:\Windows\System32\reg.exe"
 SC_PATH = r"C:\Windows\System32\sc.exe"
 MSIEXEC_PATH = r"C:\Windows\System32\msiexec.exe"
@@ -38,11 +41,6 @@ def _clean_text(value: object, label: str, max_length: int = 500) -> str:
     return text
 
 
-def ps_quote(value: str) -> str:
-    """Escape a value for embedding inside a PowerShell single-quoted string."""
-    return "'" + value.replace("'", "''") + "'"
-
-
 def validate_detection_config(method: DetectionMethod, config: dict) -> dict:
     """Validate and normalise a detection configuration for the given method."""
     config = dict(config or {})
@@ -58,10 +56,14 @@ def validate_detection_config(method: DetectionMethod, config: dict) -> dict:
         key = _clean_text(config.get("key_path"), "Registry key path", 400)
         if not _REGISTRY_HIVE.match(key):
             raise ValueError("Registry key paths must start with HKLM\\ or HKCU\\.")
+        if '"' in key:
+            raise ValueError("Registry key paths must not contain quotes.")
         cleaned["key_path"] = key
         value_name = str(config.get("value_name") or "").strip()
         if value_name:
             cleaned["value_name"] = _clean_text(value_name, "Value name", 200)
+            if '"' in cleaned["value_name"]:
+                raise ValueError("Registry value names must not contain quotes.")
 
     elif method == DetectionMethod.FILE_EXISTS:
         path = _clean_text(config.get("path"), "File path", 400)
@@ -86,30 +88,34 @@ def validate_detection_config(method: DetectionMethod, config: dict) -> dict:
     return cleaned
 
 
-def detection_programs(method: DetectionMethod, config: dict) -> list[tuple[str, str]]:
-    """Return candidate (program, arguments) probes — any success means installed."""
+def detection_programs(method: DetectionMethod, config: dict) -> list[GuestCommand]:
+    """Return candidate probes — any success means installed.
+
+    Native probes are started directly (no shell); PowerShell probes are run
+    as uploaded script files.
+    """
     if method == DetectionMethod.MSI_PRODUCT_CODE:
         code = config["product_code"]
         uninstall_root = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
         return [
-            (REG_PATH, f'query "{uninstall_root}\\{{{code}}}" /v DisplayName'),
-            (REG_PATH, f'query "{uninstall_root}\\{{{code}}}" /v DisplayName /reg:32'),
+            GuestCommand.native(REG_PATH, f'query "{uninstall_root}\\{{{code}}}" /v DisplayName'),
+            GuestCommand.native(REG_PATH, f'query "{uninstall_root}\\{{{code}}}" /v DisplayName /reg:32'),
         ]
 
     if method == DetectionMethod.REGISTRY_KEY:
         args = f'query "{config["key_path"]}"'
         if config.get("value_name"):
             args += f' /v "{config["value_name"]}"'
-        return [(REG_PATH, args)]
+        return [GuestCommand.native(REG_PATH, args)]
 
     if method == DetectionMethod.FILE_EXISTS:
         command = f"if (Test-Path -LiteralPath {ps_quote(config['path'])}) {{ exit 0 }} else {{ exit 1 }}"
-        return [(POWERSHELL_PATH, f"-NoProfile -NonInteractive -Command {command}")]
+        return [GuestCommand.powershell(command)]
 
     if method == DetectionMethod.SERVICE_EXISTS:
-        return [(SC_PATH, f'query "{config["service_name"]}"')]
+        return [GuestCommand.native(SC_PATH, f'query "{config["service_name"]}"')]
 
     if method == DetectionMethod.SCRIPT:
-        return [(POWERSHELL_PATH, f"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command {config['script']}")]
+        return [GuestCommand.powershell(config["script"])]
 
     raise ValueError(f"Unsupported detection method: {method}")
