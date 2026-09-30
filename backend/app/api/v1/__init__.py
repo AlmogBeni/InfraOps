@@ -13,6 +13,7 @@ from app.api.v1.certificates import router as certificates_router
 from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.infrastructure import router as infrastructure_router
 from app.api.v1.logs import router as logs_router
+from app.api.v1.notifications import router as notifications_router
 from app.api.v1.provisioning import router as provisioning_router
 
 api_v1_router = APIRouter()
@@ -28,3 +29,4 @@ api_v1_router.include_router(admin_applications_router)
 api_v1_router.include_router(admin_platform_router)
 api_v1_router.include_router(audit_router)
 api_v1_router.include_router(dashboard_router)
+api_v1_router.include_router(notifications_router)

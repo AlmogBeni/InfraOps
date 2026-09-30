@@ -77,28 +77,40 @@ export function HardwareStep({ embedded = false }: { embedded?: boolean }) {
             </Select>
           </FormRow>
 
-          <FormRow label="Firmware" htmlFor="vm-firmware">
-            <Select
-              id="vm-firmware"
-              value={data.firmware}
-              onChange={(event) => {
-                const firmware = event.target.value as 'BIOS' | 'EFI'
-                wizard.update({ firmware, secure_boot: firmware === 'EFI' ? data.secure_boot : false })
-              }}
+          {data.source_type === 'template' ? (
+            <FormRow
+              label="Firmware"
+              htmlFor="vm-firmware"
+              hint="An installed package only boots with the firmware and Secure Boot setting it was built with, so they are kept."
             >
-              <option value="EFI">UEFI</option>
-              <option value="BIOS">Legacy BIOS</option>
-            </Select>
-          </FormRow>
+              <Input id="vm-firmware" value="Inherited from the package" readOnly disabled />
+            </FormRow>
+          ) : (
+            <>
+              <FormRow label="Firmware" htmlFor="vm-firmware">
+                <Select
+                  id="vm-firmware"
+                  value={data.firmware}
+                  onChange={(event) => {
+                    const firmware = event.target.value as 'BIOS' | 'EFI'
+                    wizard.update({ firmware, secure_boot: firmware === 'EFI' ? data.secure_boot : false })
+                  }}
+                >
+                  <option value="EFI">UEFI</option>
+                  <option value="BIOS">Legacy BIOS</option>
+                </Select>
+              </FormRow>
 
-          <div className="flex items-center pb-4 md:pt-5">
-            <Checkbox
-              label="Enable Secure Boot"
-              checked={data.secure_boot}
-              disabled={data.firmware !== 'EFI'}
-              onChange={(event) => wizard.update({ secure_boot: event.target.checked })}
-            />
-          </div>
+              <div className="flex items-center pb-4 md:pt-5">
+                <Checkbox
+                  label="Enable Secure Boot"
+                  checked={data.secure_boot}
+                  disabled={data.firmware !== 'EFI'}
+                  onChange={(event) => wizard.update({ secure_boot: event.target.checked })}
+                />
+              </div>
+            </>
+          )}
         </div>
       </div>
 

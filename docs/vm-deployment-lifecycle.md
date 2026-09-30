@@ -102,23 +102,54 @@ the already successful VM creation step is not. Tools and all guest stages wait 
 
 ```text
 validate package and destination
-  -> Content Library OVF filter/deploy
-  -> reconcile CPU/RAM/disks
+  -> Content Library OVF filter/deploy (accept_all_EULA)
+  -> reconcile CPU/RAM/disks (firmware and Secure Boot are kept from the package)
   -> attach vNIC to selected port group
-  -> no blank-VM answer media (NOT_APPLICABLE)
+  -> VM configured for a Windows guest (config.guestId)?
+     -> yes: attach temporary first-boot answer floppy (specialize + oobeSystem only)
+     -> no: NOT_APPLICABLE
   -> power on
   -> observe an existing Tools/open-vm-tools heartbeat and Guest Operations readiness
-     -> current: continue
-     -> outdated/running: warning, continue without upgrade
      -> missing/not running: ACTION_REQUIRED; never blind reinstall
   -> reject Windows guest commands for a reported non-Windows guest
+  -> wait for Windows Setup: the provisioning account signs in through VMware Tools and
+     HKLM\SYSTEM\Setup shows no Setup/OOBE in progress and ImageState is IMAGE_STATE_COMPLETE
+  -> Tools lifecycle: current continues; outdated continues with a warning
+  -> remove the floppy, delete cached answer-file copies in the guest
   -> Windows guest networking/identity/domain/certificates/apps
-  -> final verification -> COMPLETED
+  -> final verification -> COMPLETED -> in-app notification to the requesting engineer
 ```
+
+### Generalized (sysprepped) packages
+
+A package exported after `sysprep /generalize /oobe` boots into Windows Setup: specialize,
+a restart, then OOBE (the "Hi there" region/keyboard page, license terms and the
+administrator password). Windows Setup looks for `Autounattend.xml` at the root of
+removable media at the start of each configuration pass, so the floppy InfraOps attaches
+before the first power-on answers every page:
+
+| Pass | Settings |
+|---|---|
+| specialize | `ComputerName` (the request's computer name), `TimeZone` |
+| oobeSystem | `International-Core` input/system/UI/user locale, OOBE pages hidden (EULA, OEM registration, online/local account, wireless), `ProtectYourPC=3`, `TimeZone`, the provisioning credential as `AdministratorPassword` (or a new local Administrators member) |
+
+The file never contains a windowsPE pass, a disk layout, AutoLogon or logon commands.
+A package that is not generalized ignores the floppy; its local administrator password
+must then match the provisioning credential. A Tools heartbeat already appears during
+specialize/OOBE, so readiness is proven inside the guest: sign-in attempts are spaced out
+(every 60 s, every 15 s once Tools reports the requested computer name) so failed logons
+while OOBE has not set the password stay well below lockout thresholds, and the wait
+stops after 12 rejected sign-ins. Windows caches the answer file when specialize starts,
+so removing the floppy early (failure/cancel) does not affect a Setup already in progress.
+
+A package whose own `C:\Windows\Panther\unattend.xml` still has unprocessed specialize or
+oobeSystem settings takes precedence over the floppy; rebuild such a package without it.
+Retail/MAK images that prompt for a product key during OOBE are not answered; use
+volume-license (KMS/GVLK) or evaluation media for templates.
 
 The OVF deploy completion and guest provisioning completion are deliberately separate.
 Current scope does not include classic inventory VM-template `CloneVM_Task`, Content Library
-VM-template deployment, or native vSphere `CustomizationSpec`/Sysprep orchestration.
+VM-template deployment, or native vSphere `CustomizationSpec` orchestration.
 
 ## VMware references
 

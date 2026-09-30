@@ -24,7 +24,12 @@ import httpx
 from app.core.errors import InfraOperationError
 from app.core.logging import get_logger
 from app.secrets.service import SecretsService
-from app.services.guest.base import CommandResult, GuestCredentials, GuestOperations
+from app.services.guest.base import (
+    CommandResult,
+    GuestCredentials,
+    GuestCredentialsRejected,
+    GuestOperations,
+)
 from app.services.guest.scripts import (
     POWERSHELL_PATH,
     build_process_runner,
@@ -64,7 +69,7 @@ def _file_transfer_verify(target: VCenterTarget) -> bool | ssl.SSLContext:
 def _wrap(operation: str, exc: Exception, *, retryable: bool = True) -> InfraOperationError:
     technical = f"{type(exc).__name__}: {exc}"
     if HAS_PYVMOMI and isinstance(exc, vim.fault.InvalidGuestLogin):
-        return InfraOperationError(
+        return GuestCredentialsRejected(
             "The guest operating system rejected the automation credentials.",
             reason="Invalid username or password for the local administrator account.",
             recommended_action=(
@@ -109,11 +114,18 @@ class VMwareToolsGuestOperations(GuestOperations):
         self._vsphere = VsphereVMwareService(secrets)
 
     async def _find_vm(self, target: VCenterTarget, vm_name: str):
-        def op(si):
-            # Refuses ambiguous names instead of acting on an arbitrary match.
-            return self._vsphere._find_vm_by_name(si.RetrieveContent(), vm_name)
+        """Return the VM and the session's ``GuestOperationsManager``.
 
-        vm = await self._vsphere._with_session(target, op, operation="guest-find-vm")
+        The manager belongs to the vCenter ServiceContent; a managed object's
+        stub only knows the "host:port" string of its connection.
+        """
+
+        def op(si):
+            content = si.RetrieveContent()
+            # Refuses ambiguous names instead of acting on an arbitrary match.
+            return self._vsphere._find_vm_by_name(content, vm_name), content.guestOperationsManager
+
+        vm, manager = await self._vsphere._with_session(target, op, operation="guest-find-vm")
         if vm is None:
             raise InfraOperationError(
                 f"VM '{vm_name}' was not found while performing guest operations.",
@@ -121,7 +133,7 @@ class VMwareToolsGuestOperations(GuestOperations):
                 recommended_action="Check the job timeline and vCenter inventory.",
                 retryable=False,
             )
-        return vm
+        return vm, manager
 
     async def run_program(
         self,
@@ -193,11 +205,11 @@ class VMwareToolsGuestOperations(GuestOperations):
         program_label: str,
     ) -> int:
         """Start one process directly through the Tools API and wait for its exit code."""
-        vm = await self._find_vm(target, vm_name)
+        vm, manager = await self._find_vm(target, vm_name)
         auth = vim.vm.guest.NamePasswordAuthentication(
             username=credentials.username, password=credentials.password
         )
-        process_manager = vm._stub.host.guestOperationsManager.processManager  # type: ignore[attr-defined]
+        process_manager = manager.processManager
         spec = vim.vm.guest.ProcessManager.ProgramSpec(
             programPath=program_path,
             arguments=arguments,
@@ -260,11 +272,11 @@ class VMwareToolsGuestOperations(GuestOperations):
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials,
         content: bytes, guest_path: str,
     ) -> None:
-        vm = await self._find_vm(target, vm_name)
+        vm, manager = await self._find_vm(target, vm_name)
         auth = vim.vm.guest.NamePasswordAuthentication(
             username=credentials.username, password=credentials.password
         )
-        file_manager = vm._stub.host.guestOperationsManager.fileManager  # type: ignore[attr-defined]
+        file_manager = manager.fileManager
 
         def prepare_url():
             return file_manager.InitiateFileTransferToGuest(
@@ -285,11 +297,11 @@ class VMwareToolsGuestOperations(GuestOperations):
     async def download_file(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str
     ) -> bytes:
-        vm = await self._find_vm(target, vm_name)
+        vm, manager = await self._find_vm(target, vm_name)
         auth = vim.vm.guest.NamePasswordAuthentication(
             username=credentials.username, password=credentials.password
         )
-        file_manager = vm._stub.host.guestOperationsManager.fileManager  # type: ignore[attr-defined]
+        file_manager = manager.fileManager
 
         def prepare():
             return file_manager.InitiateFileTransferFromGuest(vm, auth, guest_path)
@@ -310,11 +322,11 @@ class VMwareToolsGuestOperations(GuestOperations):
     async def delete_file(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str
     ) -> None:
-        vm = await self._find_vm(target, vm_name)
+        vm, manager = await self._find_vm(target, vm_name)
         auth = vim.vm.guest.NamePasswordAuthentication(
             username=credentials.username, password=credentials.password
         )
-        file_manager = vm._stub.host.guestOperationsManager.fileManager  # type: ignore[attr-defined]
+        file_manager = manager.fileManager
 
         def delete():
             file_manager.DeleteFileInGuest(vm, auth, guest_path)
@@ -327,11 +339,11 @@ class VMwareToolsGuestOperations(GuestOperations):
     async def file_exists(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str
     ) -> bool:
-        vm = await self._find_vm(target, vm_name)
+        vm, manager = await self._find_vm(target, vm_name)
         auth = vim.vm.guest.NamePasswordAuthentication(
             username=credentials.username, password=credentials.password
         )
-        file_manager = vm._stub.host.guestOperationsManager.fileManager  # type: ignore[attr-defined]
+        file_manager = manager.fileManager
 
         directory, _, file_name = guest_path.rpartition("\\")
         pattern = "^" + re.escape(file_name) + "$"

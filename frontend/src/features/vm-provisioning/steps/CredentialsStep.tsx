@@ -89,7 +89,7 @@ export function CredentialsStep() {
             <Alert tone="info" title={wizard.data.source_type === 'blank' ? 'Used by unattended Windows Setup' : 'Used during first-boot provisioning'}>
               {wizard.data.source_type === 'blank'
                 ? 'InfraOps uses this password in the generated unattended setup media, then authenticates through VMware Tools after Windows installation.'
-                : 'InfraOps uses this account to complete guest networking and identity configuration before Active Directory authentication is available.'}
+                : 'For a sysprepped package, Windows Setup sets this local account’s password on first boot; otherwise it must match the package’s local administrator. InfraOps then uses it through VMware Tools to configure networking, identity, certificates and applications.'}
             </Alert>
           </div>
         </div>

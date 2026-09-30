@@ -138,3 +138,47 @@ async def test_vmware_tools_starts_powershell_runner_directly(monkeypatch: pytes
     assert f'-File "{runner_path}"' in arguments
     runner = uploads[runner_path].decode("utf-8-sig")
     assert "$psi.Arguments = '/i \"\\\\srv\\a&b.msi\" /qn'" in runner
+
+
+@pytest.mark.asyncio
+async def test_vmware_tools_uses_the_session_guest_operations_manager() -> None:
+    from types import SimpleNamespace
+
+    from app.services.guest.vmware_tools import VMwareToolsGuestOperations
+
+    deleted: list[tuple[object, str]] = []
+    manager = SimpleNamespace(
+        fileManager=SimpleNamespace(
+            DeleteFileInGuest=lambda vm, auth, path: deleted.append((vm, path))
+        )
+    )
+    # pyVmomi stubs expose the connection only as a "host:port" string.
+    vm = SimpleNamespace(_stub=SimpleNamespace(host="vcenter.example.test:443"))
+    content = SimpleNamespace(guestOperationsManager=manager)
+    si = SimpleNamespace(RetrieveContent=lambda: content)
+
+    async def with_session(target, fn, *, operation):
+        return fn(si)
+
+    guest = object.__new__(VMwareToolsGuestOperations)
+    guest._vsphere = SimpleNamespace(
+        _with_session=with_session,
+        _find_vm_by_name=lambda found_in, name: vm if found_in is content else None,
+    )
+
+    await guest.delete_file(object(), "SRV01", CREDENTIALS, r"C:\Windows\Temp\x.ps1")
+
+    assert deleted == [(vm, r"C:\Windows\Temp\x.ps1")]
+
+
+@pytest.mark.asyncio
+async def test_rejected_guest_login_is_reported_as_its_own_error_type() -> None:
+    from pyVmomi import vim
+
+    from app.services.guest.base import GuestCredentialsRejected
+    from app.services.guest.vmware_tools import _wrap
+
+    error = _wrap("start-program", vim.fault.InvalidGuestLogin())
+
+    assert isinstance(error, GuestCredentialsRejected)
+    assert error.retryable is False

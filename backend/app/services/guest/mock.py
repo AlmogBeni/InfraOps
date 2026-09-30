@@ -131,6 +131,18 @@ class MockGuestOperations(GuestOperations):
         self, lowered: str, arguments: str, state: _MockGuestState,
         target: VCenterTarget, vm_name: str,
     ) -> str:
+        # Windows Setup progress probe: the simulated guest has finished Setup.
+        if "systemsetupinprogress" in lowered:
+            return json.dumps(
+                {
+                    "ImageState": "IMAGE_STATE_COMPLETE",
+                    "SystemSetupInProgress": 0,
+                    "OOBEInProgress": 0,
+                    "ComputerName": state.hostname or vm_name.upper(),
+                },
+                separators=(",", ":"),
+            )
+
         # Certificate presence probe (thumbprint embedded in script text).
         if "get-childitem" in lowered and "thumbprint" in lowered:
             probe = re.search(r"([0-9a-f]{40,64})", lowered)

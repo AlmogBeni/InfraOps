@@ -20,7 +20,14 @@ from app.models.jobs import (
     StepStatus,
     VMwareToolsStatus,
 )
+from app.models.notifications import NotificationKind
 from app.repositories.jobs import JobRepository
+from app.services.notifications import (
+    action_required_message,
+    completed_message,
+    failed_message,
+    notify_requester,
+)
 from app.workers.context import JobRunContext
 from app.workers.events import JobEventPublisher
 from app.workers.stages import STAGE_HANDLERS, effective_timeout_seconds, release_unattended_media
@@ -244,6 +251,12 @@ class ProvisioningPipeline:
         jobs_total.inc(status=ctx.job.status.value)
         await release_unattended_media(ctx, reason=f"stage '{stage.key}' failed")
 
+        notify_requester(
+            ctx.db,
+            ctx.job,
+            NotificationKind.JOB_FAILED,
+            *failed_message(ctx.job, stage.name, f"{failure.human_message} {failure.reason}"),
+        )
         recorder = AuditRecorder(ctx.db)
         await recorder.record(
             AuditAction.JOB_STAGE_FAILED,
@@ -279,9 +292,23 @@ class ProvisioningPipeline:
             ctx.job.duration_seconds = (finished_at - ctx.job.started_at).total_seconds()
 
         summary_artifact = {}
+        checks_passed = 0
         final_step = ctx.steps_by_key.get("final_validation")
         if final_step is not None:
             summary_artifact = (final_step.artifacts or {}).get("summary", {})
+            checks_passed = sum(
+                1
+                for item in (final_step.artifacts or {}).get("checklist", [])
+                if isinstance(item, dict) and item.get("status") == "PASS"
+            )
+        # Only a verified deployment reaches this point: final validation
+        # raises on any failed check.
+        notify_requester(
+            ctx.db,
+            ctx.job,
+            NotificationKind.JOB_COMPLETED,
+            *completed_message(ctx.job, summary_artifact, checks_passed),
+        )
 
         jobs_total.inc(status=JobStatus.COMPLETED.value)
         if ctx.job.duration_seconds:
@@ -335,6 +362,12 @@ class ProvisioningPipeline:
                 candidate.output = f"Waiting for prerequisite: {stage.name}."
         ctx.job.status = JobStatus.ACTION_REQUIRED
         ctx.job.action_required = message[:2000]
+        notify_requester(
+            ctx.db,
+            ctx.job,
+            NotificationKind.JOB_ACTION_REQUIRED,
+            *action_required_message(ctx.job, stage.name, message),
+        )
         ctx.job.error_summary = None
         ctx.job.error_detail = None
         ctx.job.current_stage = stage.key

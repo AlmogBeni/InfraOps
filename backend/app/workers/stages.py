@@ -42,6 +42,7 @@ from app.services.applications.installer import ApplicationDefinition
 from app.services.applications.paths import path_within_roots
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
+from app.services.guest.base import GuestCredentialsRejected
 from app.services.guest.scripts import HOSTNAME_PATH
 from app.services.guest.scripts import ps_quote as ps_single_quote
 from app.services.settings_store import (
@@ -51,8 +52,10 @@ from app.services.settings_store import (
 )
 from app.services.vmware.base import PowerStateInfo, VmRef
 from app.services.windows_unattend import (
+    WindowsFirstBootSpec,
     WindowsUnattendSpec,
     build_autounattend_xml,
+    build_first_boot_unattend_xml,
     build_unattend_floppy,
 )
 from app.workers.context import JobRunContext
@@ -273,6 +276,66 @@ async def probe_windows_identity(
         ) from exc
 
 
+@dataclass(frozen=True)
+class WindowsSetupState:
+    image_state: str
+    system_setup_in_progress: bool
+    oobe_in_progress: bool
+    computer_name: str
+
+    @property
+    def complete(self) -> bool:
+        # Older releases may not record ImageState; the in-progress flags
+        # alone then decide.
+        return (
+            not self.system_setup_in_progress
+            and not self.oobe_in_progress
+            and self.image_state in ("", "IMAGE_STATE_COMPLETE")
+        )
+
+    @property
+    def detail(self) -> str:
+        return (
+            f"ImageState={self.image_state or 'unrecorded'}, "
+            f"SystemSetupInProgress={int(self.system_setup_in_progress)}, "
+            f"OOBEInProgress={int(self.oobe_in_progress)}, ComputerName={self.computer_name}"
+        )
+
+
+def build_windows_setup_state_script() -> str:
+    """Read-only probe of Windows Setup progress (specialize / OOBE)."""
+    return (
+        "$setup = Get-ItemProperty -LiteralPath "
+        "'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\Setup' -ErrorAction Stop; "
+        "$image = (Get-ItemProperty -LiteralPath "
+        "'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State' "
+        "-ErrorAction SilentlyContinue).ImageState; "
+        "[pscustomobject]@{ImageState=[string]$image;"
+        "SystemSetupInProgress=[int]$setup.SystemSetupInProgress;"
+        "OOBEInProgress=[int]$setup.OOBEInProgress;"
+        "ComputerName=[string]$env:COMPUTERNAME} | ConvertTo-Json -Compress"
+    )
+
+
+def parse_windows_setup_state(stdout: str) -> WindowsSetupState:
+    for line in reversed([entry.strip() for entry in stdout.splitlines() if entry.strip()]):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "SystemSetupInProgress" in payload:
+            try:
+                return WindowsSetupState(
+                    image_state=str(payload.get("ImageState") or "").strip().upper(),
+                    system_setup_in_progress=int(payload.get("SystemSetupInProgress") or 0) != 0,
+                    oobe_in_progress=int(payload.get("OOBEInProgress") or 0) != 0,
+                    computer_name=str(payload.get("ComputerName") or "").strip(),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("The Windows Setup probe returned non-numeric flags.") from exc
+    raise ValueError("The Windows Setup probe did not return a JSON object.")
+
+
 DOMAIN_JOIN_PASSWORD_SECRET = "domain_join_password"
 
 
@@ -280,20 +343,26 @@ def build_domain_join_script(
     domain: str,
     username: str,
     ou: str | None,
-    new_name: str,
+    new_name: str | None,
 ) -> str:
     """Add-Computer script. The password is read from a self-deleting secret
     file (``$InfraOpsSecrets``) and never appears in the script text, on a
-    command line, or in PowerShell script-block logs."""
+    command line, or in PowerShell script-block logs.
+
+    ``new_name`` must be None when Windows already has that name: Add-Computer
+    skips the whole join ("the new name is the same as the current name")
+    when -NewName equals the current name.
+    """
     ou_clause = f" -OUPath {ps_single_quote(ou)}" if ou else ""
+    rename_clause = f" -NewName {ps_single_quote(new_name)}" if new_name else ""
     return (
         "$secpw = ConvertTo-SecureString "
         f"$InfraOpsSecrets[{ps_single_quote(DOMAIN_JOIN_PASSWORD_SECRET)}] -AsPlainText -Force\n"
         f"$InfraOpsSecrets.Remove({ps_single_quote(DOMAIN_JOIN_PASSWORD_SECRET)})\n"
         "$cred = New-Object System.Management.Automation.PSCredential("
         f"{ps_single_quote(username)}, $secpw)\n"
-        f"Add-Computer -DomainName {ps_single_quote(domain)} "
-        f"-NewName {ps_single_quote(new_name)}{ou_clause} -Credential $cred "
+        f"Add-Computer -DomainName {ps_single_quote(domain)}"
+        f"{rename_clause}{ou_clause} -Credential $cred "
         "-Force -ErrorAction Stop | Out-Null\n'DOMAIN-JOINED'"
     )
 
@@ -333,6 +402,9 @@ async def effective_timeout_seconds(ctx: JobRunContext, stage_key: str) -> float
                 and ctx.request.guest.iso_id is not None
             ):
                 return max(configured, 7200.0)
+            if stage_key == "wait_for_guest_os" and ctx.request.source_type == VmSourceType.TEMPLATE:
+                # First boot of a generalized package: specialize, reboot, OOBE.
+                return max(configured, 3600.0)
             return configured
     return float(mapped)
 
@@ -752,15 +824,22 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
 async def stage_configure_hardware(ctx: JobRunContext) -> StageOutcome:
     vm_id = _require_vm_id(ctx)
     hw = ctx.request.hardware
+    # An installed package boots only with the firmware it was installed
+    # under; switching BIOS/EFI would leave it unbootable.
+    from_package = ctx.request.source_type == VmSourceType.TEMPLATE
     await ctx.vmware.configure_hardware(
         ctx.target, vm_id,
         cpu=hw.cpu, memory_mb=hw.memory_mb, disks=list(hw.disks),
-        firmware=hw.firmware, secure_boot=hw.secure_boot,
+        firmware=None if from_package else hw.firmware, secure_boot=hw.secure_boot,
     )
     disk_summary = ", ".join(f"{d.size_gb} GB {d.provisioning.value}" for d in hw.disks)
+    firmware = (
+        "inherited from the package"
+        if from_package
+        else f"{hw.firmware.value}{' + Secure Boot' if hw.secure_boot else ''}"
+    )
     return StageOutcome(
-        output=f"CPU: {hw.cpu} vCPU\nMemory: {hw.memory_mb} MB\nFirmware: {hw.firmware.value}"
-               f"{'' if not hw.secure_boot else ' + Secure Boot'}\nDisks: {disk_summary}",
+        output=f"CPU: {hw.cpu} vCPU\nMemory: {hw.memory_mb} MB\nFirmware: {firmware}\nDisks: {disk_summary}",
     )
 
 
@@ -778,31 +857,80 @@ async def stage_attach_network_adapter(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
-    if (
-        ctx.request.source_type != VmSourceType.BLANK
-        or ctx.request.guest.iso_id is None
-    ):
+    request = ctx.request
+    if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
         return StageOutcome(
             status="NOT_APPLICABLE",
-            output="Unattended answer media applies only to a blank VM with a selected ISO.",
+            output="No operating system is installed on a blank VM without an ISO.",
         )
     vm_id = _require_vm_id(ctx)
+    guest = request.guest
+    if request.source_type == VmSourceType.TEMPLATE:
+        info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
+        if info is None or not info.configured_for_windows:
+            configured = (info.configured_guest_id if info else None) or "unknown"
+            return StageOutcome(
+                status="NOT_APPLICABLE",
+                output=(
+                    f"The package is configured for guest OS '{configured}', not Windows, so no "
+                    "Windows answer media was attached."
+                ),
+            )
+        if info.power_state == "poweredOn":
+            return StageOutcome(
+                status="SKIPPED",
+                output="The VM is already running, so its first boot has already happened.",
+            )
+
     credentials = await ctx.resolve_guest_credentials()
-    guest = ctx.request.guest
-    xml = build_autounattend_xml(
-        WindowsUnattendSpec(
-            computer_name=ctx.request.effective_computer_name,
-            administrator_username=credentials.username,
-            administrator_password=credentials.password,
-            image_index=guest.windows_image_index,
-            locale=guest.installation_locale,
-            input_locale=guest.input_locale,
-            timezone=guest.timezone or "UTC",
-            firmware=ctx.request.hardware.firmware.value,
-        )
-    )
+    try:
+        if request.source_type == VmSourceType.TEMPLATE:
+            xml = build_first_boot_unattend_xml(
+                WindowsFirstBootSpec(
+                    computer_name=request.effective_computer_name,
+                    administrator_username=credentials.username,
+                    administrator_password=credentials.password,
+                    locale=guest.installation_locale,
+                    input_locale=guest.input_locale,
+                    timezone=guest.timezone or "UTC",
+                )
+            )
+            summary = (
+                "Temporary first-boot answer media attached. If the package is generalized "
+                "(sysprepped), Windows Setup applies the computer name, time zone, locale, "
+                "keyboard layout and administrator password and skips every OOBE page. A package "
+                "that is not generalized ignores it."
+            )
+        else:
+            xml = build_autounattend_xml(
+                WindowsUnattendSpec(
+                    computer_name=request.effective_computer_name,
+                    administrator_username=credentials.username,
+                    administrator_password=credentials.password,
+                    image_index=guest.windows_image_index,
+                    locale=guest.installation_locale,
+                    input_locale=guest.input_locale,
+                    timezone=guest.timezone or "UTC",
+                    firmware=request.hardware.firmware.value,
+                )
+            )
+            summary = (
+                "Temporary answer media attached. Windows Setup will configure the selected "
+                "administrator, locale, keyboard layout and computer name without OOBE prompts."
+            )
+    except ValueError as exc:
+        raise InfraOperationError(
+            "The provisioning credential cannot be used by Windows Setup.",
+            reason=str(exc),
+            recommended_action=(
+                "Select a credential whose username is a local account such as 'Administrator' "
+                "(no domain prefix), then submit a new request."
+            ),
+            retryable=False,
+        ) from exc
     # The media contains a plaintext Windows Setup password by necessity. It is
-    # held only in memory here, uploaded directly, and removed after Tools starts.
+    # held only in memory here, uploaded directly, and removed once Windows
+    # Setup has finished (or when the job stops earlier).
     media = build_unattend_floppy(xml)
     datastore_id = next(
         (disk.datastore_id for disk in ctx.request.hardware.disks if disk.datastore_id),
@@ -816,13 +944,7 @@ async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
         file_name=f"infraops-{ctx.job_id}.flp",
         content=media,
     )
-    return StageOutcome(
-        output=(
-            "Temporary answer media attached. Windows Setup will configure the selected "
-            "administrator, locale, keyboard layout and computer name without OOBE prompts."
-        ),
-        artifacts={"datastore_path": ref.datastore_path},
-    )
+    return StageOutcome(output=summary, artifacts={"datastore_path": ref.datastore_path})
 
 
 async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
@@ -888,6 +1010,8 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
         )
 
     timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
+    # Finish with a clear error before the pipeline's own stage timeout fires.
+    deadline = asyncio.get_running_loop().time() + max(60.0, timeout - 30.0)
     # An OVF/OVA deploy result proves only that the vCenter resource exists.
     # Wait for an existing heartbeat and never mount/reinstall Tools silently.
     try:
@@ -923,9 +1047,128 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
             ),
             artifacts={"required_action": "SELECT_SUPPORTED_WINDOWS_PACKAGE"},
         )
+    # A VMware Tools heartbeat also appears during specialize and OOBE of a
+    # generalized package, so it does not prove the OS is ready.
+    ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
+    state, probes = await wait_for_windows_setup(ctx, deadline)
     ctx.job.guest_os_status = GuestOsStatus.READY.value
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
-    return StageOutcome(output="Prepared OVF/OVA guest is booted and reporting through VMware Tools.")
+    desired = ctx.request.effective_computer_name
+    if state.computer_name.casefold() == desired.casefold():
+        naming = f"Computer name '{state.computer_name}' is already applied."
+    else:
+        naming = (
+            f"Windows reports computer name '{state.computer_name}'; '{desired}' is applied by the "
+            "hostname/domain stages (the package was not generalized, so it kept its own name)."
+        )
+    return StageOutcome(
+        output=(
+            "Windows Setup has finished and the provisioning account can sign in through VMware "
+            f"Tools ({probes} probe(s)).\n{naming}\n{state.detail}"
+        ),
+        artifacts={
+            "windows_setup": {
+                "image_state": state.image_state,
+                "computer_name": state.computer_name,
+            }
+        },
+    )
+
+
+_SETUP_POLL_SECONDS = 10.0
+# Signing in is attempted sparingly while Windows Setup may not have applied
+# the provisioning password yet, so failed logons stay far below lockout
+# thresholds. Once Tools reports the requested computer name (specialize
+# done) OOBE is only moments from applying the password.
+_SETUP_PROBE_SECONDS_NAME_APPLIED = 15.0
+_SETUP_PROBE_SECONDS_OTHERWISE = 60.0
+_SETUP_MAX_REJECTED_LOGINS = 12
+
+
+async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[WindowsSetupState, int]:
+    """Wait until Windows reports Setup (specialize + OOBE) complete.
+
+    Readiness is proven inside the guest: the provisioning account signs in
+    through VMware Tools and the registry shows no Setup or OOBE in progress.
+    """
+    loop = asyncio.get_running_loop()
+    desired = ctx.request.effective_computer_name.casefold()
+    credentials = await ctx.resolve_guest_credentials()
+    next_probe = loop.time()
+    probes = 0
+    rejected = 0
+    last = "VMware Tools has not reported yet."
+    while loop.time() < deadline:
+        info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
+        tools_running = info is not None and info.guest_operations_ready and (
+            info.tools_running_status == "guestToolsRunning"
+            or info.tools_status in ("toolsOk", "toolsOld")
+        )
+        if not tools_running:
+            last = "VMware Tools is not running (Windows Setup restarts the guest during setup)."
+        elif loop.time() >= next_probe:
+            reported = (info.guest_host_name or "").split(".", 1)[0].casefold()
+            name_applied = bool(desired) and reported == desired
+            next_probe = loop.time() + (
+                _SETUP_PROBE_SECONDS_NAME_APPLIED if name_applied else _SETUP_PROBE_SECONDS_OTHERWISE
+            )
+            probes += 1
+            try:
+                result = await ctx.guest_ops.run_powershell(
+                    ctx.target, ctx.vm_name, credentials, build_windows_setup_state_script(), 60
+                )
+            except GuestCredentialsRejected as exc:
+                rejected += 1
+                last = (
+                    "Windows rejected the provisioning account (expected until OOBE applies its "
+                    f"password; {rejected} rejection(s))."
+                )
+                if rejected >= _SETUP_MAX_REJECTED_LOGINS:
+                    raise InfraOperationError(
+                        "Windows keeps rejecting the provisioning account.",
+                        reason=(
+                            f"{rejected} sign-in attempts through VMware Tools were rejected while "
+                            "waiting for Windows Setup to finish."
+                        ),
+                        recommended_action=(
+                            "For a generalized (sysprepped) package, check that it has no pending "
+                            "answer file of its own in C:\\Windows\\Panther, which overrides the "
+                            "InfraOps media. For a package that is not generalized, the selected "
+                            "credential must match its local administrator password. Correct it, "
+                            "then retry this stage."
+                        ),
+                        technical_detail=exc.technical_detail,
+                        retryable=True,
+                    ) from exc
+            except InfraOperationError as exc:
+                last = exc.human_message
+            else:
+                if result.succeeded:
+                    try:
+                        state = parse_windows_setup_state(result.stdout)
+                    except ValueError as exc:
+                        last = str(exc)
+                    else:
+                        if state.complete:
+                            return state, probes
+                        last = f"Windows Setup is still running ({state.detail})."
+                else:
+                    last = f"The Windows Setup probe exited with code {result.exit_code}."
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(_SETUP_POLL_SECONDS, remaining))
+    raise InfraOperationError(
+        "Windows did not finish its first-boot setup in time.",
+        reason=f"Last observation: {last}",
+        recommended_action=(
+            "Open the VM console in vCenter. If Windows shows an OOBE page, the package's own "
+            "answer file or an unanswered page (such as a product key prompt) stopped Setup; "
+            "fix the package and redeploy. If Setup is still progressing, retry this stage."
+        ),
+        technical_detail=f"probes={probes} rejected_logins={rejected}",
+        retryable=True,
+    )
 
 
 async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
@@ -1047,7 +1290,11 @@ ANSWER_FILE_SCRUB_SCRIPT = (
 
 
 def _uses_unattended_media(ctx: JobRunContext) -> bool:
-    return ctx.request.source_type == VmSourceType.BLANK and ctx.request.guest.iso_id is not None
+    if ctx.request.source_type == VmSourceType.BLANK:
+        return ctx.request.guest.iso_id is not None
+    # Templates receive first-boot media only when configured for Windows.
+    prepare = ctx.steps_by_key.get("prepare_unattended_install")
+    return bool(prepare is not None and (prepare.artifacts or {}).get("datastore_path"))
 
 
 async def release_unattended_media(ctx: JobRunContext, *, reason: str) -> bool:
@@ -1127,6 +1374,8 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
         lines.append("Temporary unattended answer media was detached and deleted.")
     else:
         lines.append("No temporary unattended media was recorded.")
+    if prepare is not None and datastore_path:
+        prepare.artifacts = {**(prepare.artifacts or {}), "media_removed": True}
 
     # Windows Setup caches the answer file inside the guest. Remove every copy
     # and any AutoLogon residue so the plaintext password does not survive.
@@ -1409,7 +1658,9 @@ async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
     username = await ctx.secrets.get_secret(f"{base}/username")
     password = await ctx.secrets.get_secret(f"{base}/password")
 
-    script = build_domain_join_script(join.domain, username, join.ou, desired_name)
+    # A first-boot answer file has usually set the name already.
+    rename_to = None if observed.name.casefold() == desired_name.casefold() else desired_name
+    script = build_domain_join_script(join.domain, username, join.ou, rename_to)
     timeout = await effective_timeout_seconds(ctx, "join_domain")
     result = await ctx.guest_ops.run_powershell(
         ctx.target,

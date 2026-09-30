@@ -60,13 +60,14 @@ Nothing is ever interpreted by `cmd.exe` (`app/services/guest/scripts.py`):
 | Stage | Mechanism |
 |---|---|
 | Windows installation | `Autounattend.xml` on a temporary virtual floppy configures image index, locale, keyboard, time zone, computer name and local administrator; the selected Windows ISO remains the only datastore-backed CD-ROM |
+| First boot of a sysprepped package | `Autounattend.xml` (specialize + oobeSystem only) on a temporary virtual floppy sets computer name, time zone, locale, keyboard and the local administrator password and skips every OOBE page; InfraOps then waits until `HKLM\SYSTEM\Setup` reports Setup/OOBE finished (see [vm-deployment-lifecycle.md](vm-deployment-lifecycle.md)) |
 | Static IP / gateway / DNS | Right before applying: ICMP + vCenter-inventory re-check that the address is still free (the VM's own address is ignored on retry). Then an idempotent PowerShell script: DHCP disabled, existing IPv4 addresses and default route removed, `New-NetIPAddress`, `Set-DnsClientServerAddress` (adapter auto-detected, `ErrorActionPreference=Stop`) |
 | DHCP mode | `Set-NetIPInterface -Dhcp Enabled` + DNS reset |
 | Gateway/DNS validation | `Test-Connection` to gateway, `Resolve-DnsName` via first DNS server |
 | Hostname | `$env:COMPUTERNAME` probe then `Rename-Computer -Force` |
-| Domain join | `Add-Computer` with a PSCredential whose password is read from a self-deleting secret file (never in the script text); optional OU path (quoted literal, so values such as `OU=R&D` are safe) |
+| Domain join | `Add-Computer` with a PSCredential whose password is read from a self-deleting secret file (never in the script text); optional OU path (quoted literal, so values such as `OU=R&D` are safe); `-NewName` only when Windows does not already have the requested name (Add-Computer skips the join when it equals the current name) |
 | Reboot | `shutdown.exe /r /t 10`, followed by availability probes (`hostname.exe`) that tolerate Tools being unavailable while the guest restarts |
-| Answer-file cleanup | blank+ISO only: after the floppy is removed, cached copies under `C:\Windows\Panther` / `Sysprep` and AutoLogon residue are deleted |
+| Answer-file cleanup | blank+ISO and Windows packages: after the floppy is removed, cached copies under `C:\Windows\Panther` / `Sysprep` and AutoLogon residue are deleted |
 | Certificates | see below |
 | Applications | detection probes + controlled installers |
 

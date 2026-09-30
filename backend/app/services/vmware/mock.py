@@ -110,6 +110,8 @@ class _MockVM:
         self.guest_state: str | None = None
         self.guest_operations_ready = False
         self.guest_family: str | None = None
+        # config.guestId as an OVF deployment would set it.
+        self.configured_guest_id = "windows2019srv_64Guest"
         self.has_guest_os = bool(template_name)
         self.ip_address: str | None = None
         self.hostname: str | None = None
@@ -448,6 +450,8 @@ class MockVMwareService(VMwareService):
             guest_operations_ready=vm.guest_operations_ready,
             guest_family=vm.guest_family,
             ip_addresses=ips,
+            guest_host_name=vm.hostname or (vm.name.upper() if vm.guest_operations_ready else None),
+            configured_guest_id=vm.configured_guest_id,
         )
 
     async def get_used_ips(self, target: VCenterTarget) -> dict[str, str]:
@@ -688,7 +692,7 @@ class MockVMwareService(VMwareService):
         cpu: int,
         memory_mb: int,
         disks: list,
-        firmware: FirmwareType,
+        firmware: FirmwareType | None,
         secure_boot: bool,
     ) -> None:
         await asyncio.sleep(_LATENCY_RECONFIG)
@@ -697,7 +701,7 @@ class MockVMwareService(VMwareService):
         vm.memory_mb = memory_mb
         vm.disks_gb = [disk.size_gb for disk in disks]
         log.info("MOCK hardware configured: %s cpu=%s mem=%sMB firmware=%s secure_boot=%s",
-                 vm.name, cpu, memory_mb, firmware.value, secure_boot)
+                 vm.name, cpu, memory_mb, firmware.value if firmware else "unchanged", secure_boot)
 
     async def attach_network(
         self,

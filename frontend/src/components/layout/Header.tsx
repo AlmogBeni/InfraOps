@@ -12,6 +12,7 @@ import {
 import { NavLink, useLocation } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
+import { NotificationCenter } from '@/features/notifications/NotificationCenter'
 import { useAuth } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 
@@ -113,6 +114,7 @@ export function Header() {
           </details>
         )}
 
+        <NotificationCenter />
         <div className="h-7 w-px bg-white/10" />
         <div className="flex shrink-0 items-center gap-2">
           <div className="hidden text-right md:block">

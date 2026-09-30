@@ -23,7 +23,9 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
         <header>
           <p className="console-kicker">Guest operating system</p>
           <h2>Windows identity</h2>
-          <p>{data.source_type === 'blank' ? 'Windows is installed unattended from the selected ISO.' : 'Windows is inherited from the selected OVF/OVA package.'}</p>
+          <p>{data.source_type === 'blank'
+            ? 'Windows is installed unattended from the selected ISO.'
+            : 'Windows is inherited from the selected OVF/OVA package. A sysprepped package completes Windows Setup unattended on first boot.'}</p>
         </header>
       )}
 
@@ -71,18 +73,22 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
           <FormRow label="Windows time zone" htmlFor="timezone" hint="Optional Windows time-zone identifier used by unattended setup.">
             <Input id="timezone" placeholder="Israel Standard Time" value={data.timezone} onChange={(event) => wizard.update({ timezone: event.target.value })} />
           </FormRow>
+          <FormRow
+            label="Windows language / locale"
+            htmlFor="installation-locale"
+            hint={data.source_type === 'blank'
+              ? 'Language tag available in the selected ISO, such as en-US.'
+              : 'Language tag installed in the package image, such as en-US. Applied during first-boot Windows Setup.'}
+          >
+            <Input id="installation-locale" value={data.installation_locale} onChange={(event) => wizard.update({ installation_locale: event.target.value })} />
+          </FormRow>
+          <FormRow label="Keyboard input locale" htmlFor="input-locale" hint="Windows input locale, for example 0409:00000409.">
+            <Input id="input-locale" className="font-mono" value={data.input_locale} onChange={(event) => wizard.update({ input_locale: event.target.value })} />
+          </FormRow>
           {data.source_type === 'blank' && (
-            <>
-              <FormRow label="Windows language / locale" htmlFor="installation-locale" hint="Language tag available in the selected ISO, such as en-US.">
-                <Input id="installation-locale" value={data.installation_locale} onChange={(event) => wizard.update({ installation_locale: event.target.value })} />
-              </FormRow>
-              <FormRow label="Keyboard input locale" htmlFor="input-locale" hint="Windows input locale, for example 0409:00000409.">
-                <Input id="input-locale" className="font-mono" value={data.input_locale} onChange={(event) => wizard.update({ input_locale: event.target.value })} />
-              </FormRow>
-              <FormRow label="Windows image index" htmlFor="windows-image-index" hint="Edition index inside install.wim or install.esd.">
-                <Input id="windows-image-index" type="number" min={1} max={99} value={data.windows_image_index} onChange={(event) => wizard.update({ windows_image_index: Number(event.target.value) || 1 })} />
-              </FormRow>
-            </>
+            <FormRow label="Windows image index" htmlFor="windows-image-index" hint="Edition index inside install.wim or install.esd.">
+              <Input id="windows-image-index" type="number" min={1} max={99} value={data.windows_image_index} onChange={(event) => wizard.update({ windows_image_index: Number(event.target.value) || 1 })} />
+            </FormRow>
           )}
         </div>
       </div>

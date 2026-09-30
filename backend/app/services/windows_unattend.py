@@ -90,9 +90,8 @@ def _add_disk_configuration(setup: ET.Element, firmware: str) -> int:
     return windows_partition
 
 
-def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
-    """Return an amd64 Windows answer file. ElementTree performs XML escaping."""
-    raw_username = spec.administrator_username.strip()
+def _local_account_name(username: str) -> str:
+    raw_username = username.strip()
     qualifier, separator, local_username = raw_username.rpartition("\\")
     if not separator:
         local_username = raw_username
@@ -106,9 +105,33 @@ def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
         raise ValueError(
             "The Windows provisioning credential username must be a valid local account name."
         )
+    return local_username
+
+
+def _add_user_accounts(shell: ET.Element, local_username: str, password: str) -> None:
+    accounts = ET.SubElement(shell, f"{{{UNATTEND_NS}}}UserAccounts")
+    if local_username.casefold() == "administrator":
+        admin_password = ET.SubElement(accounts, f"{{{UNATTEND_NS}}}AdministratorPassword")
+        _text(admin_password, "Value", password)
+        _text(admin_password, "PlainText", "true")
+        return
+    local_accounts = ET.SubElement(accounts, f"{{{UNATTEND_NS}}}LocalAccounts")
+    account = ET.SubElement(local_accounts, f"{{{UNATTEND_NS}}}LocalAccount")
+    account.set(f"{{{WCM_NS}}}action", "add")
+    _text(account, "Name", local_username)
+    _text(account, "DisplayName", local_username)
+    _text(account, "Group", "Administrators")
+    account_password = ET.SubElement(account, f"{{{UNATTEND_NS}}}Password")
+    _text(account_password, "Value", password)
+    _text(account_password, "PlainText", "true")
+
+
+def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
+    """Return an amd64 Windows answer file. ElementTree performs XML escaping."""
+    local_username = _local_account_name(spec.administrator_username)
     root = ET.Element(f"{{{UNATTEND_NS}}}unattend")
 
-    windows_pe = ET.SubElement(root, f"{{{UNATTEND_NS}}}settings", {"pass": "windowsPE"})
+    windows_pe =ET.SubElement(root, f"{{{UNATTEND_NS}}}settings", {"pass": "windowsPE"})
     intl = _component(windows_pe, "Microsoft-Windows-International-Core-WinPE")
     setup_ui = ET.SubElement(intl, f"{{{UNATTEND_NS}}}SetupUILanguage")
     _text(setup_ui, "UILanguage", spec.locale)
@@ -151,21 +174,7 @@ def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
     _text(oobe_settings, "HideWirelessSetupInOOBE", "true")
     _text(oobe_settings, "ProtectYourPC", "3")
 
-    accounts = ET.SubElement(shell, f"{{{UNATTEND_NS}}}UserAccounts")
-    if local_username.casefold() == "administrator":
-        admin_password = ET.SubElement(accounts, f"{{{UNATTEND_NS}}}AdministratorPassword")
-        _text(admin_password, "Value", spec.administrator_password)
-        _text(admin_password, "PlainText", "true")
-    else:
-        local_accounts = ET.SubElement(accounts, f"{{{UNATTEND_NS}}}LocalAccounts")
-        account = ET.SubElement(local_accounts, f"{{{UNATTEND_NS}}}LocalAccount")
-        account.set(f"{{{WCM_NS}}}action", "add")
-        _text(account, "Name", local_username)
-        _text(account, "DisplayName", local_username)
-        _text(account, "Group", "Administrators")
-        password = ET.SubElement(account, f"{{{UNATTEND_NS}}}Password")
-        _text(password, "Value", spec.administrator_password)
-        _text(password, "PlainText", "true")
+    _add_user_accounts(shell, local_username, spec.administrator_password)
 
     autologon = ET.SubElement(shell, f"{{{UNATTEND_NS}}}AutoLogon")
     _text(autologon, "Enabled", "true")
@@ -193,6 +202,66 @@ def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
         "Start-Sleep -Seconds 15 } while ((Get-Date) -lt $limit); exit 1\""
     )
     _text(command, "CommandLine", tools_script)
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+@dataclass(frozen=True)
+class WindowsFirstBootSpec:
+    """Settings for the first boot of a generalized (sysprepped) Windows image."""
+
+    computer_name: str
+    administrator_username: str
+    administrator_password: str
+    locale: str = "en-US"
+    input_locale: str = "0409:00000409"
+    timezone: str = "UTC"
+
+
+def build_first_boot_unattend_xml(spec: WindowsFirstBootSpec) -> bytes:
+    """Answer file that completes specialize and OOBE of a generalized image.
+
+    Windows Setup searches the root of removable media for ``Autounattend.xml``
+    at the start of each configuration pass, including the first boot after
+    ``sysprep /generalize``. The file has no windowsPE pass (no disk layout),
+    no AutoLogon and no logon commands: VMware Tools guest operations need no
+    interactive session. An image that is not generalized never runs these
+    passes and ignores the media.
+    """
+    local_username = _local_account_name(spec.administrator_username)
+    root = ET.Element(f"{{{UNATTEND_NS}}}unattend")
+
+    specialize = ET.SubElement(root, f"{{{UNATTEND_NS}}}settings", {"pass": "specialize"})
+    shell_specialize = _component(specialize, "Microsoft-Windows-Shell-Setup")
+    _text(shell_specialize, "ComputerName", spec.computer_name)
+    _text(shell_specialize, "TimeZone", spec.timezone)
+
+    oobe = ET.SubElement(root, f"{{{UNATTEND_NS}}}settings", {"pass": "oobeSystem"})
+    # Answers the region, app language and keyboard page ("Hi there").
+    intl = _component(oobe, "Microsoft-Windows-International-Core")
+    for key, value in (
+        ("InputLocale", spec.input_locale),
+        ("SystemLocale", spec.locale),
+        ("UILanguage", spec.locale),
+        ("UserLocale", spec.locale),
+    ):
+        _text(intl, key, value)
+
+    shell = _component(oobe, "Microsoft-Windows-Shell-Setup")
+    oobe_settings = ET.SubElement(shell, f"{{{UNATTEND_NS}}}OOBE")
+    for key, value in (
+        ("HideEULAPage", "true"),
+        ("HideLocalAccountScreen", "true"),
+        ("HideOEMRegistrationScreen", "true"),
+        ("HideOnlineAccountScreens", "true"),
+        ("HideWirelessSetupInOOBE", "true"),
+        ("ProtectYourPC", "3"),
+    ):
+        _text(oobe_settings, key, value)
+    _text(shell, "TimeZone", spec.timezone)
+    # Answers the administrator password page and gives InfraOps a known
+    # account for VMware Tools guest operations once OOBE has finished.
+    _add_user_accounts(shell, local_username, spec.administrator_password)
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 

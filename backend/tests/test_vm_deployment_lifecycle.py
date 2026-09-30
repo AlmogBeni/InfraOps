@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.errors import InfraOperationError
 from app.models.jobs import (
     GuestOsStatus,
     GuestProvisioningStatus,
@@ -16,6 +18,7 @@ from app.models.jobs import (
     VMwareToolsStatus,
 )
 from app.schemas.provisioning import ProvisioningRequest
+from app.services.guest.base import CommandResult, GuestCredentialsRejected
 from app.services.vmware.base import PowerStateInfo, TemporaryMediaRef, VmOwnership, VmRef
 from app.workers.stages import (
     stage_clone_vm,
@@ -141,15 +144,59 @@ async def test_blank_iso_reports_busy_cdrom_before_tools_installation() -> None:
     vmware.wait_for_tools.assert_not_awaited()
 
 
+def _floppy_answer_file(content: bytes) -> str:
+    start = content.index(b"<?xml")
+    end = content.index(b"</unattend>") + len(b"</unattend>")
+    return content[start:end].decode("utf-8")
+
+
 @pytest.mark.asyncio
-async def test_template_never_receives_blank_unattended_media() -> None:
-    vmware = SimpleNamespace(attach_temporary_floppy=AsyncMock())
+async def test_windows_template_gets_first_boot_media_that_never_touches_disks() -> None:
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(
+            return_value=PowerStateInfo(
+                power_state="poweredOff", configured_guest_id="windows2019srv_64Guest"
+            )
+        ),
+        attach_temporary_floppy=AsyncMock(
+            return_value=TemporaryMediaRef(datastore_path="[datastore] infraops-unattend/a.flp")
+        ),
+    )
     ctx = context(request_for("template"), vmware)
+    ctx.job_id = uuid.uuid4()
+    ctx.resolve_guest_credentials = AsyncMock(
+        return_value=SimpleNamespace(username="Administrator", password="secret")
+    )
+
+    outcome = await stage_prepare_unattended_install(ctx)
+
+    assert outcome.status == "SUCCEEDED"
+    assert outcome.artifacts == {"datastore_path": "[datastore] infraops-unattend/a.flp"}
+    xml = _floppy_answer_file(vmware.attach_temporary_floppy.await_args.kwargs["content"])
+    assert 'pass="specialize"' in xml and 'pass="oobeSystem"' in xml
+    assert f"<ComputerName>{ctx.request.effective_computer_name}</ComputerName>" in xml
+    assert "<HideEULAPage>true</HideEULAPage>" in xml
+    # A deployed image must never see Setup disk layout or an auto-logon.
+    for forbidden in ('pass="windowsPE"', "WillWipeDisk", "DiskConfiguration", "AutoLogon"):
+        assert forbidden not in xml
+
+
+@pytest.mark.asyncio
+async def test_non_windows_template_gets_no_answer_media() -> None:
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(
+            return_value=PowerStateInfo(power_state="poweredOff", configured_guest_id="ubuntu64Guest")
+        ),
+        attach_temporary_floppy=AsyncMock(),
+    )
+    ctx = context(request_for("template"), vmware)
+    ctx.resolve_guest_credentials = AsyncMock()
 
     outcome = await stage_prepare_unattended_install(ctx)
 
     assert outcome.status == "NOT_APPLICABLE"
     vmware.attach_temporary_floppy.assert_not_awaited()
+    ctx.resolve_guest_credentials.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -175,25 +222,134 @@ async def test_blank_iso_uses_answer_floppy_not_a_second_datastore_iso() -> None
     assert len(call.kwargs["content"]) == 1_474_560
 
 
+def _tools_running(host_name: str | None = None) -> PowerStateInfo:
+    return PowerStateInfo(
+        power_state="poweredOn",
+        tools_status="toolsOk",
+        tools_running_status="guestToolsRunning",
+        guest_operations_ready=True,
+        guest_family="windowsGuest",
+        guest_host_name=host_name,
+    )
+
+
+def _setup_state(
+    *, setup: int = 0, oobe: int = 0, image: str = "IMAGE_STATE_COMPLETE", name: str = "SERVER-PROD-042"
+) -> CommandResult:
+    payload = {
+        "ImageState": image,
+        "SystemSetupInProgress": setup,
+        "OOBEInProgress": oobe,
+        "ComputerName": name,
+    }
+    return CommandResult(exit_code=0, stdout=json.dumps(payload), stderr="", duration_seconds=0.1)
+
+
+def _rejected() -> GuestCredentialsRejected:
+    return GuestCredentialsRejected(
+        "The guest operating system rejected the automation credentials.",
+        reason="Invalid username or password for the local administrator account.",
+        recommended_action="n/a",
+    )
+
+
+@pytest.fixture
+def fast_setup_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import stages
+
+    for name in (
+        "_SETUP_POLL_SECONDS",
+        "_SETUP_PROBE_SECONDS_NAME_APPLIED",
+        "_SETUP_PROBE_SECONDS_OTHERWISE",
+    ):
+        monkeypatch.setattr(stages, name, 0.0)
+
+
+def template_setup_context(vmware, probes: list) -> SimpleNamespace:
+    ctx = context(request_for("template"), vmware)
+    ctx.resolve_guest_credentials = AsyncMock(
+        return_value=SimpleNamespace(username="Administrator", password="secret")
+    )
+    ctx.guest_ops = SimpleNamespace(run_powershell=AsyncMock(side_effect=probes))
+    return ctx
+
+
 @pytest.mark.asyncio
-async def test_template_wait_observes_existing_tools_without_mounting() -> None:
+async def test_template_wait_observes_existing_tools_without_mounting(fast_setup_polling) -> None:
     vmware = SimpleNamespace(
         wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(
-            return_value=PowerStateInfo(
-                power_state="poweredOn",
-                tools_status="toolsOk",
-                guest_family="windowsGuest",
-            )
-        ),
+        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
     )
-    ctx = context(request_for("template"), vmware)
+    ctx = template_setup_context(vmware, [_setup_state()])
 
     outcome = await stage_wait_for_guest_os(ctx)
 
     assert outcome.status == "SUCCEEDED"
     assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
     assert ctx.job.guest_os_status == GuestOsStatus.READY.value
+    assert "already applied" in outcome.output
+
+
+@pytest.mark.asyncio
+async def test_tools_heartbeat_during_oobe_is_not_os_readiness(fast_setup_polling) -> None:
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(),
+        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
+    )
+    in_oobe = _setup_state(setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE")
+    ctx = template_setup_context(vmware, [_rejected(), in_oobe, _setup_state()])
+
+    outcome = await stage_wait_for_guest_os(ctx)
+
+    assert outcome.status == "SUCCEEDED"
+    assert ctx.guest_ops.run_powershell.await_count == 3
+    assert outcome.artifacts["windows_setup"]["image_state"] == "IMAGE_STATE_COMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_no_guest_sign_in_is_attempted_while_tools_is_down(fast_setup_polling) -> None:
+    import asyncio
+
+    from app.workers.stages import wait_for_windows_setup
+
+    restarting = PowerStateInfo(power_state="poweredOn", tools_running_status="guestToolsNotRunning")
+    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=restarting))
+    ctx = template_setup_context(vmware, [])
+
+    with pytest.raises(InfraOperationError, match="did not finish its first-boot setup") as caught:
+        await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 0.05)
+
+    ctx.guest_ops.run_powershell.assert_not_awaited()
+    assert "VMware Tools is not running" in caught.value.reason
+
+
+@pytest.mark.asyncio
+async def test_persistent_credential_rejection_stops_the_wait(fast_setup_polling) -> None:
+    import asyncio
+
+    from app.workers.stages import _SETUP_MAX_REJECTED_LOGINS, wait_for_windows_setup
+
+    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-NAME")))
+    ctx = template_setup_context(vmware, [_rejected() for _ in range(_SETUP_MAX_REJECTED_LOGINS)])
+
+    with pytest.raises(InfraOperationError, match="keeps rejecting"):
+        await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 60)
+
+    assert ctx.guest_ops.run_powershell.await_count == _SETUP_MAX_REJECTED_LOGINS
+
+
+def test_windows_setup_state_parsing() -> None:
+    from app.workers.stages import parse_windows_setup_state
+
+    assert parse_windows_setup_state(_setup_state().stdout).complete
+    assert not parse_windows_setup_state(_setup_state(oobe=1).stdout).complete
+    assert not parse_windows_setup_state(
+        _setup_state(image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE").stdout
+    ).complete
+    # Releases that do not record ImageState rely on the in-progress flags.
+    assert parse_windows_setup_state(_setup_state(image="").stdout).complete
+    with pytest.raises(ValueError):
+        parse_windows_setup_state("not json")
 
 
 @pytest.mark.asyncio
@@ -388,3 +544,48 @@ async def test_static_address_taken_after_submission_blocks_configuration(monkey
     # The VM's own address (retry) is never reported as a conflict.
     vmware.get_vm_info.return_value = PowerStateInfo(power_state="poweredOn", ip_addresses=["10.20.30.45"])
     await assert_static_address_unclaimed(ctx, "10.20.30.45", 24)
+
+
+@pytest.mark.asyncio
+async def test_package_keeps_its_own_firmware() -> None:
+    from app.workers.stages import stage_configure_hardware
+
+    vmware = SimpleNamespace(configure_hardware=AsyncMock())
+    template_ctx = context(request_for("template"), vmware)
+
+    outcome = await stage_configure_hardware(template_ctx)
+
+    # Switching BIOS/EFI under an installed Windows leaves it unbootable.
+    assert vmware.configure_hardware.await_args.kwargs["firmware"] is None
+    assert "inherited from the package" in outcome.output
+
+    blank_ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
+    await stage_configure_hardware(blank_ctx)
+    assert vmware.configure_hardware.await_args.kwargs["firmware"] is not None
+
+
+def test_vm_info_reports_tools_host_name_and_configured_guest_os() -> None:
+    from app.services.vmware.vsphere import VsphereVMwareService
+
+    vm = SimpleNamespace(
+        guest=SimpleNamespace(
+            net=None,
+            ipAddress=None,
+            toolsStatus="toolsOk",
+            toolsRunningStatus="guestToolsRunning",
+            toolsVersionStatus2="guestToolsCurrent",
+            guestState="running",
+            guestOperationsReady=True,
+            guestFamily="windowsGuest",
+            hostName="TEST3",
+        ),
+        runtime=SimpleNamespace(powerState="poweredOn", host=None),
+        config=SimpleNamespace(guestId="windows2019srv_64Guest"),
+    )
+
+    info = VsphereVMwareService._power_state_info(vm)
+
+    assert info.guest_host_name == "TEST3"
+    assert info.configured_guest_id == "windows2019srv_64Guest"
+    assert info.configured_for_windows
+    assert not PowerStateInfo(power_state="poweredOff", configured_guest_id="rhel9_64Guest").configured_for_windows

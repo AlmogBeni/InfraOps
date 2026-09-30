@@ -18,6 +18,7 @@ import type {
   JobOut,
   LogListResponse,
   NetworkOut,
+  NotificationListResponse,
   PlatformSettingsOut,
   PreflightReport,
   ProvisioningRequest,
@@ -172,6 +173,12 @@ export const api = {
   },
 
   sessionPolicy: () => request<SessionPolicy>('/auth/session-policy', { retryOn401: false }),
+
+  // In-app notifications (the signed-in user's own)
+  notifications: () => request<NotificationListResponse>('/notifications?limit=20'),
+  markNotificationRead: (id: string) =>
+    request<void>(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' }),
+  markAllNotificationsRead: () => request<void>('/notifications/read-all', { method: 'POST' }),
 
   // Infrastructure discovery
   vcenters: () => request<VCenterSummary[]>('/infrastructure/vcenters'),

@@ -334,7 +334,7 @@ export function ReviewStep() {
             ['VM name', displayValue(data.vm_name)],
             ['Description', displayValue(data.description)],
             ['Resources', `${data.cpu} vCPU · ${data.memory_gb} GB memory`],
-            ['Boot mode', data.firmware === 'EFI' ? `UEFI${data.secure_boot ? ' with Secure Boot' : ''}` : 'Legacy BIOS'],
+            ['Boot mode', data.source_type === 'template' ? 'Inherited from the package' : data.firmware === 'EFI' ? `UEFI${data.secure_boot ? ' with Secure Boot' : ''}` : 'Legacy BIOS'],
           ]}
         />
 

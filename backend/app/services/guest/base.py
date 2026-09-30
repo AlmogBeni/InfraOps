@@ -19,6 +19,10 @@ from app.services.guest.scripts import (
 from app.services.vmware.base import VCenterTarget
 
 
+class GuestCredentialsRejected(InfraOperationError):
+    """The guest refused the automation credentials (VMware Tools InvalidGuestLogin)."""
+
+
 @dataclass(frozen=True)
 class GuestCredentials:
     """Local/domain credentials used inside the guest OS.

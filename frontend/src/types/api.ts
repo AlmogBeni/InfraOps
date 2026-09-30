@@ -37,6 +37,23 @@ export interface SessionPolicy {
   idle_warning_seconds: number
 }
 
+export type NotificationKind = 'JOB_COMPLETED' | 'JOB_FAILED' | 'JOB_ACTION_REQUIRED'
+
+export interface NotificationOut {
+  id: string
+  kind: NotificationKind
+  title: string
+  message: string
+  job_id: string | null
+  created_at: string
+  read_at: string | null
+}
+
+export interface NotificationListResponse {
+  items: NotificationOut[]
+  unread_count: number
+}
+
 export interface TokenResponse {
   access_token: string
   token_type: string

@@ -194,6 +194,15 @@ class PowerStateInfo:
     guest_family: str | None = None
     ip_addresses: list[str] = field(default_factory=list)
     host_id: str | None = None
+    # Computer name as reported by VMware Tools (guest.hostName).
+    guest_host_name: str | None = None
+    # Guest OS the VM is configured for (config.guestId, e.g. from the OVF),
+    # known before the guest has ever booted.
+    configured_guest_id: str | None = None
+
+    @property
+    def configured_for_windows(self) -> bool:
+        return (self.configured_guest_id or "").casefold().startswith("win")
 
 
 class VMwareService(ABC):
@@ -274,9 +283,10 @@ class VMwareService(ABC):
         cpu: int,
         memory_mb: int,
         disks: list[DiskSpec],
-        firmware: FirmwareType,
+        firmware: FirmwareType | None,
         secure_boot: bool,
-    ) -> None: ...
+    ) -> None:
+        """``firmware=None`` keeps the VM's firmware and Secure Boot setting."""
 
     @abstractmethod
     async def attach_network(

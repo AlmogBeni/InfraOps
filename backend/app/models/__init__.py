@@ -22,6 +22,7 @@ from app.models.jobs import (
     StepStatus,
     VmProvisioningRequest,
 )
+from app.models.notifications import Notification, NotificationKind
 from app.models.platform import PlatformSetting, SecretReference
 from app.models.rbac import Role, UserRole
 from app.models.user import User
@@ -39,6 +40,8 @@ __all__ = [
     "InstallerType",
     "JobStatus",
     "JobType",
+    "Notification",
+    "NotificationKind",
     "PlatformSetting",
     "ProvisioningJob",
     "ProvisioningJobStep",

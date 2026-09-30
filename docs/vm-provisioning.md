@@ -54,12 +54,19 @@ inventory VM templates and Content Library VM templates are not returned or acce
 InfraOps validates the package and destination, calls the OVF filter/deploy REST operations,
 then reconciles hardware and vNIC placement.
 
+The package keeps its own firmware and Secure Boot setting. When the deployed VM is
+configured for a Windows guest, a temporary first-boot answer floppy (specialize and
+oobeSystem passes only, never a disk layout) is attached before the first power-on, so a
+sysprepped package completes Windows Setup and OOBE with no console interaction; a package
+that is not generalized ignores it.
+
 The successful deploy result proves only that a vCenter resource was created. InfraOps
-powers it on and waits for an existing Tools/open-vm-tools heartbeat and Guest Operations
-readiness. It does not attach blank-VM answer media, reinstall Tools, or silently upgrade an
-outdated installation. Missing/not-running Tools pauses for operator action; outdated but
-running Tools continues with a warning. A reported non-Windows guest is stopped before any
-Windows PowerShell guest action.
+powers it on, waits for an existing Tools/open-vm-tools heartbeat and Guest Operations
+readiness, then waits until Windows itself reports Setup and OOBE finished before any guest
+configuration. It does not reinstall Tools or silently upgrade an outdated installation.
+Missing/not-running Tools pauses for operator action; outdated but running Tools continues
+with a warning. A reported non-Windows guest is stopped before any Windows PowerShell guest
+action.
 
 ## State, errors, and retry
 
@@ -78,6 +85,16 @@ automatic rollback.
 The final-validation stage verifies the requested guest/network/identity state and creates
 a grouped checklist artifact. `COMPLETED` means requested provisioning and verification
 finished; it is never used for an empty-disk VM just because `CreateVM_Task` succeeded.
+
+## Notifications
+
+The engineer who submitted a job receives an in-app notification when it completes (only
+after final validation passed, with the verified FQDN/IP), fails, is interrupted, or needs
+attention. Notifications are stored per user (`/api/v1/notifications`; each user sees only
+their own) and appear in the header bell, as a pop-up in any open InfraOps tab (polled every
+20 seconds, shown once per browser) and as an unread count in the tab title. Browsers
+allow desktop pop-ups only on HTTPS pages; over plain HTTP the in-app pop-up and bell
+still work.
 
 See [vm-deployment-lifecycle.md](vm-deployment-lifecycle.md) for the audit and state diagrams,
 and [vmware-integration.md](vmware-integration.md) for adapter details and privileges.

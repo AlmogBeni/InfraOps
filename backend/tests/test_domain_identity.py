@@ -151,6 +151,45 @@ async def test_add_computer_receives_short_vm_name_never_fqdn(
 
 
 @pytest.mark.asyncio
+async def test_add_computer_omits_new_name_when_setup_already_applied_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A first-boot answer file sets the computer name during specialize. With
+    # -NewName equal to the current name, Add-Computer skips the join.
+    request = domain_join_request()
+    run_program = AsyncMock(
+        side_effect=[
+            identity_result(name="srvildc55", domain="WORKGROUP", part_of_domain=False),
+            CommandResult(exit_code=0, stdout="DOMAIN-JOINED", stderr="", duration_seconds=1.0),
+        ]
+    )
+
+    async def get_secret(name: str) -> str:
+        return "join-user" if name.endswith("/username") else "join-password"
+
+    monkeypatch.setattr(stages_module, "effective_timeout_seconds", AsyncMock(return_value=600.0))
+    ctx = SimpleNamespace(
+        request=request,
+        vm_name=request.vm.name,
+        secrets=SimpleNamespace(get_secret=get_secret),
+        resolve_guest_credentials=AsyncMock(
+            return_value=GuestCredentials(username="Administrator", password="local-password")
+        ),
+        guest_ops=SimpleNamespace(run_powershell=run_program),
+        target=object(),
+        reboot_required=False,
+    )
+
+    outcome = await stage_join_domain(ctx)
+
+    arguments = run_program.await_args_list[1].args[3]
+    assert "-DomainName 'corp.deltagalil.com'" in arguments
+    assert "-NewName" not in arguments
+    assert outcome.artifacts["computer_name"] == "SRVILDC55"
+    assert ctx.reboot_required is True
+
+
+@pytest.mark.asyncio
 async def test_join_retry_is_noop_when_windows_already_reports_exact_identity() -> None:
     request = domain_join_request()
     run_program = AsyncMock(

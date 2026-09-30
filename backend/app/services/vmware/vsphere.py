@@ -695,38 +695,39 @@ class VsphereVMwareService(VMwareService):
 
         return await self._with_session(target, op)
 
+    @staticmethod
+    def _power_state_info(vm) -> PowerStateInfo:
+        guest = vm.guest
+        ips: list[str] = []
+        if guest.net:
+            for nic in guest.net:
+                if nic.ipConfig and nic.ipConfig.ipAddress:
+                    ips.extend(ip.ipAddress for ip in nic.ipConfig.ipAddress if ":" not in ip.ipAddress)
+        if not ips and guest.ipAddress:
+            ips.append(guest.ipAddress)
+
+        def text(owner, name: str) -> str | None:
+            value = getattr(owner, name, None)
+            return str(value) if value else None
+
+        return PowerStateInfo(
+            power_state=str(vm.runtime.powerState),
+            tools_status=text(guest, "toolsStatus"),
+            tools_running_status=text(guest, "toolsRunningStatus"),
+            tools_version_status=text(guest, "toolsVersionStatus2"),
+            guest_state=text(guest, "guestState"),
+            guest_operations_ready=bool(getattr(guest, "guestOperationsReady", False)),
+            guest_family=text(guest, "guestFamily"),
+            ip_addresses=ips,
+            host_id=vm.runtime.host._moId if vm.runtime.host else None,
+            guest_host_name=text(guest, "hostName"),
+            configured_guest_id=text(getattr(vm, "config", None), "guestId"),
+        )
+
     async def get_vm_info(self, target: VCenterTarget, vm_name: str) -> PowerStateInfo | None:
         def op(si):
             vm = self._find_vm_by_name(self._content(si), vm_name)
-            if vm is None:
-                return None
-            guest = vm.guest
-            ips: list[str] = []
-            if guest.net:
-                for nic in guest.net:
-                    if nic.ipConfig and nic.ipConfig.ipAddress:
-                        ips.extend(ip.ipAddress for ip in nic.ipConfig.ipAddress if ":" not in ip.ipAddress)
-            if not ips and guest.ipAddress:
-                ips.append(guest.ipAddress)
-            return PowerStateInfo(
-                power_state=str(vm.runtime.powerState),
-                tools_status=str(guest.toolsStatus) if guest.toolsStatus else None,
-                tools_running_status=(
-                    str(value) if (value := getattr(guest, "toolsRunningStatus", None)) else None
-                ),
-                tools_version_status=(
-                    str(value) if (value := getattr(guest, "toolsVersionStatus2", None)) else None
-                ),
-                guest_state=(
-                    str(value) if (value := getattr(guest, "guestState", None)) else None
-                ),
-                guest_operations_ready=bool(getattr(guest, "guestOperationsReady", False)),
-                guest_family=(
-                    str(value) if (value := getattr(guest, "guestFamily", None)) else None
-                ),
-                ip_addresses=ips,
-                host_id=vm.runtime.host._moId if vm.runtime.host else None,
-            )
+            return None if vm is None else self._power_state_info(vm)
 
         return await self._with_session(target, op)
 
@@ -1134,7 +1135,7 @@ class VsphereVMwareService(VMwareService):
         cpu: int,
         memory_mb: int,
         disks: list,
-        firmware: FirmwareType,
+        firmware: FirmwareType | None,
         secure_boot: bool,
     ) -> None:
         def op(si):
@@ -1507,35 +1508,7 @@ class VsphereVMwareService(VMwareService):
 
     async def get_vm_info_by_id(self, target: VCenterTarget, vm_id: str) -> PowerStateInfo | None:
         def op(si):
-            content = self._content(si)
-            vm = self._find_by_moref(content, vm_id)
-            if vm is None:
-                return None
-            guest = vm.guest
-            ips: list[str] = []
-            if guest.net:
-                for nic in guest.net:
-                    if nic.ipConfig and nic.ipConfig.ipAddress:
-                        ips.extend(ip.ipAddress for ip in nic.ipConfig.ipAddress if ":" not in ip.ipAddress)
-            if not ips and guest.ipAddress:
-                ips.append(guest.ipAddress)
-            return PowerStateInfo(
-                power_state=str(vm.runtime.powerState),
-                tools_status=str(guest.toolsStatus) if guest.toolsStatus else None,
-                tools_running_status=(
-                    str(value) if (value := getattr(guest, "toolsRunningStatus", None)) else None
-                ),
-                tools_version_status=(
-                    str(value) if (value := getattr(guest, "toolsVersionStatus2", None)) else None
-                ),
-                guest_state=(
-                    str(value) if (value := getattr(guest, "guestState", None)) else None
-                ),
-                guest_operations_ready=bool(getattr(guest, "guestOperationsReady", False)),
-                guest_family=(
-                    str(value) if (value := getattr(guest, "guestFamily", None)) else None
-                ),
-                ip_addresses=ips,
-            )
+            vm = self._find_by_moref(self._content(si), vm_id)
+            return None if vm is None else self._power_state_info(vm)
 
         return await self._with_session(target, op)

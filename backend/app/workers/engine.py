@@ -33,12 +33,14 @@ from app.core.logging import bind_logging_context, get_logger
 from app.core.metrics import jobs_total, render_metrics, worker_jobs_in_flight
 from app.db.session import session_factory
 from app.models.jobs import JobStatus, ProvisioningJob, StepStatus
+from app.models.notifications import NotificationKind
 from app.models.user import User
 from app.repositories.jobs import JobRepository
 from app.secrets.service import get_secrets_service
 from app.services.applications.installer import ApplicationInstaller
 from app.services.certificates.deployer import CertificateDeployer
 from app.services.guest.factory import get_guest_operations
+from app.services.notifications import failed_message, interrupted_message, notify_requester
 from app.services.vmware.factory import get_vmware_service
 from app.workers.context import JobRunContext, build_vcenter_target, load_request_payload
 from app.workers.events import JobEventPublisher
@@ -283,6 +285,9 @@ class JobEngine:
         compute = payload.get("compute", {}) if isinstance(payload, dict) else {}
         if not isinstance(compute, dict):
             compute = {}
+        notify_requester(
+            db, job, NotificationKind.JOB_FAILED, *failed_message(job, "Start provisioning", human)
+        )
         await AuditRecorder(db).record(
             AuditAction.JOB_FAILED,
             resource_type="virtual_machine",
@@ -322,6 +327,7 @@ class JobEngine:
             job.duration_seconds = (now - job.started_at).total_seconds()
         job.progress = JobRepository.compute_progress(job)
         jobs_total.inc(status=JobStatus.INTERRUPTED.value)
+        notify_requester(db, job, NotificationKind.JOB_FAILED, *interrupted_message(job, reason))
         await AuditRecorder(db).record(
             AuditAction.JOB_INTERRUPTED,
             resource_type="virtual_machine",
