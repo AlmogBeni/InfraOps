@@ -106,15 +106,14 @@ by deployment hardening guidance.
   route accepts tickets. Streams end after the access-token lifetime so access is
   re-checked; the client reconnects with a fresh ticket. nginx access logs omit query
   strings.
-* Production refuses vCenter connections with TLS verification disabled (both when saving
-  a connection and at connect time); trust the vCenter CA via `VCENTER_CA_FILE`. An
-  administrator can explicitly accept the risk with `ALLOW_INSECURE_VCENTER_TLS=true`
-  (traffic remains encrypted but the vCenter identity is not verified, so a
-  man-in-the-middle could capture the service-account credentials); every such connection
-  is logged as a warning.
+* vCenter certificates are verified by default (system trust store or `VCENTER_CA_FILE`).
+  An administrator can untick *Verify the TLS certificate* on a connection, e.g. for a
+  self-signed vCenter certificate: traffic remains encrypted but the vCenter identity is not
+  verified, so a man-in-the-middle could capture the service-account credentials. The
+  change is audited (`VCENTER_UPDATED`) and every such connection is logged as a warning.
 * Sessions: the refresh cookie is `Secure` in production, so InfraOps must be reached over
   HTTPS (the frontend container can terminate TLS itself — see production-deployment.md).
-  The UI warns when it is opened over plain HTTP. Inactive users are asked after
+  Inactive users are asked after
   `SESSION_IDLE_TIMEOUT_SECONDS` (300) whether to stay signed in and are signed out —
   including server-side revocation of the refresh token — when they do not answer within
   `SESSION_IDLE_WARNING_SECONDS` (60). Activity and sign-out are shared across tabs.

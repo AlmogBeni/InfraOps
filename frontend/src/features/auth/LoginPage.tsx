@@ -1,7 +1,6 @@
 import { Boxes, KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
-import { InsecureTransportNotice } from '@/features/auth/InsecureTransportNotice'
 import { clearSignOutReason, peekSignOutReason } from '@/features/auth/session'
 import { useNavigate } from 'react-router-dom'
 
@@ -85,7 +84,6 @@ export function LoginPage() {
               <p className="mt-2 text-xs leading-5 text-[#68736d]">Use the account assigned by your infrastructure administrator.</p>
             </div>
             <form onSubmit={handleSubmit}>
-              <div className="mb-5 empty:hidden"><InsecureTransportNotice /></div>
               {signOutReason === 'idle' && !error && (
                 <div className="mb-5">
                   <Alert tone="info" title="You were signed out">

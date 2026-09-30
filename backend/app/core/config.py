@@ -65,10 +65,6 @@ class Settings(BaseSettings):
     # ── Infrastructure integrations ──────────────────────────────────────────
     infrastructure_mode: InfrastructureMode = InfrastructureMode.REAL
     vcenter_ca_file: str = ""
-    # Explicit opt-in for vCenters whose certificate cannot be verified (e.g. the
-    # default self-signed certificate). Traffic stays encrypted, but the server
-    # identity is not checked, so credentials could reach an impostor.
-    allow_insecure_vcenter_tls: bool = False
 
     # ── Authentication ───────────────────────────────────────────────────────
     auth_mode: AuthMode = AuthMode.LOCAL

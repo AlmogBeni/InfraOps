@@ -33,7 +33,6 @@ export interface UserOut {
 }
 
 export interface SessionPolicy {
-  cookie_secure: boolean
   idle_timeout_seconds: number
   idle_warning_seconds: number
 }

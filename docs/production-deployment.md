@@ -50,8 +50,8 @@ address to evade login rate limits or falsify audit records.
    backfills static-IP reservations. Jobs left `RUNNING` by the previous worker become
    `INTERRUPTED` once their heartbeat is stale and can be retried or cancelled.
 5. Refresh tokens issued before the upgrade are not registered; users sign in again once.
-6. In production, vCenter connections with TLS verification disabled are refused; enable
-   verification and provide the CA via `VCENTER_CA_FILE` before upgrading.
+6. vCenter connections with *Verify the TLS certificate* ticked need a trusted certificate
+   (system trust store or `VCENTER_CA_FILE`); untick it for a self-signed vCenter.
 7. VMs created before the upgrade carry no ownership marker. If an old job whose VM-creation
    stage did not complete is retried and a VM with that name exists, the stage fails with
    "name taken" instead of adopting it; inspect the VM and remove or rename it first.
@@ -96,7 +96,7 @@ address to evade login rate limits or falsify audit records.
 
 The session cookie is `Secure` in production, and browsers discard `Secure` cookies on
 plain-HTTP pages. Opened over `http://<server>`, InfraOps signs you in but every page
-reload signs you out again (the UI shows a warning). Serve it over HTTPS in one of two
+reload signs you out again. Serve it over HTTPS in one of two
 ways:
 
 * **Built-in TLS (no other proxy needed):** put the certificate chain and private key in
@@ -109,8 +109,7 @@ ways:
 
 ## Trusting the vCenter certificate
 
-Production refuses vCenter connections with TLS verification disabled. With the default
-VMCA-signed certificate:
+To verify the default VMCA-signed certificate:
 
 1. Download the VMCA root(s): `curl -k -o vc-certs.zip https://<vcenter-fqdn>/certs/download.zip`
    and unzip; the PEM roots are the `certs/lin/*.0` files. Because this download is not
@@ -130,8 +129,6 @@ VMCA-signed certificate:
 A missing or unreadable `VCENTER_CA_FILE` is reported as a clear configuration error on
 the job and in the logs.
 
-If the certificate cannot be verified and you accept the risk, set
-`ALLOW_INSECURE_VCENTER_TLS=true` in `.env`, restart the backend and worker, and leave
-*Verify the TLS certificate* unticked on the connection. The connection is still
-encrypted, but InfraOps no longer confirms the vCenter's identity; each connection logs a
-warning.
+If the certificate cannot be verified and you accept the risk, untick *Verify the TLS
+certificate* on the connection. The connection is still encrypted, but InfraOps no longer
+confirms the vCenter's identity; each connection logs a warning.

@@ -66,8 +66,8 @@ def vcenter_ssl_context(target: VCenterTarget):
     """TLS context for every connection to vCenter (SOAP, REST, file transfers).
 
     Verifies against ``VCENTER_CA_FILE`` when set, otherwise the system trust
-    store. Returns ``False`` only for connections that explicitly disabled
-    verification, which :func:`ensure_tls_policy` refuses in production.
+    store. Returns ``False`` for connections whose administrator disabled
+    certificate verification.
     """
     import os
     import ssl
@@ -101,31 +101,13 @@ def vcenter_ssl_context(target: VCenterTarget):
         ) from exc
 
 
-def insecure_vcenter_tls_permitted() -> bool:
-    from app.core.config import get_settings
-
-    settings = get_settings()
-    return not settings.is_production or settings.allow_insecure_vcenter_tls
-
-
 def ensure_tls_policy(target: VCenterTarget) -> None:
-    """Refuse unverified TLS to vCenter in production unless an administrator
-    explicitly allowed it with ``ALLOW_INSECURE_VCENTER_TLS=true``."""
-    from app.core.errors import InfraOperationError
+    """Log every connection whose certificate verification an administrator
+    turned off on the vCenter connection (traffic is still encrypted)."""
     from app.core.logging import get_logger
 
     if target.verify_ssl:
         return
-    if not insecure_vcenter_tls_permitted():
-        raise InfraOperationError(
-            f"TLS verification is disabled for vCenter '{target.name}'.",
-            reason="Unverified TLS connections to vCenter are not permitted in production.",
-            recommended_action=(
-                "Enable 'Verify the TLS certificate' on the connection and trust the vCenter CA "
-                "through VCENTER_CA_FILE, or set ALLOW_INSECURE_VCENTER_TLS=true to accept the risk."
-            ),
-            retryable=False,
-        )
     get_logger(__name__).warning(
         "Connecting to vCenter '%s' (%s) without TLS certificate verification.", target.name, target.host
     )

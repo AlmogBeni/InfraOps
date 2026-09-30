@@ -26,7 +26,6 @@ class UserOut(BaseModel):
 class SessionPolicyOut(BaseModel):
     """Public session settings the browser needs before and after sign-in."""
 
-    cookie_secure: bool
     idle_timeout_seconds: int
     idle_warning_seconds: int
 

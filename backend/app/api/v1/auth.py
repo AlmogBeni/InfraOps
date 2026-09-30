@@ -39,10 +39,9 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
 
 @router.get("/session-policy", response_model=SessionPolicyOut)
 async def session_policy() -> SessionPolicyOut:
-    """Unauthenticated: the login page uses it to warn about insecure transport."""
+    """Unauthenticated session settings (idle sign-out timing) for the UI."""
     settings = get_settings()
     return SessionPolicyOut(
-        cookie_secure=settings.cookie_secure,
         idle_timeout_seconds=settings.session_idle_timeout_seconds,
         idle_warning_seconds=settings.session_idle_warning_seconds,
     )

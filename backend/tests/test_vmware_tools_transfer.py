@@ -55,28 +55,19 @@ def test_missing_ca_bundle_reports_a_clear_configuration_error(monkeypatch, tmp_
         vcenter_ssl_context(target())
 
 
-def test_unverified_tls_is_refused_in_production(monkeypatch) -> None:
-    import pytest
-
+def test_unverified_tls_is_allowed_when_the_administrator_disables_verification(monkeypatch) -> None:
     from app.core.config import Environment, get_settings
-    from app.core.errors import InfraOperationError
-    from app.services.vmware.base import vcenter_ssl_context
-
-    monkeypatch.setattr(get_settings(), "environment", Environment.PRODUCTION)
-    with pytest.raises(InfraOperationError, match="TLS verification is disabled"):
-        vcenter_ssl_context(target(verify_ssl=False))
-
-
-def test_unverified_tls_can_be_explicitly_allowed_in_production(monkeypatch) -> None:
-    from app.core.config import Environment, get_settings
-    from app.schemas.admin import VCenterConnectionUpdate
+    from app.schemas.admin import VCenterConnectionCreate, VCenterConnectionUpdate
     from app.services.vmware.base import vcenter_ssl_context, vcenter_ssl_context_or_unverified
 
-    settings = get_settings()
-    monkeypatch.setattr(settings, "environment", Environment.PRODUCTION)
-    monkeypatch.setattr(settings, "allow_insecure_vcenter_tls", True)
+    monkeypatch.setattr(get_settings(), "environment", Environment.PRODUCTION)
 
     assert vcenter_ssl_context(target(verify_ssl=False)) is False
     context = vcenter_ssl_context_or_unverified(target(verify_ssl=False))
     assert context.verify_mode == ssl.CERT_NONE and context.check_hostname is False
     assert VCenterConnectionUpdate(verify_ssl=False).verify_ssl is False
+    created = VCenterConnectionCreate(
+        name="vCenter", host="vcenter.internal.example", username_secret_ref="vcenter/username",
+        password_secret_ref="vcenter/password", verify_ssl=False,
+    )
+    assert created.verify_ssl is False

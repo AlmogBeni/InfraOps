@@ -16,17 +16,6 @@ HOSTNAME_PATTERN = re.compile(
 SECRET_NAME_PATTERN = SECRET_REFERENCE_PATTERN
 
 
-def _require_tls_verification_in_production(value: bool | None) -> bool | None:
-    from app.services.vmware.base import insecure_vcenter_tls_permitted
-
-    if value is False and not insecure_vcenter_tls_permitted():
-        raise ValueError(
-            "TLS certificate verification cannot be disabled in production. Trust the vCenter CA "
-            "(VCENTER_CA_FILE), or set ALLOW_INSECURE_VCENTER_TLS=true to accept the risk."
-        )
-    return value
-
-
 class VCenterConnectionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -37,11 +26,6 @@ class VCenterConnectionCreate(BaseModel):
     password_secret_ref: str = Field(min_length=2, max_length=150, pattern=SECRET_NAME_PATTERN.pattern)
     verify_ssl: bool = True
     notes: str = Field(default="", max_length=2000)
-
-    @field_validator("verify_ssl")
-    @classmethod
-    def _tls_policy(cls, value: bool | None) -> bool | None:
-        return _require_tls_verification_in_production(value)
 
 
 class VCenterConnectionUpdate(BaseModel):
@@ -59,11 +43,6 @@ class VCenterConnectionUpdate(BaseModel):
     verify_ssl: bool | None = None
     enabled: bool | None = None
     notes: str | None = Field(default=None, max_length=2000)
-
-    @field_validator("verify_ssl")
-    @classmethod
-    def _tls_policy(cls, value: bool | None) -> bool | None:
-        return _require_tls_verification_in_production(value)
 
 
 class VCenterConnectionAdminOut(BaseModel):

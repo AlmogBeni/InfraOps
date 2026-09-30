@@ -3,7 +3,6 @@
 import type { SessionPolicy } from '@/types/api'
 
 export const DEFAULT_SESSION_POLICY: SessionPolicy = {
-  cookie_secure: true,
   idle_timeout_seconds: 300,
   idle_warning_seconds: 60,
 }
@@ -68,18 +67,4 @@ export function clearSignOutReason(): void {
   } catch {
     /* ignore */
   }
-}
-
-/**
- * Browsers discard `Secure` cookies set over plain HTTP (except on localhost),
- * so the refresh cookie never survives and every page reload signs the user
- * out. Detect that deployment mistake so it can be explained instead.
- */
-export function refreshCookieWillBeDropped(
-  policy: Pick<SessionPolicy, 'cookie_secure'>,
-  location: Pick<Location, 'protocol' | 'hostname'>,
-): boolean {
-  if (!policy.cookie_secure || location.protocol !== 'http:') return false
-  const host = location.hostname.replace(/^\[|\]$/g, '')
-  return !(host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1' || host === '::1')
 }

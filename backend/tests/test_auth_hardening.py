@@ -84,4 +84,4 @@ def test_session_policy_is_public_and_reflects_settings() -> None:
     app = FastAPI()
     app.include_router(router)
     body = TestClient(app).get("/auth/session-policy").json()
-    assert body == {"cookie_secure": False, "idle_timeout_seconds": 300, "idle_warning_seconds": 60}
+    assert body == {"idle_timeout_seconds": 300, "idle_warning_seconds": 60}
