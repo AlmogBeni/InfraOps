@@ -15,13 +15,11 @@ import asyncio
 import contextvars
 import datetime as dt
 import hashlib
-import ssl
 import threading
 import time
 import urllib.parse
 import urllib.request
 
-from app.core.config import get_settings
 from app.core.errors import InfraOperationError, NotFoundError, ServiceUnavailableError
 from app.core.logging import get_logger
 from app.core.metrics import vcenter_api_errors_total
@@ -52,6 +50,7 @@ from app.services.vmware.base import (
     ensure_tls_policy,
     owner_annotation,
     owner_from_annotation,
+    vcenter_ssl_context_or_unverified,
 )
 from app.services.vmware.content_library import ContentLibraryClient
 from app.services.vmware.inventory_refs import decode_iso_id, encode_iso_id
@@ -198,11 +197,7 @@ class VsphereVMwareService(VMwareService):
         return instance
 
     def _connect_blocking(self, target: VCenterTarget, username: str, password: str):
-        ca_file = get_settings().vcenter_ca_file or None
-        context = ssl.create_default_context(cafile=ca_file)
-        if not target.verify_ssl:
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
+        context = vcenter_ssl_context_or_unverified(target)
         try:
             instance = pyvim_connect.SmartConnect(
                 host=target.host,
@@ -1369,10 +1364,7 @@ class VsphereVMwareService(VMwareService):
             except vim.fault.FileAlreadyExists:
                 pass
 
-            context = ssl.create_default_context(cafile=get_settings().vcenter_ca_file or None)
-            if not target.verify_ssl:
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
+            context = vcenter_ssl_context_or_unverified(target)
             relative = urllib.parse.quote(f"infraops-unattend/{safe_name}", safe="/")
             query = urllib.parse.urlencode({"dcPath": datacenter.name, "dsName": datastore.name})
             url = f"https://{target.host}:{target.port}/folder/{relative}?{query}"

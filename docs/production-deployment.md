@@ -81,8 +81,8 @@ address to evade login rate limits or falsify audit records.
 - IPAM has no connector and is not exposed as a validation source. Add a real provider
   implementation before relying on IPAM for address allocation/conflict checks.
 - The vCenter CA must be trusted inside both backend and worker containers, not only by the
-  Ubuntu host. Mount or bake the CA into the container trust store before enabling TLS
-  verification.
+  Ubuntu host. Compose mounts `./certs` (or `VCENTER_CA_DIR`) read-only at
+  `/etc/infraops/certs` in both; see *Trusting the vCenter certificate* below.
 - A UNC software repository must be reachable from the Windows guest under the account used
   by VMware Tools guest operations. Validate share and NTFS permissions from the template.
 - The stored-credential key root is `CREDENTIAL_ENCRYPTION_KEY` (or `SECRET_KEY` when
@@ -91,3 +91,26 @@ address to evade login rate limits or falsify audit records.
   while the old root is listed in `CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS`.
 - The worker exposes `/metrics` and `/health` on `WORKER_METRICS_PORT` (9102) inside the
   Compose network; scrape it alongside the API's `/metrics`.
+
+## Trusting the vCenter certificate
+
+Production refuses vCenter connections with TLS verification disabled. With the default
+VMCA-signed certificate:
+
+1. Download the VMCA root(s): `curl -k -o vc-certs.zip https://<vcenter-fqdn>/certs/download.zip`
+   and unzip; the PEM roots are the `certs/lin/*.0` files. Because this download is not
+   yet verified, compare the root's SHA-256 fingerprint
+   (`openssl x509 -in <file>.0 -noout -fingerprint -sha256`) with the one shown in the
+   vSphere Client under *Administration → Certificates → Certificate Management → Trusted
+   Root Certificates*.
+2. Concatenate the roots (and any enterprise CA that signed the machine certificate) into
+   `/opt/InfraOps/certs/vcenter-ca.pem` on the host.
+3. Set `VCENTER_CA_FILE=/etc/infraops/certs/vcenter-ca.pem` in `.env` and run
+   `docker compose up -d backend worker`.
+4. In **Administration → VMware connections**, edit the connection, enable *Verify the TLS
+   certificate* and run *Test connection*. The connection host must be a name present in
+   the certificate's subject alternative names (normally the vCenter FQDN) — an IP address
+   fails hostname verification.
+
+A missing or unreadable `VCENTER_CA_FILE` is reported as a clear configuration error on
+the job and in the logs.

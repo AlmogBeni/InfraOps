@@ -21,7 +21,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from app.core.config import get_settings
 from app.core.errors import InfraOperationError
 from app.core.logging import get_logger
 from app.secrets.service import SecretsService
@@ -34,7 +33,7 @@ from app.services.guest.scripts import (
     new_token,
     powershell_file_arguments,
 )
-from app.services.vmware.base import VCenterTarget
+from app.services.vmware.base import VCenterTarget, vcenter_ssl_context
 from app.services.vmware.vsphere import HAS_PYVMOMI, VsphereVMwareService
 
 log = get_logger(__name__)
@@ -59,9 +58,7 @@ def _file_transfer_url(url: str, target: VCenterTarget) -> str:
 
 
 def _file_transfer_verify(target: VCenterTarget) -> bool | ssl.SSLContext:
-    if not target.verify_ssl:
-        return False
-    return ssl.create_default_context(cafile=get_settings().vcenter_ca_file or None)
+    return vcenter_ssl_context(target)
 
 
 def _wrap(operation: str, exc: Exception, *, retryable: bool = True) -> InfraOperationError:
