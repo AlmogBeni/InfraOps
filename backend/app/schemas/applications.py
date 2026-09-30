@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, UUID4, model_validator
+from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
 
 from app.models.applications import DetectionMethod, InstallerType
 from app.services.applications.detection_rules import validate_detection_config

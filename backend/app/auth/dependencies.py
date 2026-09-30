@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.permissions import Permission, roles_grant
 from app.auth.service import auth_service
-from app.core.errors import AuthorizationError, AuthenticationError
+from app.core.errors import AuthenticationError, AuthorizationError
 from app.core.logging import bind_logging_context
 from app.db.session import get_db
 from app.models.user import User

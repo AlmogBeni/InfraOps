@@ -304,9 +304,12 @@ async def cancel_job(
     source_ip: str | None,
 ) -> None:
     repo = JobRepository(db)
-    if job.status == JobStatus.ACTION_REQUIRED:
-        # A paused job may still hold temporary answer media (plaintext
-        # password) on the datastore. Hand it to a worker, which applies the
+    if job.status in (
+        JobStatus.ACTION_REQUIRED,
+        JobStatus.INTERRUPTED,
+    ) and repo.may_hold_unattended_media(job):
+        # The job may still hold temporary answer media (plaintext password)
+        # on the datastore. Hand it to a worker, which applies the
         # cancellation and removes the media before finalising.
         job.cancel_requested = True
         job.status = JobStatus.QUEUED
@@ -317,7 +320,7 @@ async def cancel_job(
             await db.rollback()
             conflict = reservation_conflict(exc, job)
             raise (conflict or exc) from exc
-    elif job.status in TERMINAL_JOB_STATUSES:
+    elif job.status in TERMINAL_JOB_STATUSES and job.status != JobStatus.ACTION_REQUIRED:
         raise ConflictError(
             f"Job is already '{job.status.value}' and cannot be cancelled.",
             details={"status": job.status.value},

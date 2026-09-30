@@ -62,7 +62,7 @@ def resolve_install_order(
     for selected in selected_ids:
         visit(selected)
 
-    for app_id, node in required.items():
+    for node in required.values():
         if not node.enabled:
             errors.append(f"Application '{node.name}' is disabled in the catalog and cannot be installed.")
 

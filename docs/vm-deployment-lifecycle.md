@@ -19,7 +19,8 @@ React wizard (frontend/src/features/vm-provisioning)
 The source selector and `ProvisioningRequest.source_type` already distinguished blank and
 package deployments. `VsphereVMwareService.create_blank_vm` uses `CreateVM_Task`; the
 Content Library client uses OVF filter/deploy REST calls. Every pyVmomi VM task is passed to
-`_wait_for_task`, and the OVF result checks both `succeeded` and the returned resource ID.
+`_wait_for_task` (which cancels the task if its caller is cancelled), and the OVF result
+checks both `succeeded` and the returned resource ID.
 Hardware, vNIC attachment, power, guest commands, certificates, and applications are
 separate persisted stages. Successful stages are preserved on retry.
 
@@ -47,8 +48,19 @@ The important defects were:
 
 ## Persisted state model
 
-Overall job states include `ACTION_REQUIRED`. Step states include `WARNING`,
-`WAITING_FOR_PREREQUISITE`, and `NOT_APPLICABLE`. Four independent job fields are exposed:
+Job states: `QUEUED`, `RUNNING`, `COMPLETED`, `PARTIALLY_COMPLETED`, `ACTION_REQUIRED`,
+`FAILED`, `CANCELLED` and `INTERRUPTED` (the executing worker died; retry resumes at the
+interrupted stage, or cancel). Step states include `WARNING`, `WAITING_FOR_PREREQUISITE`,
+and `NOT_APPLICABLE`.
+
+* Retry is allowed from `FAILED`, `PARTIALLY_COMPLETED`, `ACTION_REQUIRED` (confirm the
+  prerequisite and resume), `CANCELLED` and `INTERRUPTED`.
+* Cancel is allowed from `QUEUED`, `INTERRUPTED` and `ACTION_REQUIRED` (immediate — unless
+  the job may still hold temporary answer media, in which case it is handed to a worker
+  that removes the media and then finalises the cancellation) and from `RUNNING` (the
+  running stage and its vCenter task are cancelled within one heartbeat).
+
+Four independent job fields are exposed:
 
 ```text
 infrastructure_status      PENDING | CREATING | READY | FAILED
@@ -72,11 +84,13 @@ validate request and live inventory
   -> ReconfigVM_Task (vNIC to port group)
   -> no ISO: powered off -> OS INSTALLATION_REQUIRED -> ACTION_REQUIRED
   -> ISO: attach temporary answer-file floppy -> set CD-first boot -> PowerOnVM_Task
+          (the floppy is removed on any failure/cancel/interrupt from here on)
           -> OS INSTALLATION_IN_PROGRESS
           -> Windows Setup/OOBE
           -> administrator confirms first logon
           -> supply Tools media -> first-logon in-guest Tools installation
           -> OS READY + Tools RUNNING
+          -> remove answer floppy + scrub cached answer files in the guest
           -> guest IP/hostname/domain/certificates/apps
           -> final verification -> COMPLETED
 ```

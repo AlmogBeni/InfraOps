@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from pydantic import BaseModel, ConfigDict, Field, UUID4
+from pydantic import UUID4, BaseModel, ConfigDict, Field
 
 from app.models.certificates import CertificateStore, CertificateType
 

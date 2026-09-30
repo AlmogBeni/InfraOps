@@ -62,6 +62,45 @@ def owner_from_annotation(annotation: str | None) -> str | None:
     return None
 
 
+def vcenter_ssl_context(target: VCenterTarget):
+    """TLS context for every connection to vCenter (SOAP, REST, file transfers).
+
+    Verifies against ``VCENTER_CA_FILE`` when set, otherwise the system trust
+    store. Returns ``False`` only for connections that explicitly disabled
+    verification, which :func:`ensure_tls_policy` refuses in production.
+    """
+    import os
+    import ssl
+
+    from app.core.config import get_settings
+    from app.core.errors import InfraOperationError
+
+    ensure_tls_policy(target)
+    if not target.verify_ssl:
+        return False
+    ca_file = get_settings().vcenter_ca_file or None
+    if ca_file and not os.path.isfile(ca_file):
+        raise InfraOperationError(
+            "The configured vCenter CA bundle was not found.",
+            reason=f"VCENTER_CA_FILE points to '{ca_file}', which does not exist inside the container.",
+            recommended_action=(
+                "Place the PEM bundle in the mounted certs directory (./certs on the host) and "
+                "restart the backend and worker, or clear VCENTER_CA_FILE to use the system trust store."
+            ),
+            retryable=False,
+        )
+    try:
+        return ssl.create_default_context(cafile=ca_file)
+    except (ssl.SSLError, OSError) as exc:
+        raise InfraOperationError(
+            "The configured vCenter CA bundle could not be loaded.",
+            reason=f"VCENTER_CA_FILE '{ca_file}' is not a readable PEM certificate bundle.",
+            recommended_action="Provide the CA certificate(s) in PEM format and restart the backend and worker.",
+            technical_detail=f"{type(exc).__name__}: {exc}",
+            retryable=False,
+        ) from exc
+
+
 def ensure_tls_policy(target: VCenterTarget) -> None:
     """Refuse unverified TLS to vCenter in production (defence in depth for
     connections stored before the policy existed)."""
@@ -78,6 +117,18 @@ def ensure_tls_policy(target: VCenterTarget) -> None:
             ),
             retryable=False,
         )
+
+
+def vcenter_ssl_context_or_unverified(target: VCenterTarget):
+    """pyVmomi needs an SSLContext object even when verification is disabled."""
+    import ssl
+
+    context = vcenter_ssl_context(target)
+    if context is False:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
 
 
 @dataclass(frozen=True)

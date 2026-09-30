@@ -15,10 +15,10 @@ from app.core.logging import get_logger
 from app.core.metrics import app_install_failures_total
 from app.models.applications import InstallerType
 from app.services.applications.detection_rules import (
+    _CONTROL_CHARS,
     DETECTION_ABSENT_EXIT_CODES,
     MSIEXEC_PATH,
     POWERSHELL_PATH,
-    _CONTROL_CHARS,
     detection_programs,
 )
 from app.services.applications.paths import validate_installer_path

@@ -12,7 +12,7 @@ from app.audit.actions import AuditAction
 from app.audit.recorder import AuditRecorder
 from app.auth.permissions import Permission
 from app.core.errors import ConflictError, DomainValidationError, NotFoundError
-from app.models.certificates import Certificate, CertificatePackage, CertificateStore
+from app.models.certificates import Certificate, CertificatePackage
 from app.schemas.certificates import (
     CertificateCreate,
     CertificateOut,

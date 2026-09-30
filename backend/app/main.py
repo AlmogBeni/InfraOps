@@ -16,7 +16,6 @@ from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import bind_logging_context, configure_logging, get_logger
 from app.core.metrics import http_requests_total
-from app.db.base import Base
 from app.db.session import engine
 
 log = get_logger(__name__)

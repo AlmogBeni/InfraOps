@@ -1,0 +1,16 @@
+# Normalise every text file to LF in the repository and in working copies,
+# regardless of the contributor's core.autocrlf setting.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF in working copies.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.flp binary

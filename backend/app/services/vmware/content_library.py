@@ -11,12 +11,18 @@ from urllib.parse import quote
 
 import httpx
 
-from app.core.config import get_settings
 from app.core.errors import InfraOperationError
 from app.core.logging import get_logger
 from app.schemas.infrastructure import TemplateOut
 from app.secrets.service import SecretsService
-from app.services.vmware.base import CloneSpec, VCenterTarget, VmRef, ensure_tls_policy, owner_annotation
+from app.services.vmware.base import (
+    CloneSpec,
+    VCenterTarget,
+    VmRef,
+    ensure_tls_policy,
+    owner_annotation,
+    vcenter_ssl_context,
+)
 
 log = get_logger(__name__)
 
@@ -66,20 +72,13 @@ class ContentLibraryClient:
     def is_library_item(value: str) -> bool:
         return value.startswith(LIBRARY_ITEM_PREFIX)
 
-    @staticmethod
-    def _verify_setting() -> bool | ssl.SSLContext:
-        settings = get_settings()
-        if not settings.vcenter_ca_file:
-            return True
-        return ssl.create_default_context(cafile=settings.vcenter_ca_file)
-
     @asynccontextmanager
     async def _client(self, target: VCenterTarget):
         ensure_tls_policy(target)
         username, password = await self._secrets.get_credentials(
             target.username_secret_ref, target.password_secret_ref
         )
-        verify: bool | ssl.SSLContext = self._verify_setting() if target.verify_ssl else False
+        verify: bool | ssl.SSLContext = vcenter_ssl_context(target)
         base_url = f"https://{target.host}:{target.port}/api"
         async with httpx.AsyncClient(base_url=base_url, verify=verify, timeout=60.0) as client:
             try:

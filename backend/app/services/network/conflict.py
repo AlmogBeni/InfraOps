@@ -102,9 +102,14 @@ class VMwareInventoryProvider(ConflictCheckProvider):
 
     name = "VMware inventory"
 
-    def __init__(self, vmware: VMwareService, target: VCenterTarget) -> None:
+    def __init__(
+        self, vmware: VMwareService, target: VCenterTarget, *, exclude_vm_name: str | None = None
+    ) -> None:
         self._vmware = vmware
         self._target = target
+        # The VM being provisioned may legitimately already hold the address
+        # (e.g. a retry after the address was applied).
+        self._exclude = exclude_vm_name.casefold() if exclude_vm_name else None
 
     async def check(self, address: str, prefix: int) -> ProviderResult:
         try:
@@ -114,6 +119,8 @@ class VMwareInventoryProvider(ConflictCheckProvider):
             return ProviderResult(provider=self.name, status=ConflictProviderStatus.ERROR,
                                   detail="Inventory could not be queried.")
         owner = used.get(address)
+        if owner and self._exclude and owner.casefold() == self._exclude:
+            owner = None
         if owner:
             return ProviderResult(provider=self.name, status=ConflictProviderStatus.CONFLICT_DETECTED,
                                   detail=f"Address is assigned to VM '{owner}'.")

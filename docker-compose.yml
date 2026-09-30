@@ -6,6 +6,10 @@ name: infraops
 # `migrate` runs once per deployment (migrations, runtime-role grants, bootstrap);
 # API replicas and workers start only after it succeeds, so they never race.
 
+# Trusted CA bundle for vCenter (read-only). Put the PEM in ./certs on the host
+# and set VCENTER_CA_FILE=/etc/infraops/certs/<file>.pem in .env.
+x-ca-volume: &ca-volume "${VCENTER_CA_DIR:-./certs}:/etc/infraops/certs:ro"
+
 x-backend-env: &backend-env
   DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
   REDIS_URL: redis://redis:6379/0
@@ -67,6 +71,8 @@ services:
     environment:
       <<: *backend-env
       MIGRATION_DATABASE_URL: ""
+    volumes:
+      - *ca-volume
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       migrate:
@@ -86,6 +92,8 @@ services:
     environment:
       <<: *backend-env
       MIGRATION_DATABASE_URL: ""
+    volumes:
+      - *ca-volume
     command: ["python", "-m", "app.workers.runner"]
     # SIGTERM stops claiming work; running jobs get WORKER_SHUTDOWN_GRACE_SECONDS
     # (default 60) to finish before they are cleanly marked INTERRUPTED.

@@ -12,7 +12,8 @@ executes every stage; the job page receives live updates over SSE.
 4. Configure CPU, RAM, firmware, Secure Boot, disks, and the vNIC port group.
 5. Guest credentials, guest IP, identity, domain, certificates, and applications are shown
    only as eligible automation when a guest installation/prepared package is expected.
-6. Run non-mutating preflight and submit with an idempotency key.
+6. Run non-mutating preflight and submit with an idempotency key. The server repeats the
+   full preflight on submission and rejects blocked requests, so the dry run is advisory.
 
 The vNIC port group and the IP settings inside a guest are separate operations. A blank VM
 without media accepts only the vNIC choice; the payload cannot request a static guest IP.
@@ -42,7 +43,9 @@ Only after that confirmation does InfraOps supply vSphere Tools media. The first
 bootstrap runs the installer inside Windows, and a later Tools heartbeat plus Guest Operations
 readiness proves that the in-guest service is ready.
 Only then does guest provisioning continue. The temporary answer media is deleted after
-readiness; its plaintext Setup password is never persisted in InfraOps.
+readiness — or as soon as the job fails, is cancelled or is interrupted — and cached copies
+of the answer file are removed from the guest. Its plaintext Setup password is never
+persisted in InfraOps.
 
 ## OVF/OVA package branch
 
@@ -60,15 +63,17 @@ Windows PowerShell guest action.
 
 ## State, errors, and retry
 
-Job state includes `ACTION_REQUIRED`; step state includes `WARNING`,
-`WAITING_FOR_PREREQUISITE`, and `NOT_APPLICABLE`. The UI separately displays infrastructure,
+Job state includes `ACTION_REQUIRED` and `INTERRUPTED` (worker died; retryable); step state
+includes `WARNING`, `WAITING_FOR_PREREQUISITE`, and `NOT_APPLICABLE`. The UI separately displays infrastructure,
 guest OS, VMware Tools, and guest-provisioning state. A missing prerequisite is not a red
 failure. Real failures retain human reason/action text and administrator-only diagnostics.
 
 Every pyVmomi `CreateVM_Task`, `ReconfigVM_Task`, and `PowerOnVM_Task` is awaited before its
 stage advances. Content Library deploy checks the structured `succeeded` result and created
-resource ID. Retry retains succeeded stages and resolves an existing VM ID before any create
-operation. VM deletion is never an automatic rollback.
+resource ID. Retry retains succeeded stages. Before any create operation the clone stage
+looks the name up: it resumes only on a VM carrying this job's ownership marker and fails
+with "name taken" for any other VM, which it never modifies. VM deletion is never an
+automatic rollback.
 
 The final-validation stage verifies the requested guest/network/identity state and creates
 a grouped checklist artifact. `COMPLETED` means requested provisioning and verification

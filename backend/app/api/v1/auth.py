@@ -5,12 +5,10 @@ from __future__ import annotations
 import datetime as dt
 
 from fastapi import APIRouter, Request, Response, status
-from sqlalchemy import select
 
 from app.api.deps import ClientIp, CurrentUser, DbSession
 from app.audit.actions import AuditAction
 from app.audit.recorder import AuditRecorder
-from app.auth.dependencies import get_current_user
 from app.auth.permissions import permissions_for_roles
 from app.auth.service import RefreshTokenReuseError, auth_service
 from app.core.config import get_settings

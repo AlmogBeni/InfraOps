@@ -68,7 +68,7 @@ def _create_token(
     extra_claims: dict[str, Any] | None = None,
 ) -> tuple[str, str, dt.datetime]:
     settings = get_settings()
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     expires_at = now + dt.timedelta(minutes=expires_minutes)
     jti = uuid.uuid4().hex
     payload: dict[str, Any] = {

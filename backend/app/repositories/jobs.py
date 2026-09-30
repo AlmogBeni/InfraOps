@@ -125,8 +125,9 @@ class JobRepository:
     async def heartbeat(self, job_id: uuid.UUID, worker_id: str) -> bool | None:
         """Refresh a RUNNING job's heartbeat.
 
-        Returns the job's ``cancel_requested`` flag, or ``None`` when this
-        worker no longer owns the job (e.g. the reaper interrupted it).
+        Returns the job's ``cancel_requested`` flag; ``False`` once this worker
+        has itself moved the job to a terminal state; ``None`` when this worker
+        no longer owns the job (e.g. the reaper interrupted it).
         """
         now = dt.datetime.now(dt.UTC)
         result = await self.session.execute(
@@ -141,7 +142,18 @@ class JobRepository:
         )
         row = result.first()
         await self.session.commit()
-        return None if row is None else bool(row[0])
+        if row is not None:
+            return bool(row[0])
+        current = (
+            await self.session.execute(
+                select(ProvisioningJob.status, ProvisioningJob.worker_id).where(
+                    ProvisioningJob.id == job_id
+                )
+            )
+        ).first()
+        if current is not None and current.worker_id == worker_id and current.status in TERMINAL_JOB_STATUSES:
+            return False  # finished by this worker; nothing to do
+        return None
 
     async def claim_stale_running_jobs(
         self,
@@ -298,15 +310,33 @@ class JobRepository:
             await self.session.commit()
         return reset
 
+    @staticmethod
+    def may_hold_unattended_media(job: ProvisioningJob) -> bool:
+        """True when temporary answer media may still be attached to the VM."""
+        steps = {step.stage_key: step for step in job.steps}
+        prepare = steps.get("prepare_unattended_install")
+        cleanup = steps.get("cleanup_unattended_media")
+        artifacts = (prepare.artifacts or {}) if prepare is not None else {}
+        return bool(
+            artifacts.get("datastore_path")
+            and not artifacts.get("media_removed")
+            and (cleanup is None or cleanup.status != StepStatus.SUCCEEDED)
+        )
+
     async def request_cancel(self, job: ProvisioningJob) -> None:
         job.cancel_requested = True
-        # No worker executes QUEUED or INTERRUPTED jobs, so nothing would ever
-        # read the flag: finalise them immediately.
-        if job.status in (JobStatus.QUEUED, JobStatus.INTERRUPTED):
+        # No worker executes QUEUED, INTERRUPTED or paused jobs, so nothing
+        # would ever read the flag: finalise them immediately.
+        if job.status in (JobStatus.QUEUED, JobStatus.INTERRUPTED, JobStatus.ACTION_REQUIRED):
             job.status = JobStatus.CANCELLED
+            job.action_required = None
             job.finished_at = dt.datetime.now(dt.UTC)
             for step in job.steps:
-                if step.status in (StepStatus.PENDING, StepStatus.RUNNING):
+                if step.status in (
+                    StepStatus.PENDING,
+                    StepStatus.RUNNING,
+                    StepStatus.WAITING_FOR_PREREQUISITE,
+                ):
                     step.status = StepStatus.CANCELLED
         await self.session.commit()
 
