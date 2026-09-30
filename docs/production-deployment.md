@@ -94,10 +94,11 @@ address to evade login rate limits or falsify audit records.
 
 ## HTTPS for the web UI
 
-The session cookie is `Secure` in production, and browsers discard `Secure` cookies on
-plain-HTTP pages. Opened over `http://<server>`, InfraOps signs you in but every page
-reload signs you out again. Serve it over HTTPS in one of two
-ways:
+With `COOKIE_SECURE=true` the session cookie is `Secure` whenever the browser uses HTTPS.
+Browsers discard `Secure` cookies on plain-HTTP pages, so over `http://<server>` it is
+issued without that flag: sessions still survive a reload, but the refresh token, like the
+password and all other traffic, crosses the network unencrypted. Serve InfraOps over HTTPS
+in one of two ways:
 
 * **Built-in TLS (no other proxy needed):** put the certificate chain and private key in
   `/opt/InfraOps/tls/tls.crt` and `tls.key` (PEM; e.g. issued by your AD CS for the

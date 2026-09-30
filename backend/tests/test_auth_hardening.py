@@ -85,3 +85,51 @@ def test_session_policy_is_public_and_reflects_settings() -> None:
     app.include_router(router)
     body = TestClient(app).get("/auth/session-policy").json()
     assert body == {"idle_timeout_seconds": 300, "idle_warning_seconds": 60}
+
+
+def _refresh_set_cookie(monkeypatch: pytest.MonkeyPatch, peer: str, headers: dict[str, str]) -> list[str]:
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from app.api.v1.auth import _set_refresh_cookie
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "cookie_secure", True)
+    monkeypatch.setattr(settings, "trusted_proxy_cidrs", "172.16.0.0/12")
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",  # nginx always reaches the API over plain HTTP
+            "path": "/api/v1/auth/login",
+            "query_string": b"",
+            "headers": [(name.encode(), value.encode()) for name, value in headers.items()],
+            "client": (peer, 50000),
+            "server": ("backend", 8000),
+        }
+    )
+    response = Response()
+    _set_refresh_cookie(request, response, "refresh-token")
+    return [part.strip().lower() for part in response.headers["set-cookie"].split(";")]
+
+
+@pytest.mark.parametrize(
+    ("headers", "secure"),
+    [
+        # Plain-HTTP deployment: browsers would discard a Secure cookie, and
+        # every reload would sign the user out.
+        ({"x-forwarded-proto": "http", "origin": "http://infraops.corp.example"}, False),
+        ({"x-forwarded-proto": "https", "origin": "https://infraops.corp.example"}, True),
+        # TLS terminated by a proxy nginx does not trust: the page origin still shows HTTPS.
+        ({"x-forwarded-proto": "http", "origin": "https://infraops.corp.example"}, True),
+    ],
+)
+def test_refresh_cookie_is_secure_exactly_when_the_browser_uses_https(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], secure: bool
+) -> None:
+    attributes = _refresh_set_cookie(monkeypatch, "172.18.0.5", headers)
+
+    assert ("secure" in attributes) is secure
+    assert "httponly" in attributes
+    assert "path=/api/v1/auth" in attributes

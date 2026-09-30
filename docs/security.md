@@ -9,7 +9,9 @@ by deployment hardening guidance.
 ### Authentication & session
 * Local mode issues short-lived JWT access tokens (default 15 min) + long-lived refresh
   JWT delivered only as an **HttpOnly, SameSite=Lax cookie scoped to `/api/v1/auth`**
-  (Secure flag when `COOKIE_SECURE=true`).
+  (with `COOKIE_SECURE=true`, Secure whenever the browser reaches InfraOps over HTTPS, as
+  reported by the trusted proxy's `X-Forwarded-Proto` or the page origin; over plain HTTP,
+  where browsers reject Secure cookies, it is sent without the flag).
 * Access tokens are accepted **only** in the `Authorization: Bearer` header — never in a
   query string.
 * Refresh tokens are registered server-side (`refresh_tokens`, keyed by JWT `jti`). Every

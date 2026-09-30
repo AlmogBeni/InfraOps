@@ -11,6 +11,7 @@ from app.audit.actions import AuditAction
 from app.audit.recorder import AuditRecorder
 from app.auth.permissions import permissions_for_roles
 from app.auth.service import RefreshTokenReuseError, auth_service
+from app.core.client_ip import scheme_from_request
 from app.core.config import get_settings
 from app.core.errors import AuthenticationError, RateLimitError
 from app.core.logging import bind_logging_context, get_logger
@@ -24,13 +25,27 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 REFRESH_COOKIE = "infraops_refresh"
 
 
-def _set_refresh_cookie(response: Response, token: str) -> None:
+def refresh_cookie_secure(request: Request) -> bool:
+    """Mark the refresh cookie Secure whenever the browser uses HTTPS.
+
+    Browsers discard a Secure cookie received over plain HTTP, so on an HTTP
+    deployment a Secure refresh cookie would sign the user out on every page
+    reload. Either signal is enough for Secure: the scheme reported by the
+    trusted proxy, or the page's own origin (sent by browsers on every POST).
+    """
+    if not get_settings().cookie_secure:
+        return False
+    origin = request.headers.get("origin", "").lower()
+    return scheme_from_request(request) == "https" or origin.startswith("https://")
+
+
+def _set_refresh_cookie(request: Request, response: Response, token: str) -> None:
     settings = get_settings()
     response.set_cookie(
         key=REFRESH_COOKIE,
         value=token,
         httponly=True,
-        secure=settings.cookie_secure,
+        secure=refresh_cookie_secure(request),
         samesite="lax",
         max_age=settings.refresh_token_expire_minutes * 60,
         path=f"{settings.api_v1_prefix}/auth",
@@ -48,7 +63,9 @@ async def session_policy() -> SessionPolicyOut:
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, response: Response, db: DbSession, source_ip: ClientIp) -> TokenResponse:
+async def login(
+    payload: LoginRequest, request: Request, response: Response, db: DbSession, source_ip: ClientIp
+) -> TokenResponse:
     limiter = get_login_rate_limiter()
     limit = get_settings().rate_limit_login_per_minute
     # Per client IP and per username: the second bounds distributed guessing
@@ -91,7 +108,7 @@ async def login(payload: LoginRequest, response: Response, db: DbSession, source
     )
     await db.commit()
     bind_logging_context(user_id=str(user.id))
-    _set_refresh_cookie(response, refresh_token)
+    _set_refresh_cookie(request, response, refresh_token)
 
     return TokenResponse(
         access_token=access_token,
@@ -133,7 +150,7 @@ async def refresh_tokens(
         raise
     access_token, expires_at = tokens.access_token, tokens.access_expires_at
     await db.commit()
-    _set_refresh_cookie(response, tokens.refresh_token)
+    _set_refresh_cookie(request, response, tokens.refresh_token)
     return TokenResponse(
         access_token=access_token,
         expires_in=max(0, int((expires_at - dt.datetime.now(dt.UTC)).total_seconds())),
@@ -163,6 +180,9 @@ async def logout(request: Request, db: DbSession, source_ip: ClientIp) -> Respon
     response.delete_cookie(
         REFRESH_COOKIE,
         path=f"{get_settings().api_v1_prefix}/auth",
+        secure=refresh_cookie_secure(request),
+        httponly=True,
+        samesite="lax",
     )
     user = await db.get(User, user_id) if user_id else None
     await AuditRecorder(db).record(

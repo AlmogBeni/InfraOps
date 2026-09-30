@@ -123,7 +123,7 @@ services:
       FRONTEND_HTTPS_PORT: ${FRONTEND_HTTPS_PORT:-8443}
     # Built-in HTTPS: put tls.crt and tls.key in ./tls (FRONTEND_TLS_DIR). When
     # present, 443 serves the app and 80 redirects; otherwise 80 serves HTTP
-    # for a host TLS reverse proxy. Browsers keep the session only over HTTPS.
+    # for a host TLS reverse proxy.
     volumes:
       - "${FRONTEND_TLS_DIR:-./tls}:/etc/infraops/tls:ro"
     ports:

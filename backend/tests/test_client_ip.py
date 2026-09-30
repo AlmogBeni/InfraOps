@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.core.client_ip import resolve_client_ip
+from app.core.client_ip import resolve_client_ip, resolve_scheme
 
 TRUSTED = "172.16.0.0/12"
 
@@ -26,3 +26,11 @@ def test_garbage_header_falls_back_to_peer() -> None:
 
 def test_no_header_uses_peer() -> None:
     assert resolve_client_ip("172.18.0.5", None, TRUSTED) == "172.18.0.5"
+
+
+def test_forwarded_proto_is_honoured_only_from_a_trusted_proxy() -> None:
+    assert resolve_scheme("172.18.0.5", "https", "http", TRUSTED) == "https"
+    assert resolve_scheme("172.18.0.5", "HTTP", "https", TRUSTED) == "http"
+    assert resolve_scheme("198.51.100.7", "https", "http", TRUSTED) == "http"
+    assert resolve_scheme("172.18.0.5", "gopher", "http", TRUSTED) == "http"
+    assert resolve_scheme("172.18.0.5", None, "https", TRUSTED) == "https"

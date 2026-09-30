@@ -47,6 +47,62 @@ def package_type(file_names: list[str]) -> str:
     return "OVF"
 
 
+def vapi_error_text(response: httpx.Response) -> str:
+    """vCenter's own explanation of a failed REST call.
+
+    The vSphere REST API returns ``{"error_type": ..., "messages": [...]}``;
+    ``raise_for_status`` alone discards it, and it is the only place vCenter
+    says which field or object it rejected.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text.strip()[:2000]
+    if not isinstance(body, dict):
+        return str(body)[:2000]
+    messages = [
+        str(message.get("default_message") or message.get("id"))
+        for message in body.get("messages") or []
+        if isinstance(message, dict) and (message.get("default_message") or message.get("id"))
+    ]
+    error_type = str(body.get("error_type") or "")
+    text = "; ".join(messages) or str(body)
+    return (f"{error_type}: {text}" if error_type else text)[:2000]
+
+
+def _deployment_http_error(response: httpx.Response, vm_name: str) -> InfraOperationError:
+    detail = f"HTTP {response.status_code} for {response.request.url}\n{vapi_error_text(response)}"
+    if response.status_code in (401, 403):
+        return InfraOperationError(
+            f"vCenter refused the OVF/OVA deployment for '{vm_name}'.",
+            reason="The vCenter account is not allowed to deploy from this Content Library item.",
+            recommended_action=(
+                "Grant the vCenter service account Content Library and virtual machine provisioning "
+                "privileges on the library, resource pool, datastore, network and VM folder."
+            ),
+            technical_detail=detail,
+            retryable=False,
+        )
+    if response.status_code < 500:
+        return InfraOperationError(
+            f"vCenter rejected the OVF/OVA deployment request for '{vm_name}'.",
+            reason="vCenter did not accept the deployment specification or target.",
+            recommended_action=(
+                "An administrator can see vCenter's explanation in the technical output; check it "
+                "against the selected package, resource pool, datastore and network, then retry."
+            ),
+            technical_detail=detail,
+            retryable=False,
+        )
+    return InfraOperationError(
+        f"vCenter could not deploy the OVF/OVA package for '{vm_name}'.",
+        reason="The vSphere REST API returned a server error.",
+        recommended_action="Check the vCenter task list and service health, then retry the stage.",
+        technical_detail=detail,
+        retryable=True,
+    )
+
+
 def _parse_datetime(value: object) -> dt.datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -92,13 +148,16 @@ class ContentLibraryClient:
             except InfraOperationError:
                 raise
             except (httpx.HTTPError, ValueError) as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, httpx.HTTPStatusError):
+                    detail += f"\nvCenter response: {vapi_error_text(exc.response)}"
                 raise InfraOperationError(
                     "Could not query the vCenter Content Library.",
                     reason="The vSphere REST API session or inventory request failed.",
                     recommended_action=(
                         "Verify Content Library read permissions and the vCenter TLS configuration."
                     ),
-                    technical_detail=f"{type(exc).__name__}: {exc}",
+                    technical_detail=detail,
                     retryable=True,
                 ) from exc
             finally:
@@ -204,7 +263,8 @@ class ContentLibraryClient:
                 params={"action": "filter"},
                 json={"target": deployment_target},
             )
-            filter_response.raise_for_status()
+            if filter_response.is_error:
+                raise _deployment_http_error(filter_response, spec.vm_name)
             summary = filter_response.json()
             network_names = summary.get("networks") if isinstance(summary, dict) else []
             network_mappings = {
@@ -218,7 +278,9 @@ class ContentLibraryClient:
                 "annotation": owner_annotation(spec.description, spec.job_id),
                 # A provisioning submission is an explicit deployment action.
                 # vCenter still validates every EULA and returns structured errors.
-                "accept_all_eula": True,
+                # Required, and the REST name is case-sensitive: the Python SDK
+                # spelling ``accept_all_eula`` leaves it missing (HTTP 400).
+                "accept_all_EULA": True,
             }
             if network_mappings:
                 deployment_spec["network_mappings"] = network_mappings
@@ -232,7 +294,8 @@ class ContentLibraryClient:
                 json={"target": deployment_target, "deployment_spec": deployment_spec},
                 timeout=1800.0,
             )
-            response.raise_for_status()
+            if response.is_error:
+                raise _deployment_http_error(response, spec.vm_name)
             result = response.json()
             resource = result.get("resource_id") if isinstance(result, dict) else None
             resource_id = resource.get("id") if isinstance(resource, dict) else None

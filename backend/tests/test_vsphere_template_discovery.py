@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 
 import httpx
@@ -161,3 +162,109 @@ def test_datacenter_resolution_handles_nested_vm_folders() -> None:
     vm.parent = nested
 
     assert VsphereVMwareService._owning_datacenter(vm) is datacenter
+
+
+class _FakeSecrets:
+    async def get_credentials(self, username_ref: str, password_ref: str) -> tuple[str, str]:
+        return "infraops.svc", "not-a-real-password"
+
+
+def _deploy_spec() -> CloneSpec:
+    return CloneSpec(
+        template_id="library-item:item-ovf",
+        vm_name="APP-501",
+        datacenter_id="datacenter-21",
+        host_id="host-10",
+        datastore_id="datastore-12",
+        network_id="dvportgroup-44",
+        job_id="job-1",
+    )
+
+
+def _mock_vcenter(monkeypatch: pytest.MonkeyPatch, deploy: httpx.Response) -> list[tuple[str, dict]]:
+    """Route the Content Library client's real HTTP calls to a fake vCenter."""
+    calls: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/session":
+            return httpx.Response(201, json="session-token")
+        assert request.url.path == "/api/vcenter/ovf/library-item/item-ovf"
+        assert request.headers["vmware-api-session-id"] == "session-token"
+        action = request.url.params["action"]
+        calls.append((action, json.loads(request.content)))
+        if action == "filter":
+            return httpx.Response(200, json={"networks": ["VM Network"]})
+        return deploy
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_ovf_deploy_sends_the_rest_api_field_names(target, monkeypatch) -> None:
+    calls = _mock_vcenter(
+        monkeypatch,
+        httpx.Response(
+            200, json={"succeeded": True, "resource_id": {"type": "VirtualMachine", "id": "vm-501"}}
+        ),
+    )
+
+    vm = await ContentLibraryClient(_FakeSecrets()).deploy_ovf_package(
+        target, _deploy_spec(), resource_pool_id="resgroup-8"
+    )
+
+    assert (vm.id, vm.name) == ("vm-501", "APP-501")
+    target_body = {"resource_pool_id": "resgroup-8", "host_id": "host-10"}
+    assert calls[0] == ("filter", {"target": target_body})
+    action, body = calls[1]
+    assert action == "deploy"
+    assert body["target"] == target_body
+    spec = body["deployment_spec"]
+    # The REST field is case-sensitive and required; a wrong spelling is HTTP 400.
+    assert spec["accept_all_EULA"] is True
+    assert "accept_all_eula" not in spec
+    assert spec["name"] == "APP-501"
+    assert spec["default_datastore_id"] == "datastore-12"
+    assert spec["network_mappings"] == {"VM Network": "dvportgroup-44"}
+
+
+@pytest.mark.asyncio
+async def test_ovf_deploy_rejection_reports_what_vcenter_said(target, monkeypatch) -> None:
+    vcenter_message = (
+        "Structure 'com.vmware.vcenter.ovf.library_item.resource_pool_deployment_spec' "
+        "is missing a field: accept_all_EULA"
+    )
+    _mock_vcenter(
+        monkeypatch,
+        httpx.Response(
+            400,
+            json={
+                "error_type": "INVALID_ARGUMENT",
+                "messages": [
+                    {
+                        "args": [],
+                        "default_message": vcenter_message,
+                        "id": "vapi.bindings.typeconverter.dict.missing.key",
+                    }
+                ],
+            },
+        ),
+    )
+
+    with pytest.raises(InfraOperationError) as caught:
+        await ContentLibraryClient(_FakeSecrets()).deploy_ovf_package(
+            target, _deploy_spec(), resource_pool_id="resgroup-8"
+        )
+
+    error = caught.value
+    assert "rejected the OVF/OVA deployment request" in error.human_message
+    # vCenter's explanation is administrator diagnostics, not operator text.
+    assert f"INVALID_ARGUMENT: {vcenter_message}" in error.technical_detail
+    assert vcenter_message not in error.reason
+    assert "read permissions" not in error.recommended_action
+    assert error.retryable is False

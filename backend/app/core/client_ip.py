@@ -5,7 +5,8 @@ we trust. The address is taken from the header only when the direct peer is
 inside ``TRUSTED_PROXY_CIDRS``, and then from the *rightmost* untrusted hop
 (the value our own proxy appended), never from the client-supplied leftmost
 entry. The bundled nginx overwrites the header with the address it resolved
-itself (see frontend/nginx/default.conf.template).
+itself (see frontend/nginx/default.conf.template). ``X-Forwarded-Proto`` is
+honoured under the same rule; nginx sets it to the scheme the browser used.
 """
 
 from __future__ import annotations
@@ -67,4 +68,25 @@ def client_ip_from_request(request) -> str | None:
     peer = request.client.host if request.client else None
     return resolve_client_ip(
         peer, request.headers.get("x-forwarded-for"), get_settings().trusted_proxy_cidrs
+    )
+
+
+def resolve_scheme(
+    peer: str | None, forwarded_proto: str | None, scheme: str, trusted_cidrs: str
+) -> str:
+    """The scheme the client used; ``X-Forwarded-Proto`` counts only from a trusted proxy."""
+    if peer and forwarded_proto and _is_trusted(peer, _parse_networks(trusted_cidrs)):
+        proto = forwarded_proto.split(",")[0].strip().lower()
+        if proto in ("http", "https"):
+            return proto
+    return scheme
+
+
+def scheme_from_request(request) -> str:
+    peer = request.client.host if request.client else None
+    return resolve_scheme(
+        peer,
+        request.headers.get("x-forwarded-proto"),
+        request.url.scheme,
+        get_settings().trusted_proxy_cidrs,
     )
