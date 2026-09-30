@@ -10,14 +10,20 @@ import {
   type ReactNode,
 } from 'react'
 
+import {
+  DEFAULT_SESSION_POLICY,
+  rememberSignOutReason,
+  type SignOutReason,
+} from '@/features/auth/session'
 import { api, setAccessToken } from '@/lib/api'
-import type { UserOut } from '@/types/api'
+import type { SessionPolicy, UserOut } from '@/types/api'
 
 interface AuthContextValue {
   user: UserOut | null
   initializing: boolean
+  policy: SessionPolicy
   login: (username: string, password: string) => Promise<UserOut>
-  logout: () => Promise<void>
+  logout: (reason?: SignOutReason) => Promise<void>
   hasPermission: (permission: string) => boolean
   hasRole: (...roles: string[]) => boolean
 }
@@ -38,9 +44,18 @@ function readStoredUser(): UserOut | null {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserOut | null>(readStoredUser())
   const [initializing, setInitializing] = useState(true)
+  const [policy, setPolicy] = useState<SessionPolicy>(DEFAULT_SESSION_POLICY)
 
   useEffect(() => {
     let cancelled = false
+    api
+      .sessionPolicy()
+      .then((next) => {
+        if (!cancelled) setPolicy(next)
+      })
+      .catch(() => {
+        /* keep the conservative defaults */
+      })
     async function bootstrap() {
       try {
         const current = await api.me()
@@ -57,10 +72,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const detail = (event as CustomEvent<UserOut>).detail
       if (detail) applyUser(detail)
     }
+    // Signing out in one tab signs out every tab of this browser.
+    function onStorage(event: StorageEvent) {
+      if (event.key === USER_STORAGE_KEY && event.newValue === null) applyUser(null)
+    }
     window.addEventListener('infraops:user', onRefreshed)
+    window.addEventListener('storage', onStorage)
     return () => {
       cancelled = true
       window.removeEventListener('infraops:user', onRefreshed)
+      window.removeEventListener('storage', onStorage)
     }
   }, [])
 
@@ -79,9 +100,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return token.user
   }, [])
 
-  const logout = useCallback(async () => {
-    await api.logout()
-    applyUser(null)
+  const logout = useCallback(async (reason?: SignOutReason) => {
+    if (reason) rememberSignOutReason(reason)
+    try {
+      await api.logout()
+    } finally {
+      applyUser(null)
+    }
   }, [])
 
   const hasPermission = useCallback(
@@ -95,8 +120,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const value = useMemo(
-    () => ({ user, initializing, login, logout, hasPermission, hasRole }),
-    [user, initializing, login, logout, hasPermission, hasRole],
+    () => ({ user, initializing, policy, login, logout, hasPermission, hasRole }),
+    [user, initializing, policy, login, logout, hasPermission, hasRole],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

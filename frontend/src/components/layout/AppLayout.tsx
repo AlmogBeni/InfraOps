@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 
 import { Header } from '@/components/layout/Header'
 import { LoadingState } from '@/components/ui/feedback'
+import { IdleSessionDialog } from '@/features/auth/IdleSessionDialog'
+import { InsecureTransportNotice } from '@/features/auth/InsecureTransportNotice'
 import { useAuth } from '@/lib/auth'
 
 export function RequireAuth() {
@@ -18,8 +20,12 @@ export function RequireAuth() {
   return (
     <div className="layout-shell min-h-screen">
       <Header />
+      <IdleSessionDialog />
       <main className="px-4 pb-12 pt-6 sm:px-6 lg:px-8 lg:pt-8">
         <div className="mx-auto w-full max-w-[1600px]">
+          <div className="mb-4 empty:hidden">
+            <InsecureTransportNotice />
+          </div>
           <Outlet />
         </div>
       </main>

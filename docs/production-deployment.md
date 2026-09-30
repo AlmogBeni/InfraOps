@@ -92,6 +92,21 @@ address to evade login rate limits or falsify audit records.
 - The worker exposes `/metrics` and `/health` on `WORKER_METRICS_PORT` (9102) inside the
   Compose network; scrape it alongside the API's `/metrics`.
 
+## HTTPS for the web UI
+
+The session cookie is `Secure` in production, and browsers discard `Secure` cookies on
+plain-HTTP pages. Opened over `http://<server>`, InfraOps signs you in but every page
+reload signs you out again (the UI shows a warning). Serve it over HTTPS in one of two
+ways:
+
+* **Built-in TLS (no other proxy needed):** put the certificate chain and private key in
+  `/opt/InfraOps/tls/tls.crt` and `tls.key` (PEM; e.g. issued by your AD CS for the
+  server's DNS name), set `FRONTEND_BIND_ADDRESS=0.0.0.0` if users connect from other
+  machines, and run `docker compose up -d frontend`. HTTPS is served on
+  `FRONTEND_HTTPS_PORT` (default 8443); the HTTP port then only redirects to HTTPS.
+* **Host reverse proxy:** leave `./tls` empty and terminate TLS in front of
+  `127.0.0.1:8080`, forwarding `Host`, `X-Forwarded-For` and `X-Forwarded-Proto`.
+
 ## Trusting the vCenter certificate
 
 Production refuses vCenter connections with TLS verification disabled. With the default
@@ -114,3 +129,9 @@ VMCA-signed certificate:
 
 A missing or unreadable `VCENTER_CA_FILE` is reported as a clear configuration error on
 the job and in the logs.
+
+If the certificate cannot be verified and you accept the risk, set
+`ALLOW_INSECURE_VCENTER_TLS=true` in `.env`, restart the backend and worker, and leave
+*Verify the TLS certificate* unticked on the connection. The connection is still
+encrypted, but InfraOps no longer confirms the vCenter's identity; each connection logs a
+warning.

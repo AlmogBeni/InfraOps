@@ -17,12 +17,12 @@ SECRET_NAME_PATTERN = SECRET_REFERENCE_PATTERN
 
 
 def _require_tls_verification_in_production(value: bool | None) -> bool | None:
-    from app.core.config import get_settings
+    from app.services.vmware.base import insecure_vcenter_tls_permitted
 
-    if value is False and get_settings().is_production:
+    if value is False and not insecure_vcenter_tls_permitted():
         raise ValueError(
-            "TLS certificate verification cannot be disabled in production. "
-            "Trust the vCenter CA (VCENTER_CA_FILE) instead."
+            "TLS certificate verification cannot be disabled in production. Trust the vCenter CA "
+            "(VCENTER_CA_FILE), or set ALLOW_INSECURE_VCENTER_TLS=true to accept the risk."
         )
     return value
 

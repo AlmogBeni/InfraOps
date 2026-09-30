@@ -23,6 +23,7 @@ import type {
   ProvisioningRequest,
   ResourcePoolOut,
   RoleOut,
+  SessionPolicy,
   SecretReferenceOut,
   TemplateOut,
   TokenResponse,
@@ -169,6 +170,8 @@ export const api = {
   async me(): Promise<UserOut> {
     return request<UserOut>('/auth/me')
   },
+
+  sessionPolicy: () => request<SessionPolicy>('/auth/session-policy', { retryOn401: false }),
 
   // Infrastructure discovery
   vcenters: () => request<VCenterSummary[]>('/infrastructure/vcenters'),

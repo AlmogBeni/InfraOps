@@ -23,8 +23,9 @@ dist/
 # Runtime secret material belongs only in the repository-root directory.
 # Do not ignore backend/app/secrets: it is application source code.
 /secrets/
-# Host-side CA bundles mounted into the containers.
+# Host-side CA bundles and TLS key material mounted into the containers.
 /certs/
+/tls/
 
 # Databases / volumes
 postgres-data/

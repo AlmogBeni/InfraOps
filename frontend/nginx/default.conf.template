@@ -19,72 +19,17 @@ map "$from_trusted_proxy:$http_x_forwarded_proto" $forwarded_proto {
     default   $scheme;
 }
 
+# Resolve the real client address from X-Forwarded-For only when the
+# request arrives from the trusted reverse proxy. Everything else keeps
+# the TCP peer address, so clients cannot spoof their IP.
+set_real_ip_from ${TRUSTED_PROXY_CIDR};
+real_ip_header X-Forwarded-For;
+real_ip_recursive on;
+
 server {
     listen 80;
     server_name _;
-
-    root /usr/share/nginx/html;
-    index index.html;
-
-    access_log /var/log/nginx/access.log infraops;
-
-    # Resolve the real client address from X-Forwarded-For only when the
-    # request arrives from the trusted reverse proxy. Everything else keeps
-    # the TCP peer address, so clients cannot spoof their IP.
-    set_real_ip_from ${TRUSTED_PROXY_CIDR};
-    real_ip_header X-Forwarded-For;
-    real_ip_recursive on;
-
-    # Security headers
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-Frame-Options DENY always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
-
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript image/svg+xml;
-
-    # Container-local liveness probe. Keep this independent of the backend so
-    # Docker reports the frontend's health rather than the API's health.
-    location = /frontend-health {
-        access_log off;
-        default_type text/plain;
-        return 200 "ok\n";
-    }
-
-    # Server-Sent Events stream — disable buffering so events flush immediately
-    location ~ ^/api/v1/provisioning/jobs/[^/]+/events$ {
-        proxy_pass http://backend:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        # Overwrite (never append to) client-supplied forwarding headers.
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $forwarded_proto;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 3600s;
-    }
-
-    # REST API
-    location /api/ {
-        proxy_pass http://backend:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $forwarded_proto;
-        proxy_read_timeout 300s;
-    }
-
-    location = /health {
-        proxy_pass http://backend:8000;
-        proxy_set_header X-Forwarded-For $remote_addr;
-    }
-
-    # SPA fallback
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
+    # Serves the application, or only a health check and a redirect to HTTPS
+    # when a certificate is mounted (see 40-infraops-tls.sh).
+    include /etc/nginx/infraops/http-mode.conf;
 }

@@ -73,3 +73,15 @@ def test_idempotency_fingerprint_tracks_the_request_body() -> None:
     different.hardware.cpu = 8
     assert request_fingerprint(first) == request_fingerprint(same)
     assert request_fingerprint(first) != request_fingerprint(different)
+
+
+def test_session_policy_is_public_and_reflects_settings() -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.v1.auth import router
+
+    app = FastAPI()
+    app.include_router(router)
+    body = TestClient(app).get("/auth/session-policy").json()
+    assert body == {"cookie_secure": False, "idle_timeout_seconds": 300, "idle_warning_seconds": 60}

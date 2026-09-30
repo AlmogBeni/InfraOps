@@ -1,5 +1,8 @@
 import { Boxes, KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+
+import { InsecureTransportNotice } from '@/features/auth/InsecureTransportNotice'
+import { clearSignOutReason, peekSignOutReason } from '@/features/auth/session'
 import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -15,6 +18,9 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // Read once on mount, then consume, so the message shows exactly once.
+  const [signOutReason] = useState(peekSignOutReason)
+  useEffect(() => clearSignOutReason(), [])
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -79,6 +85,14 @@ export function LoginPage() {
               <p className="mt-2 text-xs leading-5 text-[#68736d]">Use the account assigned by your infrastructure administrator.</p>
             </div>
             <form onSubmit={handleSubmit}>
+              <div className="mb-5 empty:hidden"><InsecureTransportNotice /></div>
+              {signOutReason === 'idle' && !error && (
+                <div className="mb-5">
+                  <Alert tone="info" title="You were signed out">
+                    Your session ended after a period of inactivity. Sign in again to continue.
+                  </Alert>
+                </div>
+              )}
               {error && <div className="mb-5"><Alert tone="danger" title="Authentication failed">{error}</Alert></div>}
               <FormRow label="Username" htmlFor="login-username" required>
                 <Input id="login-username" autoComplete="username" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} required />

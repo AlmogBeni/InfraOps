@@ -25,10 +25,13 @@ RUN apk add --no-cache curl
 # (the Docker bridge gateway by default). Override at runtime to narrow it.
 ENV TRUSTED_PROXY_CIDR=172.16.0.0/12
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/app.conf nginx/http-mode.conf /etc/nginx/infraops/
+# Runs before nginx starts: enables HTTPS when /etc/infraops/tls/tls.{crt,key} exist.
+COPY --chmod=0755 nginx/40-infraops-tls.sh /docker-entrypoint.d/40-infraops-tls.sh
 RUN rm -f /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 80 443
 
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
   CMD curl --fail --silent --show-error --max-time 2 http://127.0.0.1/frontend-health >/dev/null || exit 1

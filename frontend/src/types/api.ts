@@ -32,6 +32,12 @@ export interface UserOut {
   permissions: string[]
 }
 
+export interface SessionPolicy {
+  cookie_secure: boolean
+  idle_timeout_seconds: number
+  idle_warning_seconds: number
+}
+
 export interface TokenResponse {
   access_token: string
   token_type: string

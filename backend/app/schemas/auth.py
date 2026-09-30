@@ -23,6 +23,14 @@ class UserOut(BaseModel):
     permissions: list[str] = []
 
 
+class SessionPolicyOut(BaseModel):
+    """Public session settings the browser needs before and after sign-in."""
+
+    cookie_secure: bool
+    idle_timeout_seconds: int
+    idle_warning_seconds: int
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

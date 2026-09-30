@@ -16,7 +16,7 @@ from app.core.errors import AuthenticationError, RateLimitError
 from app.core.logging import bind_logging_context, get_logger
 from app.core.rate_limit import get_login_rate_limiter
 from app.models.user import User
-from app.schemas.auth import LoginRequest, TokenResponse, UserOut
+from app.schemas.auth import LoginRequest, SessionPolicyOut, TokenResponse, UserOut
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -34,6 +34,17 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         samesite="lax",
         max_age=settings.refresh_token_expire_minutes * 60,
         path=f"{settings.api_v1_prefix}/auth",
+    )
+
+
+@router.get("/session-policy", response_model=SessionPolicyOut)
+async def session_policy() -> SessionPolicyOut:
+    """Unauthenticated: the login page uses it to warn about insecure transport."""
+    settings = get_settings()
+    return SessionPolicyOut(
+        cookie_secure=settings.cookie_secure,
+        idle_timeout_seconds=settings.session_idle_timeout_seconds,
+        idle_warning_seconds=settings.session_idle_warning_seconds,
     )
 
 

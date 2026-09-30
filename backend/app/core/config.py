@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -65,12 +65,20 @@ class Settings(BaseSettings):
     # ── Infrastructure integrations ──────────────────────────────────────────
     infrastructure_mode: InfrastructureMode = InfrastructureMode.REAL
     vcenter_ca_file: str = ""
+    # Explicit opt-in for vCenters whose certificate cannot be verified (e.g. the
+    # default self-signed certificate). Traffic stays encrypted, but the server
+    # identity is not checked, so credentials could reach an impostor.
+    allow_insecure_vcenter_tls: bool = False
 
     # ── Authentication ───────────────────────────────────────────────────────
     auth_mode: AuthMode = AuthMode.LOCAL
     access_token_expire_minutes: int = 15
     refresh_token_expire_minutes: int = 720
     cookie_secure: bool = True
+    # Client-side inactivity policy: after the timeout the UI asks the user to
+    # stay signed in and signs them out when the warning period elapses.
+    session_idle_timeout_seconds: int = Field(default=300, ge=60, le=86400)
+    session_idle_warning_seconds: int = Field(default=60, ge=10, le=600)
     rate_limit_login_per_minute: int = 10
 
     # ── Job worker ───────────────────────────────────────────────────────────
