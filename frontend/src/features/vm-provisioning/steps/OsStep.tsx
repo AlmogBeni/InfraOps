@@ -3,14 +3,14 @@ import { MonitorCog } from 'lucide-react'
 import { Badge } from '@/components/ui/feedback'
 import { FormRow, Input } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
-import { useTemplates } from '@/features/vm-provisioning/hooks'
+import { useIsos } from '@/features/vm-provisioning/hooks'
 import { deriveGuestIdentity } from '@/features/vm-provisioning/identity'
 
 export function OsStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
   const data = wizard.data
-  const templates = useTemplates(data.vcenter_id, data.datacenter_id, data.source_type === 'template')
-  const selectedTemplate = templates.data?.find((template) => template.id === data.template_id)
+  const isos = useIsos(data.vcenter_id, data.datacenter_id)
+  const selectedIso = isos.data?.find((image) => image.id === data.iso_id)
   const identity = deriveGuestIdentity(
     data.vm_name,
     data.hostname,
@@ -23,9 +23,7 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
         <header>
           <p className="console-kicker">Guest operating system</p>
           <h2>Windows identity</h2>
-          <p>{data.source_type === 'blank'
-            ? 'Windows is installed unattended from the selected ISO.'
-            : 'Windows is inherited from the selected OVF/OVA package. InfraOps generalizes each copy with Sysprep and completes Windows Setup unattended.'}</p>
+          <p>Windows Server is installed unattended from the selected ISO.</p>
         </header>
       )}
 
@@ -39,9 +37,9 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
         </div>
         <div className="flex flex-wrap items-center gap-2 px-4 py-3">
           <span className="text-sm font-semibold text-slate-900">
-            {data.source_type === 'blank' ? 'Windows installation ISO' : selectedTemplate?.name ?? 'Selected OVF / OVA'}
+            {selectedIso?.name ?? 'Windows Server installation ISO'}
           </span>
-          <Badge tone="neutral">{data.source_type === 'blank' ? 'Unattended install' : selectedTemplate?.type ?? 'Package'}</Badge>
+          <Badge tone="neutral">Unattended install</Badge>
         </div>
       </div>
 
@@ -76,20 +74,20 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
           <FormRow
             label="Windows language / locale"
             htmlFor="installation-locale"
-            hint={data.source_type === 'blank'
-              ? 'Language tag available in the selected ISO, such as en-US.'
-              : 'Language tag installed in the package image, such as en-US. Applied during first-boot Windows Setup.'}
+            hint="Language tag available in the selected ISO, such as en-US."
           >
             <Input id="installation-locale" value={data.installation_locale} onChange={(event) => wizard.update({ installation_locale: event.target.value })} />
           </FormRow>
           <FormRow label="Keyboard input locale" htmlFor="input-locale" hint="Windows input locale, for example 0409:00000409.">
             <Input id="input-locale" className="font-mono" value={data.input_locale} onChange={(event) => wizard.update({ input_locale: event.target.value })} />
           </FormRow>
-          {data.source_type === 'blank' && (
-            <FormRow label="Windows image index" htmlFor="windows-image-index" hint="Edition index inside install.wim or install.esd.">
-              <Input id="windows-image-index" type="number" min={1} max={99} value={data.windows_image_index} onChange={(event) => wizard.update({ windows_image_index: Number(event.target.value) || 1 })} />
-            </FormRow>
-          )}
+          <FormRow
+            label="Windows image index"
+            htmlFor="windows-image-index"
+            hint="Edition inside install.wim. Server ISOs usually list Standard Core (1), Standard with Desktop Experience (2), Datacenter Core (3) and Datacenter with Desktop Experience (4)."
+          >
+            <Input id="windows-image-index" type="number" min={1} max={99} value={data.windows_image_index} onChange={(event) => wizard.update({ windows_image_index: Number(event.target.value) || 1 })} />
+          </FormRow>
         </div>
       </div>
     </section>

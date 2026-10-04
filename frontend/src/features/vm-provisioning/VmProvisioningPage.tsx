@@ -22,15 +22,25 @@ import { LocationStep } from '@/features/vm-provisioning/steps/LocationStep'
 import { MediaStep } from '@/features/vm-provisioning/steps/MediaStep'
 import { NetworkStep } from '@/features/vm-provisioning/steps/NetworkStep'
 import { ReviewStep } from '@/features/vm-provisioning/steps/ReviewStep'
-import { SourceStep } from '@/features/vm-provisioning/steps/SourceStep'
-import { api } from '@/lib/api'
+import { ApiError, api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
+import type { PreflightCheck } from '@/types/api'
+
+interface SubmitProblem {
+  message: string
+  /** Blocking server-side preflight checks; nothing was created. */
+  checks: PreflightCheck[]
+}
+
+function blockingChecks(error: unknown): PreflightCheck[] {
+  if (!(error instanceof ApiError)) return []
+  const details = error.details as { blocking_checks?: PreflightCheck[] } | undefined
+  return Array.isArray(details?.blocking_checks) ? details.blocking_checks : []
+}
 
 function StepContent() {
   const { currentStep } = useWizard()
   switch (currentStep.key) {
-    case 'deployment':
-      return <SourceStep />
     case 'location':
       return <LocationStep />
     case 'media':
@@ -53,35 +63,29 @@ function WizardShell() {
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
   const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitProblem, setSubmitProblem] = useState<SubmitProblem | null>(null)
   const [discardOpen, setDiscardOpen] = useState(false)
-  const [confirmOpen, setConfirmOpen] = useState(false)
   const isReview = wizard.currentStep.key === 'review'
   const canSubmit = hasPermission('provisioning.submit')
   const nextStep = WIZARD_STEPS[wizard.currentIndex + 1]
 
+  // The server runs the full preflight on submission and creates nothing
+  // unless every blocking check passes; its findings are shown inline.
   async function handleProvision() {
-    setConfirmOpen(false)
-    setSubmitError(null)
+    if (!wizard.validateAll()) return
+    setSubmitProblem(null)
     setSubmitting(true)
     try {
-      const payload = wizard.requestPayload()
-      const preflight = await api.validate(payload)
-      if (!preflight.ready) {
-        const failures = preflight.checks
-          .filter((check) => check.status === 'FAIL')
-          .map((check) => `${check.label}: ${check.detail}`)
-          .join(' ')
-        setSubmitError(`${preflight.summary}${failures ? ` ${failures}` : ''}`)
-        return
-      }
       const idempotencyKey =
         globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
-      const job = await api.submitJob(payload, idempotencyKey)
+      const job = await api.submitJob(wizard.requestPayload(), idempotencyKey)
       wizard.reset()
       navigate(`/jobs/${job.id}`)
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : 'The deployment could not be submitted.')
+      setSubmitProblem({
+        message: error instanceof Error ? error.message : 'The deployment could not be submitted.',
+        checks: blockingChecks(error),
+      })
     } finally {
       setSubmitting(false)
     }
@@ -97,7 +101,7 @@ function WizardShell() {
           </div>
           <h1 className="mt-3 text-3xl font-semibold tracking-[-0.035em] text-[#17201c]">Create a virtual machine</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68736d]">
-            Follow a guided, datacenter-aware workflow. Each choice limits the inventory shown in the next step.
+            Windows Server is installed from an ISO and configured without anyone at the console. Each choice limits the inventory shown in the next step.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -137,7 +141,21 @@ function WizardShell() {
             </div>
           )}
 
-          {submitError && <div className="mt-6"><Alert tone="danger" title="Deployment is not ready">{submitError}</Alert></div>}
+          {submitProblem && (
+            <div className="mt-6">
+              <Alert tone="danger" title="Deployment is not ready — nothing was created">
+                {submitProblem.checks.length > 0 ? (
+                  <ul className="mt-1 list-inside list-disc space-y-1 text-xs" aria-label="Blocking checks">
+                    {submitProblem.checks.map((check) => (
+                      <li key={`${check.code}-${check.label}`}>
+                        <strong>{check.label}:</strong> {check.detail}
+                      </li>
+                    ))}
+                  </ul>
+                ) : submitProblem.message}
+              </Alert>
+            </div>
+          )}
         </div>
 
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-[#d8e1d9] bg-[linear-gradient(135deg,#ffffff_0%,#f0f6f0_100%)] px-5 py-4 sm:px-7">
@@ -156,10 +174,10 @@ function WizardShell() {
               loading={submitting}
               disabled={!canSubmit}
               title={canSubmit ? undefined : 'Your role cannot create virtual machines.'}
-              onClick={() => { if (wizard.validateAll()) setConfirmOpen(true) }}
+              onClick={() => void handleProvision()}
             >
               <Sparkles className="h-4 w-4" />
-              {wizard.data.source_type === 'blank' ? 'Create blank VM' : 'Deploy OVF / OVA'}
+              Create virtual machine
             </Button>
           ) : (
             <Button type="submit">
@@ -181,29 +199,6 @@ function WizardShell() {
         )}
       >
         <p className="text-sm leading-6 text-[#59635d]">Every selection in this deployment draft will be cleared. This cannot be undone.</p>
-      </Dialog>
-
-      <Dialog
-        open={confirmOpen}
-        onClose={() => { if (!submitting) setConfirmOpen(false) }}
-        title={wizard.data.source_type === 'blank' ? 'Create this blank virtual machine?' : 'Deploy this OVF / OVA package?'}
-        footer={(
-          <>
-            <Button type="button" variant="secondary" disabled={submitting} onClick={() => setConfirmOpen(false)}>Return to review</Button>
-            <Button type="button" loading={submitting} onClick={() => void handleProvision()}>
-              {wizard.data.source_type === 'blank' ? 'Create virtual machine' : 'Start deployment'}
-            </Button>
-          </>
-        )}
-      >
-        <div className="space-y-3 text-sm leading-6 text-[#59635d]">
-          <p>
-            InfraOps will create <strong className="text-[#202923]">{wizard.data.vm_name}</strong> using the placement, storage, and network selections shown on the review page.
-          </p>
-          <Alert tone="info" title="Live validation runs first">
-            No infrastructure is changed unless the current datacenter inventory, capacity, source, and network checks pass.
-          </Alert>
-        </div>
       </Dialog>
     </div>
   )

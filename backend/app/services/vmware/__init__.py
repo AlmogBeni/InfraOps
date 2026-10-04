@@ -8,13 +8,19 @@ Implementations:
   pyvmomi-based adapter (environment dependent).
 """
 
-from app.services.vmware.base import CloneSpec, PowerStateInfo, VCenterTarget, VmRef, VMwareService
+from app.services.vmware.base import (
+    PowerStateInfo,
+    VCenterTarget,
+    VmCreateSpec,
+    VmRef,
+    VMwareService,
+)
 from app.services.vmware.factory import build_vmware_service, get_vmware_service
 
 __all__ = [
-    "CloneSpec",
     "PowerStateInfo",
     "VCenterTarget",
+    "VmCreateSpec",
     "VMwareService",
     "VmRef",
     "build_vmware_service",

@@ -31,7 +31,8 @@ const platformSettings: PlatformSettingsOut = {
   vm_name_policy_regex: '^[A-Z]+-[0-9]+$',
   allowed_installer_roots: ['\\\\fileserver\\software'],
   default_timeouts: {
-    clone_minutes: 60,
+    create_vm_minutes: 60,
+    os_installation_minutes: 120,
     vmware_tools_minutes: 20,
     network_configuration_minutes: 10,
     guest_operations_minutes: 30,
@@ -136,11 +137,18 @@ describe('admin infrastructure and settings redesign', () => {
     expect(saveButton).toBeEnabled()
     fireEvent.change(namingRule, { target: { value: platformSettings.vm_name_policy_regex } })
 
-    const cloneTimeout = screen.getByRole('spinbutton', { name: 'Clone virtual machine' })
-    fireEvent.change(cloneTimeout, { target: { value: '0' } })
+    const createTimeout = screen.getByRole('spinbutton', { name: 'Create virtual machine' })
+    fireEvent.change(createTimeout, { target: { value: '0' } })
     expect(saveButton).toBeDisabled()
     expect(screen.getByText('Enter a value from 1 to 240 minutes.')).toBeInTheDocument()
-    fireEvent.change(cloneTimeout, { target: { value: '60' } })
+    fireEvent.change(createTimeout, { target: { value: '60' } })
+
+    // Windows Setup itself takes longer than half an hour on most hosts.
+    const installTimeout = screen.getByRole('spinbutton', { name: 'Install Windows' })
+    fireEvent.change(installTimeout, { target: { value: '20' } })
+    expect(saveButton).toBeDisabled()
+    expect(screen.getByText('Enter a value from 30 to 480 minutes.')).toBeInTheDocument()
+    fireEvent.change(installTimeout, { target: { value: '120' } })
 
     const repositoryRoots = screen.getByRole('textbox', { name: 'Network repository roots' })
     fireEvent.change(repositoryRoots, { target: { value: '\\\\fileserver\\software\n' } })

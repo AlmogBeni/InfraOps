@@ -35,13 +35,6 @@ def interrupted_message(job: ProvisioningJob, reason: str) -> tuple[str, str]:
     )
 
 
-def action_required_message(job: ProvisioningJob, stage_name: str, detail: str) -> tuple[str, str]:
-    return (
-        f"{job.vm_name} needs attention",
-        f"'{stage_name}' is waiting: {detail}",
-    )
-
-
 def notify_requester(
     db: AsyncSession,
     job: ProvisioningJob,

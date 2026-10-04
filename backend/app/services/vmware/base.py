@@ -15,7 +15,6 @@ from app.schemas.infrastructure import (
     IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
-    TemplateOut,
 )
 from app.schemas.provisioning import AdapterType, DiskSpec, FirmwareType
 
@@ -63,7 +62,7 @@ def owner_from_annotation(annotation: str | None) -> str | None:
 
 
 def vcenter_ssl_context(target: VCenterTarget):
-    """TLS context for every connection to vCenter (SOAP, REST, file transfers).
+    """TLS context for every connection to vCenter (SOAP and file transfers).
 
     Verifies against ``VCENTER_CA_FILE`` when set, otherwise the system trust
     store. Returns ``False`` for connections whose administrator disabled
@@ -126,10 +125,13 @@ def vcenter_ssl_context_or_unverified(target: VCenterTarget):
 
 
 @dataclass(frozen=True)
-class CloneSpec:
-    template_id: str
+class VmCreateSpec:
+    """A VM installed from a Windows ISO: only the OS disk exists during Setup."""
+
     vm_name: str
     datacenter_id: str
+    iso_id: str
+    os_disk: DiskSpec
     description: str = ""
     cluster_id: str = ""
     host_id: str | None = None
@@ -137,29 +139,8 @@ class CloneSpec:
     datastore_id: str | None = None
     cpu: int = 2
     memory_mb: int = 4096
-    disks: tuple[DiskSpec, ...] = ()
-    network_id: str = ""
-    adapter_type: AdapterType = AdapterType.VMXNET3
     firmware: FirmwareType = FirmwareType.EFI
     secure_boot: bool = False
-    job_id: str | None = None
-
-
-@dataclass(frozen=True)
-class BlankVmSpec:
-    vm_name: str
-    datacenter_id: str
-    description: str = ""
-    cluster_id: str = ""
-    host_id: str | None = None
-    resource_pool_id: str | None = None
-    datastore_id: str | None = None
-    cpu: int = 2
-    memory_mb: int = 4096
-    disks: tuple[DiskSpec, ...] = ()
-    firmware: FirmwareType = FirmwareType.EFI
-    secure_boot: bool = False
-    iso_id: str | None = None
     job_id: str | None = None
 
 
@@ -196,13 +177,6 @@ class PowerStateInfo:
     host_id: str | None = None
     # Computer name as reported by VMware Tools (guest.hostName).
     guest_host_name: str | None = None
-    # Guest OS the VM is configured for (config.guestId, e.g. from the OVF),
-    # known before the guest has ever booted.
-    configured_guest_id: str | None = None
-
-    @property
-    def configured_for_windows(self) -> bool:
-        return (self.configured_guest_id or "").casefold().startswith("win")
 
 
 class VMwareService(ABC):
@@ -237,10 +211,18 @@ class VMwareService(ABC):
     async def get_networks(self, target: VCenterTarget, datacenter_id: str) -> list[NetworkOut]: ...
 
     @abstractmethod
-    async def get_templates(self, target: VCenterTarget, datacenter_id: str | None = None) -> list[TemplateOut]: ...
+    async def get_isos(self, target: VCenterTarget, datacenter_id: str) -> list[IsoImageOut]: ...
 
     @abstractmethod
-    async def get_isos(self, target: VCenterTarget, datacenter_id: str) -> list[IsoImageOut]: ...
+    async def read_datastore_file(
+        self,
+        target: VCenterTarget,
+        datacenter_id: str,
+        datastore_path: str,
+        *,
+        max_bytes: int,
+    ) -> bytes:
+        """Return at most the first ``max_bytes`` of a datastore file ("[ds] dir/file")."""
 
     # ── Inventory queries ────────────────────────────────────────────────────
 
@@ -269,10 +251,9 @@ class VMwareService(ABC):
     # ── Lifecycle operations ─────────────────────────────────────────────────
 
     @abstractmethod
-    async def clone_from_template(self, target: VCenterTarget, spec: CloneSpec) -> VmRef: ...
-
-    @abstractmethod
-    async def create_blank_vm(self, target: VCenterTarget, spec: BlankVmSpec) -> VmRef: ...
+    async def create_vm(self, target: VCenterTarget, spec: VmCreateSpec) -> VmRef:
+        """Create a powered-off VM with only its OS disk, the Windows ISO and the
+        host's VMware Tools ISO attached, booting from CD first."""
 
     @abstractmethod
     async def configure_hardware(
@@ -282,11 +263,8 @@ class VMwareService(ABC):
         *,
         cpu: int,
         memory_mb: int,
-        disks: list[DiskSpec],
-        firmware: FirmwareType | None,
-        secure_boot: bool,
     ) -> None:
-        """``firmware=None`` keeps the VM's firmware and Secure Boot setting."""
+        """Reconcile CPU and memory (idempotent)."""
 
     @abstractmethod
     async def attach_network(
@@ -299,7 +277,7 @@ class VMwareService(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def attach_temporary_floppy(
+    async def attach_answer_media(
         self,
         target: VCenterTarget,
         vm_id: str,
@@ -309,21 +287,21 @@ class VMwareService(ABC):
         file_name: str,
         content: bytes,
     ) -> TemporaryMediaRef:
-        """Upload and attach ephemeral media. Callers must never persist ``content``."""
+        """Upload an answer-file ISO and attach it as a CD drive.
+
+        Callers must never persist ``content`` (it holds the Setup password).
+        """
 
     @abstractmethod
-    async def remove_temporary_floppy(
+    async def remove_answer_media(
         self,
         target: VCenterTarget,
         vm_id: str,
         *,
         datacenter_id: str,
         datastore_path: str,
-    ) -> None: ...
-
-    @abstractmethod
-    async def mount_tools_installer(self, target: VCenterTarget, vm_id: str) -> bool:
-        """Best-effort request to mount the vSphere-provided VMware Tools image."""
+    ) -> None:
+        """Detach the answer-file CD drive and delete the file (idempotent)."""
 
     @abstractmethod
     async def power_on(self, target: VCenterTarget, vm_id: str) -> None: ...
@@ -337,17 +315,20 @@ class VMwareService(ABC):
         """Type keys on the VM's virtual keyboard (USB HID usage IDs); returns keys sent."""
 
     @abstractmethod
-    async def wait_for_tools(
-        self,
-        target: VCenterTarget,
-        vm_id: str,
-        timeout_seconds: float,
-        *,
-        mount_if_missing: bool = False,
-    ) -> None:
-        """Block until Tools reports ready.
+    async def wait_for_tools(self, target: VCenterTarget, vm_id: str, timeout_seconds: float) -> None:
+        """Block until VMware Tools runs and guest operations are ready."""
 
-        ``mount_if_missing`` only supplies the Tools installation media. It is
-        valid for InfraOps' Windows unattended bootstrap, whose installer runs
-        inside Windows at first logon; it must not be treated as installation.
+    @abstractmethod
+    async def detach_installation_media(self, target: VCenterTarget, vm_id: str) -> list[str]:
+        """Disconnect every CD drive and boot from disk only; returns the media released."""
+
+    @abstractmethod
+    async def add_data_disks(self, target: VCenterTarget, vm_id: str, disks: list[DiskSpec]) -> int:
+        """Hot-add ``disks`` after the OS disk; disks already present are kept.
+
+        Returns how many disks were added by this call.
         """
+
+    @abstractmethod
+    async def capture_screenshot(self, target: VCenterTarget, vm_id: str) -> str:
+        """Save a console screenshot in the VM folder and return its datastore path."""

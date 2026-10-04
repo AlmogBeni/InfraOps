@@ -98,7 +98,7 @@ async def test_add_computer_receives_short_vm_name_never_fqdn(
     run_program = AsyncMock(
         side_effect=[
             identity_result(
-                name="TEMPLATE",
+                name="WIN-SETUP01",
                 domain="WORKGROUP",
                 part_of_domain=False,
             ),
@@ -228,10 +228,10 @@ async def test_join_retry_stops_on_pending_name_without_touching_ad() -> None:
     request = domain_join_request()
     run_program = AsyncMock(
         return_value=identity_result(
-            name="TEMPLATE",
+            name="WIN-SETUP01",
             domain="WORKGROUP",
             part_of_domain=False,
-            active_name="TEMPLATE",
+            active_name="WIN-SETUP01",
             pending_name="SRVILDC55",
         )
     )
@@ -310,7 +310,7 @@ async def test_mock_guest_probe_tracks_join_as_pending_until_reboot(
     async def run(script: str) -> CommandResult:
         return await guest_ops.run_powershell(
             target,
-            "template-vm",
+            "setup-vm",
             credentials,
             script,
             60,
@@ -319,7 +319,7 @@ async def test_mock_guest_probe_tracks_join_as_pending_until_reboot(
     initial = parse_windows_identity_state(
         (await run(build_windows_identity_probe_script())).stdout
     )
-    assert initial.name == "TEMPLATE-VM"
+    assert initial.name == "SETUP-VM"
     assert initial.part_of_domain is False
     assert initial.pending_domain_join is False
 
@@ -334,7 +334,7 @@ async def test_mock_guest_probe_tracks_join_as_pending_until_reboot(
     pending = parse_windows_identity_state(
         (await run(build_windows_identity_probe_script())).stdout
     )
-    assert pending.name == "TEMPLATE-VM"
+    assert pending.name == "SETUP-VM"
     assert pending.pending_name == "SRVILDC55"
     assert pending.part_of_domain is False
     assert pending.pending_domain_join is True

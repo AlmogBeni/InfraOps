@@ -44,13 +44,22 @@ by deployment hardening guidance.
 * The API never returns username/password values. Jobs and vCenter records contain only
   reference names; the worker resolves the latest encrypted revision for each operation,
   so rotations apply without a restart.
-* Blank-Windows provisioning builds a temporary answer **floppy** (`Autounattend.xml`)
-  containing the local administrator password because Windows Setup requires it. The bytes
-  are created in memory and never logged or stored in job payloads. The floppy is detached
-  and deleted by the `cleanup_unattended_media` stage **and** on every failure,
-  cancellation (including cancelling a paused job) and worker-interruption path
-  (`UNATTENDED_MEDIA_REMOVED` is audited). The cleanup stage also deletes Windows Setup's
-  cached answer-file copies (`C:\Windows\Panther\…`) and AutoLogon residue in the guest.
+* Unattended installation builds a temporary answer **ISO** (`Autounattend.xml`, attached
+  as a CD drive) containing the local administrator password — and the product key when
+  one is selected — because Windows Setup requires them. The bytes are created in memory
+  and never logged or stored in job payloads. The CD is detached and its datastore file
+  deleted by the `cleanup_unattended_media` stage **and** on every failure, cancellation and
+  worker-interruption path (`UNATTENDED_MEDIA_REMOVED` is audited). The cleanup stage also
+  deletes Windows Setup's cached answer-file copies (`C:\Windows\Panther\…`) and AutoLogon
+  residue in the guest, and fails rather than continue when it cannot. When the provisioning
+  account is not the built-in Administrator, that account gets a random password nobody
+  keeps. Domain-join credentials never go into the answer media.
+* Product keys are credentials with purpose `windows_product_key`, encrypted like
+  passwords (GVLKs are public; MAK and retail keys are secrets) and only referenced by name
+  in requests.
+* Console screenshots of failed installation stages stay on the VM's datastore; only
+  administrators can view them, through an endpoint that serves only the path the worker
+  recorded.
 * Guest scripts never carry secrets in their text or on a command line. The domain-join
   password is uploaded as a separate, randomly named file that the script reads and
   deletes before its body runs, so it does not appear in process-creation events (4688),

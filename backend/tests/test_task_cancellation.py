@@ -74,10 +74,10 @@ async def test_pipeline_cancels_a_running_stage_on_user_request(monkeypatch: pyt
             handler_cancelled.set()
             raise
 
-    monkeypatch.setitem(pipeline_module.STAGE_HANDLERS, "clone_vm", slow_handler)
+    monkeypatch.setitem(pipeline_module.STAGE_HANDLERS, "create_vm", slow_handler)
     monkeypatch.setattr(pipeline_module, "effective_timeout_seconds", AsyncMock(return_value=60))
 
-    step = SimpleNamespace(stage_key="clone_vm", status=StepStatus.PENDING, attempt=0)
+    step = SimpleNamespace(stage_key="create_vm", status=StepStatus.PENDING, attempt=0)
     job = SimpleNamespace(steps=[step], current_stage=None, progress=0)
     ctx = SimpleNamespace(
         job=job,
@@ -95,7 +95,7 @@ async def test_pipeline_cancels_a_running_stage_on_user_request(monkeypatch: pyt
     monkeypatch.setattr(pipeline, "_apply_cancellation", apply_cancellation)
     monkeypatch.setattr(pipeline_module.JobRepository, "compute_progress", staticmethod(lambda _job: 0))
 
-    run = asyncio.create_task(pipeline._run_stage(ctx, STAGES_BY_KEY["clone_vm"], step))
+    run = asyncio.create_task(pipeline._run_stage(ctx, STAGES_BY_KEY["create_vm"], step))
     await asyncio.sleep(0.05)
     ctx.cancel_event.set()
     await asyncio.wait_for(run, timeout=2)

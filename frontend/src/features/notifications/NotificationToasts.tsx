@@ -64,7 +64,6 @@ export function NotificationToasts() {
               'pointer-events-auto rounded-xl border bg-white p-4 text-[#243029] shadow-[0_18px_50px_rgba(20,28,24,0.22)]',
               item.kind === 'JOB_COMPLETED' && 'border-emerald-200',
               item.kind === 'JOB_FAILED' && 'border-red-200',
-              item.kind === 'JOB_ACTION_REQUIRED' && 'border-amber-200',
             )}
           >
             <div className="flex items-start gap-3">

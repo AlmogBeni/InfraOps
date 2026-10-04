@@ -60,7 +60,7 @@ def make_request(**overrides) -> ProvisioningRequest:
             disks=[DiskSpec(size_gb=100, provisioning=DiskProvisioning.THIN)],
         ),
         guest=GuestSpec(
-            template_id="ova-corp-windows-2025",
+            iso_id="iso-corp-windows-2025",
             hostname="SERVER-PROD-042",
         ),
         network=NetworkSpec(

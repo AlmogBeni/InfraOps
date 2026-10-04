@@ -15,7 +15,6 @@ from app.db.base import Base, created_at_column, uuid_primary_key
 class NotificationKind(str, enum.Enum):
     JOB_COMPLETED = "JOB_COMPLETED"
     JOB_FAILED = "JOB_FAILED"
-    JOB_ACTION_REQUIRED = "JOB_ACTION_REQUIRED"
 
 
 class Notification(Base):

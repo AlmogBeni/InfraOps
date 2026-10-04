@@ -77,40 +77,28 @@ export function HardwareStep({ embedded = false }: { embedded?: boolean }) {
             </Select>
           </FormRow>
 
-          {data.source_type === 'template' ? (
-            <FormRow
-              label="Firmware"
-              htmlFor="vm-firmware"
-              hint="An installed package only boots with the firmware and Secure Boot setting it was built with, so they are kept."
+          <FormRow label="Firmware" htmlFor="vm-firmware">
+            <Select
+              id="vm-firmware"
+              value={data.firmware}
+              onChange={(event) => {
+                const firmware = event.target.value as 'BIOS' | 'EFI'
+                wizard.update({ firmware, secure_boot: firmware === 'EFI' ? data.secure_boot : false })
+              }}
             >
-              <Input id="vm-firmware" value="Inherited from the package" readOnly disabled />
-            </FormRow>
-          ) : (
-            <>
-              <FormRow label="Firmware" htmlFor="vm-firmware">
-                <Select
-                  id="vm-firmware"
-                  value={data.firmware}
-                  onChange={(event) => {
-                    const firmware = event.target.value as 'BIOS' | 'EFI'
-                    wizard.update({ firmware, secure_boot: firmware === 'EFI' ? data.secure_boot : false })
-                  }}
-                >
-                  <option value="EFI">UEFI</option>
-                  <option value="BIOS">Legacy BIOS</option>
-                </Select>
-              </FormRow>
+              <option value="EFI">UEFI</option>
+              <option value="BIOS">Legacy BIOS</option>
+            </Select>
+          </FormRow>
 
-              <div className="flex items-center pb-4 md:pt-5">
-                <Checkbox
-                  label="Enable Secure Boot"
-                  checked={data.secure_boot}
-                  disabled={data.firmware !== 'EFI'}
-                  onChange={(event) => wizard.update({ secure_boot: event.target.checked })}
-                />
-              </div>
-            </>
-          )}
+          <div className="flex items-center pb-4 md:pt-5">
+            <Checkbox
+              label="Enable Secure Boot"
+              checked={data.secure_boot}
+              disabled={data.firmware !== 'EFI'}
+              onChange={(event) => wizard.update({ secure_boot: event.target.checked })}
+            />
+          </div>
         </div>
       </div>
 
@@ -118,7 +106,9 @@ export function HardwareStep({ embedded = false }: { embedded?: boolean }) {
         <div className="console-group-header">
           <div>
             <p className="console-group-title">Virtual disks</p>
-            <p className="console-group-description">Maximum eight disks. Capacity is revalidated before creation.</p>
+            <p className="console-group-description">
+              Disk 1 holds Windows. Further disks are added once Windows is running, then brought online and formatted as NTFS data volumes.
+            </p>
           </div>
           <Button
             type="button"
@@ -135,7 +125,7 @@ export function HardwareStep({ embedded = false }: { embedded?: boolean }) {
             <div key={index} className="grid grid-cols-1 items-end gap-3 px-4 py-3 sm:grid-cols-[100px_140px_170px_1fr_auto]">
               <div className="flex items-center gap-2 self-center">
                 <HardDrive className="h-4 w-4 text-slate-400" />
-                <span className="text-xs font-semibold text-slate-700">Disk {index + 1}</span>
+                <span className="text-xs font-semibold text-slate-700">{index === 0 ? 'OS disk' : `Data disk ${index}`}</span>
               </div>
               <div>
                 <label className="field-label">Size (GB)</label>

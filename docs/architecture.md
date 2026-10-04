@@ -53,20 +53,21 @@ bootstrap), `backend` (API), `worker`, `frontend` (nginx + SPA), `postgres`, `re
    resolvability, installer-root policy.
 3. **Submit** (`POST /provisioning/jobs`, optional `Idempotency-Key` header) runs the same
    preflight **on the server** and rejects the request (422, `blocking_checks`) when any
-   blocking check fails — the UI's dry run is a convenience, not the gate. It then creates
+   blocking check fails — the wizard lists those checks inline; its on-demand preflight
+   button is a convenience, not the gate. It then creates
    `provisioning_jobs` + immutable `vm_provisioning_requests`. Partial unique indexes allow
    only one active job (QUEUED/RUNNING/INTERRUPTED) per VM name (case-insensitive) and one
    reservation per static IPv4 address; concurrent duplicates get 409. A reused
    Idempotency-Key replays the original job only for the same user and an identical body.
-4. **Worker** claims the job, materialises the 24 step rows from the ordered registry and
+4. **Worker** claims the job, materialises the 26 step rows from the ordered registry and
    executes stages sequentially. A stage timeout or a user cancellation cancels the stage
    coroutine, which cancels the in-flight vCenter task (`CancelTask`) or guest process.
 5. Every stage transition is committed to `provisioning_job_steps` and published to Redis;
    the API streams those events to the browser over SSE.
-6. Failure semantics: if the `clone_vm` creation stage already succeeded the job becomes
-   `PARTIALLY_COMPLETED` (VM retained; failed stages retryable); otherwise `FAILED`.
-   Temporary unattended answer media is removed on every failure, cancellation and
-   interruption path.
+6. Failure semantics: if the `create_vm` stage already succeeded the job becomes
+   `PARTIALLY_COMPLETED` (VM retained; failed stages retryable); otherwise `FAILED`. No job
+   ever waits for a person. Temporary answer media is removed on every failure, cancellation
+   and interruption path, and a failed installation stage keeps a console screenshot.
 7. Completion runs final validation producing a structured checklist artifact rendered by
    the UI.
 
@@ -87,21 +88,21 @@ bootstrap), `backend` (API), `worker`, `frontend` (nginx + SPA), `postgres`, `re
 
 Stage order lives in `workers/state_machine.py`:
 
-validate_request → connect_vcenter → validate_infrastructure → clone_vm* →
+validate_request → connect_vcenter → validate_infrastructure → create_vm* →
 configure_hardware → attach_network_adapter → prepare_unattended_install → power_on →
-wait_for_guest_os → wait_for_tools → cleanup_unattended_media → configure_guest_network →
-validate_network → configure_hostname → join_domain → reboot_guest → wait_guest_ready →
-install_root_certificates → install_intermediate_certificates → validate_certificates →
-resolve_dependencies → install_applications → validate_applications → final_validation
-(24 stages)
+wait_for_guest_os → wait_for_tools → cleanup_unattended_media → add_data_disks* →
+initialize_data_disks → configure_guest_network → validate_network → configure_hostname →
+join_domain → reboot_guest → wait_guest_ready → install_root_certificates →
+install_intermediate_certificates → validate_certificates → resolve_dependencies →
+install_applications → validate_applications → final_validation (26 stages)
 
-\* only destructive stage; it deploys an OVF/OVA package or creates a blank VM according to
-the request source. Every VM it creates is tagged with the job id (`extraConfig`
-`infraops.job_id`, plus an `infraops-job-id:` annotation line written atomically at
-creation). On retry the stage resumes only on a VM carrying **this** job's marker; any other
-VM with the requested name — untagged or owned by another job — fails the stage with "name
-taken" and is never modified. Resume-after-retry skips SUCCEEDED/SKIPPED steps. Blank
-requests without ISO media pause for an administrator to install the OS.
+\* stages that create infrastructure. `create_vm` creates an empty VM with only its OS disk
+and boots it from the selected Windows ISO; `add_data_disks` hot-adds the data disks once
+Windows is running. Every VM is tagged with the job id (`extraConfig` `infraops.job_id`, plus
+an `infraops-job-id:` annotation line written atomically at creation). On retry `create_vm`
+resumes only on a VM carrying **this** job's marker; any other VM with the requested name —
+untagged or owned by another job — fails the stage with "name taken" and is never modified.
+Resume-after-retry skips SUCCEEDED/SKIPPED/WARNING steps.
 
 ## Key abstractions
 

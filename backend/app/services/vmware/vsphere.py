@@ -15,6 +15,7 @@ import asyncio
 import contextvars
 import datetime as dt
 import hashlib
+import re
 import threading
 import time
 import urllib.parse
@@ -33,17 +34,15 @@ from app.schemas.infrastructure import (
     IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
-    TemplateOut,
 )
-from app.schemas.provisioning import AdapterType, FirmwareType
+from app.schemas.provisioning import AdapterType, DiskSpec, FirmwareType
 from app.secrets.service import SecretsService
 from app.services.vmware.base import (
     OWNER_EXTRA_CONFIG_KEY,
-    BlankVmSpec,
-    CloneSpec,
     PowerStateInfo,
     TemporaryMediaRef,
     VCenterTarget,
+    VmCreateSpec,
     VmOwnership,
     VmRef,
     VMwareService,
@@ -52,7 +51,6 @@ from app.services.vmware.base import (
     owner_from_annotation,
     vcenter_ssl_context_or_unverified,
 )
-from app.services.vmware.content_library import ContentLibraryClient
 from app.services.vmware.inventory_refs import decode_iso_id, encode_iso_id
 
 log = get_logger(__name__)
@@ -70,6 +68,9 @@ _TOOLS_POLL_INTERVAL = 5.0
 # VMware Tools ISO every ESXi host provides (the path VMware's own Packer
 # examples for vSphere use).
 HOST_TOOLS_ISO_PATH = "[] /vmimages/tools-isoimages/windows.iso"
+# Datastore folder for temporary answer media; never offered as installation media.
+ANSWER_MEDIA_FOLDER = "infraops-unattend"
+_DATASTORE_PATH = re.compile(r"^\[([^\]]+)\] ?(.+)$")
 _TASK_POLL_INTERVAL = 0.5
 
 # Set by ``_with_session`` for the duration of one blocking call. ``asyncio``
@@ -175,7 +176,6 @@ class VsphereVMwareService(VMwareService):
         _require_pyvmomi()
         self._secrets = secrets
         self._cache = _ConnectionCache()
-        self._content_library = ContentLibraryClient(secrets)
 
     # ── Connection handling ──────────────────────────────────────────────────
 
@@ -611,19 +611,6 @@ class VsphereVMwareService(VMwareService):
 
         return sorted(await self._with_session(target, op), key=lambda n: n.name)
 
-    async def get_templates(self, target: VCenterTarget, datacenter_id: str | None = None) -> list[TemplateOut]:
-        templates = await self._content_library.list_ovf_packages(target, datacenter_id)
-        log_method = log.warning if not templates else log.info
-        log_method(
-            "vCenter OVF/OVA inventory complete vcenter_id=%s host=%s datacenter_id=%s "
-            "returned_templates=%s",
-            target.id,
-            target.host,
-            datacenter_id or "all",
-            len(templates),
-        )
-        return templates
-
     async def get_isos(self, target: VCenterTarget, datacenter_id: str) -> list[IsoImageOut]:
         def op(si):
             content = self._content(si)
@@ -669,6 +656,8 @@ class VsphereVMwareService(VMwareService):
                             continue
                         separator = "" if folder_path.endswith(("/", " ")) else " "
                         full_path = f"{folder_path}{separator}{relative_path}"
+                        if f"{ANSWER_MEDIA_FOLDER}/" in full_path:
+                            continue  # InfraOps' own temporary answer media
                         name = relative_path.rstrip("/").rsplit("/", 1)[-1]
                         results.append(
                             IsoImageOut(
@@ -689,6 +678,69 @@ class VsphereVMwareService(VMwareService):
             await self._with_session(target, op, operation="list-isos"),
             key=lambda image: (image.datastore_name.casefold(), image.name.casefold()),
         )
+
+    @staticmethod
+    def _datacenter_path(content, datacenter) -> str:
+        """Inventory path of a datacenter (``Folder/DC``) for datastore file URLs."""
+        names: list[str] = []
+        entity = datacenter
+        while entity is not None and entity != content.rootFolder:
+            names.append(entity.name)
+            entity = getattr(entity, "parent", None)
+        return "/".join(reversed(names))
+
+    def _datastore_file_url(self, target: VCenterTarget, content, datacenter, datastore_path: str) -> str:
+        match = _DATASTORE_PATH.fullmatch(datastore_path)
+        if match is None:
+            raise InfraOperationError(
+                f"'{datastore_path}' is not a datastore path.",
+                reason="Datastore paths have the form '[datastore] folder/file'.",
+                recommended_action="Report this incident to the platform administrators.",
+                retryable=False,
+            )
+        datastore_name, relative = match.group(1), match.group(2)
+        query = urllib.parse.urlencode(
+            {"dcPath": self._datacenter_path(content, datacenter), "dsName": datastore_name}
+        )
+        return (
+            f"https://{target.host}:{target.port}/folder/"
+            f"{urllib.parse.quote(relative, safe='/')}?{query}"
+        )
+
+    async def read_datastore_file(
+        self,
+        target: VCenterTarget,
+        datacenter_id: str,
+        datastore_path: str,
+        *,
+        max_bytes: int,
+    ) -> bytes:
+        def op(si):
+            content = self._content(si)
+            datacenter = self._find_by_moref(content, datacenter_id)
+            if datacenter is None or not isinstance(datacenter, vim.Datacenter):
+                raise NotFoundError(f"Datacenter '{datacenter_id}' does not exist.")
+            request = urllib.request.Request(
+                self._datastore_file_url(target, content, datacenter, datastore_path), method="GET"
+            )
+            # Servers that ignore Range still stream the file; only the first
+            # max_bytes are read before the connection is closed.
+            request.add_header("Range", f"bytes=0-{max_bytes - 1}")
+            cookie = getattr(getattr(si, "_stub", None), "cookie", None)
+            if cookie:
+                request.add_header("Cookie", cookie)
+            context = vcenter_ssl_context_or_unverified(target)
+            with urllib.request.urlopen(request, context=context, timeout=120) as response:  # noqa: S310
+                if response.status not in (200, 206):
+                    raise RuntimeError(f"datastore download returned HTTP {response.status}")
+                return response.read(max_bytes)
+
+        try:
+            return await self._with_session(target, op, operation="read-datastore-file")
+        except NotFoundError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _wrap("read-datastore-file", exc) from exc
 
     # ── Inventory queries ────────────────────────────────────────────────────
 
@@ -724,7 +776,6 @@ class VsphereVMwareService(VMwareService):
             ip_addresses=ips,
             host_id=vm.runtime.host._moId if vm.runtime.host else None,
             guest_host_name=text(guest, "hostName"),
-            configured_guest_id=text(getattr(vm, "config", None), "guestId"),
         )
 
     async def get_vm_info(self, target: VCenterTarget, vm_name: str) -> PowerStateInfo | None:
@@ -801,117 +852,16 @@ class VsphereVMwareService(VMwareService):
 
     # ── Lifecycle operations ─────────────────────────────────────────────────
 
-    async def clone_from_template(self, target: VCenterTarget, spec: CloneSpec) -> VmRef:
-        if not self._content_library.is_library_item(spec.template_id):
+    async def create_vm(self, target: VCenterTarget, spec: VmCreateSpec) -> VmRef:
+        try:
+            iso_datastore_id, iso_path = decode_iso_id(spec.iso_id)
+        except ValueError as exc:
             raise InfraOperationError(
-                "The selected source is not an OVF/OVA Content Library package.",
-                reason="Classic VM templates are not accepted by this deployment workflow.",
-                recommended_action="Refresh the package inventory and select an OVF or OVA item.",
+                "The selected ISO identifier is invalid.",
+                reason=str(exc),
+                recommended_action="Refresh the ISO inventory and select the image again.",
                 retryable=False,
-            )
-
-        def resolve_pool(si):
-            content = self._content(si)
-            cluster = self._find_by_moref(content, spec.cluster_id)
-            if cluster is None or not isinstance(cluster, vim.ComputeResource):
-                raise InfraOperationError(
-                    f"Compute target '{spec.cluster_id}' was not found.",
-                    reason="Compute target removed after validation.",
-                    recommended_action="Re-select the compute target and retry.",
-                    retryable=False,
-                )
-            datacenter = self._find_by_moref(content, spec.datacenter_id)
-            if (
-                datacenter is None
-                or not isinstance(datacenter, vim.Datacenter)
-                or not self._compute_belongs_to_datacenter(content, cluster, datacenter)
-            ):
-                raise InfraOperationError(
-                    "The selected compute target is outside the requested datacenter.",
-                    reason="The placement inventory changed after validation.",
-                    recommended_action="Refresh the datacenter and compute target selections.",
-                    retryable=False,
-                )
-            if spec.network_id:
-                network_view = content.viewManager.CreateContainerView(
-                    datacenter.networkFolder, [vim.Network], True
-                )
-                try:
-                    network_in_datacenter = any(
-                        entry._moId == spec.network_id for entry in network_view.view
-                    )
-                finally:
-                    network_view.Destroy()
-                if not network_in_datacenter:
-                    raise InfraOperationError(
-                        "The selected network is outside the target datacenter.",
-                        reason="Network scope changed after validation.",
-                        recommended_action="Select a network from the target datacenter.",
-                        retryable=False,
-                    )
-            if spec.datastore_id:
-                datastore = self._cluster_datastores(cluster).get(spec.datastore_id)
-                if datastore is None or not bool(datastore.summary.accessible):
-                    raise InfraOperationError(
-                        "The selected datastore is unavailable to the compute target.",
-                        reason="Datastore scope or accessibility changed after validation.",
-                        recommended_action="Select an accessible datastore from the compute target.",
-                        retryable=False,
-                    )
-            if spec.host_id:
-                host = self._find_by_moref(content, spec.host_id)
-                if host is None or host not in cluster.host or not self._host_usable(host):
-                    raise InfraOperationError(
-                        f"Host '{spec.host_id}' is not available for provisioning.",
-                        reason="Host disconnected, in maintenance mode, or outside the compute target.",
-                        recommended_action="Select a different host or use automatic placement.",
-                        retryable=False,
-                    )
-            pool = cluster.resourcePool
-            if spec.resource_pool_id:
-                candidate = self._find_by_moref(content, spec.resource_pool_id)
-                valid_pool_ids = {entry._moId for entry in self._walk_resource_pools(cluster.resourcePool)}
-                if candidate is None or candidate._moId not in valid_pool_ids:
-                    raise InfraOperationError(
-                        f"Resource pool '{spec.resource_pool_id}' was not found in the compute target.",
-                        reason="Resource pool removed or moved after validation.",
-                        recommended_action="Re-select the placement target and retry.",
-                        retryable=False,
-                    )
-                pool = candidate
-            if self._find_vms_by_name(content, spec.vm_name):
-                raise InfraOperationError(
-                    f"A virtual machine named '{spec.vm_name}' already exists.",
-                    reason="Duplicate VM name in the vCenter inventory.",
-                    recommended_action="Choose a different VM name and resubmit the request.",
-                    retryable=False,
-                )
-            return pool._moId
-
-        pool_id = await self._with_session(
-            target, resolve_pool, operation="resolve-ovf-placement"
-        )
-        # The annotation marker is applied atomically by the OVF deployment;
-        # the extraConfig marker follows immediately afterwards.
-        vm_ref = await self._content_library.deploy_ovf_package(
-            target, spec, resource_pool_id=pool_id
-        )
-        if spec.job_id:
-            await self.tag_vm_owner(target, vm_ref.id, spec.job_id)
-        return vm_ref
-
-    async def create_blank_vm(self, target: VCenterTarget, spec: BlankVmSpec) -> VmRef:
-        iso_reference: tuple[str, str] | None = None
-        if spec.iso_id:
-            try:
-                iso_reference = decode_iso_id(spec.iso_id)
-            except ValueError as exc:
-                raise InfraOperationError(
-                    "The selected ISO identifier is invalid.",
-                    reason=str(exc),
-                    recommended_action="Refresh the ISO inventory and select the image again.",
-                    retryable=False,
-                ) from exc
+            ) from exc
 
         def op(si):
             content = self._content(si)
@@ -967,7 +917,7 @@ class VsphereVMwareService(VMwareService):
                 pool = requested_pool
 
             datastores = list(self._cluster_datastores(cluster).values())
-            required_bytes = sum(disk.size_gb for disk in spec.disks) * 1024**3
+            required_bytes = spec.os_disk.size_gb * 1024**3
             candidates = [
                 datastore for datastore in datastores
                 if datastore.summary.accessible and (datastore.summary.freeSpace or 0) >= required_bytes
@@ -976,42 +926,38 @@ class VsphereVMwareService(VMwareService):
                 candidates = [datastore for datastore in candidates if datastore._moId == spec.datastore_id]
             if not candidates:
                 raise InfraOperationError(
-                    "No selected datastore has enough accessible capacity for the blank VM.",
-                    reason=f"The VM requires approximately {sum(d.size_gb for d in spec.disks)} GB.",
+                    "No selected datastore has enough accessible capacity for the VM.",
+                    reason=f"The OS disk requires approximately {spec.os_disk.size_gb} GB.",
                     recommended_action="Select another datastore or reduce the requested disk capacity.",
                     retryable=False,
                 )
             datastore = max(candidates, key=lambda entry: entry.summary.freeSpace or 0)
 
-            iso_datastore = None
-            iso_path = None
-            if iso_reference is not None:
-                iso_datastore_id, iso_path = iso_reference
-                cluster_datastore_ids = {entry._moId for entry in datastores}
-                datastore_view = content.viewManager.CreateContainerView(
-                    datacenter.datastoreFolder, [vim.Datastore], True
+            cluster_datastore_ids = {entry._moId for entry in datastores}
+            datastore_view = content.viewManager.CreateContainerView(
+                datacenter.datastoreFolder, [vim.Datastore], True
+            )
+            try:
+                iso_datastore = next(
+                    (entry for entry in datastore_view.view if entry._moId == iso_datastore_id),
+                    None,
                 )
-                try:
-                    iso_datastore = next(
-                        (entry for entry in datastore_view.view if entry._moId == iso_datastore_id),
-                        None,
-                    )
-                finally:
-                    datastore_view.Destroy()
-                expected_prefix = f"[{getattr(iso_datastore, 'name', '')}] "
-                if (
-                    iso_datastore is None
-                    or iso_datastore_id not in cluster_datastore_ids
-                    or not bool(getattr(iso_datastore.summary, "accessible", False))
-                    or not iso_path.startswith(expected_prefix)
-                    or not iso_path.lower().endswith(".iso")
-                ):
-                    raise InfraOperationError(
-                        "The selected ISO is not available in the selected datacenter.",
-                        reason="Its datastore is missing, inaccessible, or does not match the ISO path.",
-                        recommended_action="Refresh the ISO inventory and select another image.",
-                        retryable=False,
-                    )
+            finally:
+                datastore_view.Destroy()
+            expected_prefix = f"[{getattr(iso_datastore, 'name', '')}] "
+            if (
+                iso_datastore is None
+                or iso_datastore_id not in cluster_datastore_ids
+                or not bool(getattr(iso_datastore.summary, "accessible", False))
+                or not iso_path.startswith(expected_prefix)
+                or not iso_path.lower().endswith(".iso")
+            ):
+                raise InfraOperationError(
+                    "The selected ISO is not available in the selected datacenter.",
+                    reason="Its datastore is missing, inaccessible, or does not match the ISO path.",
+                    recommended_action="Refresh the ISO inventory and select another image.",
+                    retryable=False,
+                )
 
             config = vim.vm.ConfigSpec()
             config.name = spec.vm_name
@@ -1027,7 +973,10 @@ class VsphereVMwareService(VMwareService):
                 if spec.secure_boot:
                     config.bootOptions = vim.vm.BootOptions(efiSecureBootEnabled=True)
 
-            controller = vim.vm.device.ParaVirtualSCSIController()
+            # LSI Logic SAS: Windows Setup ships its driver, so the OS disk is
+            # visible during installation under BIOS and EFI without injecting
+            # drivers. Data disks are hot-added to it once Windows is running.
+            controller = vim.vm.device.VirtualLsiLogicSASController()
             controller.key = -100
             controller.busNumber = 0
             controller.sharedBus = vim.vm.device.VirtualSCSIController.Sharing.noSharing
@@ -1036,41 +985,42 @@ class VsphereVMwareService(VMwareService):
             controller_spec.device = controller
             device_changes = [controller_spec]
 
-            for index, disk in enumerate(spec.disks):
-                backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
-                backing.fileName = ""
-                backing.diskMode = "persistent"
-                backing.thinProvisioned = disk.provisioning.value == "thin"
-                virtual_disk = vim.vm.device.VirtualDisk()
-                virtual_disk.key = -101 - index
-                virtual_disk.controllerKey = controller.key
-                # SCSI unit 7 is reserved for the controller itself.
-                virtual_disk.unitNumber = index if index < 7 else index + 1
-                virtual_disk.capacityInKB = disk.size_gb * 1024 * 1024
-                virtual_disk.backing = backing
-                disk_spec = vim.vm.device.VirtualDeviceSpec()
-                disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-                disk_spec.fileOperation = vim.vm.device.VirtualDeviceSpec.FileOperation.create
-                disk_spec.device = virtual_disk
-                device_changes.append(disk_spec)
+            # Only the OS disk exists during Setup, so it is always disk 0.
+            backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
+            backing.fileName = ""
+            backing.diskMode = "persistent"
+            backing.thinProvisioned = spec.os_disk.provisioning.value == "thin"
+            os_disk = vim.vm.device.VirtualDisk()
+            os_disk.key = -101
+            os_disk.controllerKey = controller.key
+            os_disk.unitNumber = 0
+            os_disk.capacityInKB = spec.os_disk.size_gb * 1024 * 1024
+            os_disk.backing = backing
+            disk_spec = vim.vm.device.VirtualDeviceSpec()
+            disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+            disk_spec.fileOperation = vim.vm.device.VirtualDeviceSpec.FileOperation.create
+            disk_spec.device = os_disk
+            device_changes.append(disk_spec)
 
-            if iso_datastore is not None and iso_path is not None:
-                sata = vim.vm.device.VirtualAHCIController()
-                sata.key = -200
-                sata.busNumber = 0
-                sata_spec = vim.vm.device.VirtualDeviceSpec()
-                sata_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-                sata_spec.device = sata
-                device_changes.append(sata_spec)
+            sata = vim.vm.device.VirtualAHCIController()
+            sata.key = -200
+            sata.busNumber = 0
+            sata_spec = vim.vm.device.VirtualDeviceSpec()
+            sata_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+            sata_spec.device = sata
+            device_changes.append(sata_spec)
 
-                backing = vim.vm.device.VirtualCdrom.IsoBackingInfo()
-                backing.fileName = iso_path
-                backing.datastore = iso_datastore
+            # SATA 0:0 boots Windows Setup; SATA 0:1 is the host's VMware Tools
+            # ISO, installed by the answer file's first-logon command.
+            for key, unit, iso_backing in (
+                (-201, 0, vim.vm.device.VirtualCdrom.IsoBackingInfo(fileName=iso_path, datastore=iso_datastore)),
+                (-202, 1, vim.vm.device.VirtualCdrom.IsoBackingInfo(fileName=HOST_TOOLS_ISO_PATH)),
+            ):
                 cdrom = vim.vm.device.VirtualCdrom()
-                cdrom.key = -201
+                cdrom.key = key
                 cdrom.controllerKey = sata.key
-                cdrom.unitNumber = 0
-                cdrom.backing = backing
+                cdrom.unitNumber = unit
+                cdrom.backing = iso_backing
                 cdrom.connectable = vim.vm.device.VirtualDevice.ConnectInfo(
                     startConnected=True,
                     allowGuestControl=True,
@@ -1080,33 +1030,13 @@ class VsphereVMwareService(VMwareService):
                 cdrom_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
                 cdrom_spec.device = cdrom
                 device_changes.append(cdrom_spec)
-
-                # The host's VMware Tools ISO on a second drive from the start:
-                # the answer file's first-logon command installs Tools from it,
-                # so readiness is observable without anyone swapping media.
-                tools_cdrom = vim.vm.device.VirtualCdrom()
-                tools_cdrom.key = -202
-                tools_cdrom.controllerKey = sata.key
-                tools_cdrom.unitNumber = 1
-                tools_cdrom.backing = vim.vm.device.VirtualCdrom.IsoBackingInfo(
-                    fileName=HOST_TOOLS_ISO_PATH
-                )
-                tools_cdrom.connectable = vim.vm.device.VirtualDevice.ConnectInfo(
-                    startConnected=True,
-                    allowGuestControl=True,
-                    connected=True,
-                )
-                tools_spec = vim.vm.device.VirtualDeviceSpec()
-                tools_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-                tools_spec.device = tools_cdrom
-                device_changes.append(tools_spec)
             config.deviceChange = device_changes
 
             try:
                 task = datacenter.vmFolder.CreateVM_Task(config=config, pool=pool, host=host)
                 self._wait_for_task(task)
             except Exception as exc:  # noqa: BLE001
-                raise _wrap("create_blank_vm", exc) from exc
+                raise _wrap("create_vm", exc) from exc
 
             # Use the task result (the new VM's moref), never a name lookup
             # that could match an unrelated VM with the same name.
@@ -1118,36 +1048,29 @@ class VsphereVMwareService(VMwareService):
                     recommended_action="Check recent tasks in vCenter before retrying.",
                     retryable=True,
                 )
-            if iso_reference is not None:
-                boot_order = [vim.vm.BootOptions.BootableCdromDevice()]
-                created_disks = [
-                    device
-                    for device in created.config.hardware.device
-                    if isinstance(device, vim.vm.device.VirtualDisk)
-                ]
-                if created_disks:
-                    boot_order.append(
-                        vim.vm.BootOptions.BootableDiskDevice(
-                            deviceKey=created_disks[0].key
-                        )
-                    )
-                boot_options = vim.vm.BootOptions(
-                    bootOrder=boot_order,
-                    bootRetryEnabled=True,
-                    bootRetryDelay=10_000,
-                )
-                if spec.firmware == FirmwareType.EFI:
-                    boot_options.efiSecureBootEnabled = spec.secure_boot
-                try:
-                    task = created.ReconfigVM_Task(
-                        spec=vim.vm.ConfigSpec(bootOptions=boot_options)
-                    )
-                    self._wait_for_task(task)
-                except Exception as exc:  # noqa: BLE001
-                    raise _wrap("configure_installation_boot", exc) from exc
+            boot_order = [vim.vm.BootOptions.BootableCdromDevice()]
+            created_disks = [
+                device
+                for device in created.config.hardware.device
+                if isinstance(device, vim.vm.device.VirtualDisk)
+            ]
+            if created_disks:
+                boot_order.append(vim.vm.BootOptions.BootableDiskDevice(deviceKey=created_disks[0].key))
+            boot_options = vim.vm.BootOptions(
+                bootOrder=boot_order,
+                bootRetryEnabled=True,
+                bootRetryDelay=10_000,
+            )
+            if spec.firmware == FirmwareType.EFI:
+                boot_options.efiSecureBootEnabled = spec.secure_boot
+            try:
+                task = created.ReconfigVM_Task(spec=vim.vm.ConfigSpec(bootOptions=boot_options))
+                self._wait_for_task(task)
+            except Exception as exc:  # noqa: BLE001
+                raise _wrap("configure_installation_boot", exc) from exc
             return VmRef(id=created._moId, name=created.name)
 
-        log.info("vSphere create blank VM: name=%s cluster=%s", spec.vm_name, spec.cluster_id)
+        log.info("vSphere create VM: name=%s cluster=%s", spec.vm_name, spec.cluster_id)
         return await self._with_session(target, op)
 
     async def configure_hardware(
@@ -1157,72 +1080,22 @@ class VsphereVMwareService(VMwareService):
         *,
         cpu: int,
         memory_mb: int,
-        disks: list,
-        firmware: FirmwareType | None,
-        secure_boot: bool,
     ) -> None:
         def op(si):
-            content = self._content(si)
-            vm = self._find_by_moref(content, vm_id)
+            vm = self._find_by_moref(self._content(si), vm_id)
             if vm is None:
                 raise InfraOperationError(
                     f"VM '{vm_id}' was not found while configuring hardware.",
-                    reason="VM removed after clone.",
+                    reason="VM removed after creation.",
                     recommended_action="Inspect the job timeline; the VM may need manual cleanup.",
                     retryable=False,
                 )
-
-            config = vim.VirtualMachineConfigSpec()
-            config.numCPUs = cpu
-            config.memoryMB = memory_mb
-            if firmware == FirmwareType.EFI:
-                config.firmware = "efi"
-                config.bootOptions = vim.vm.BootOptions(efiSecureBootEnabled=secure_boot)
-
-            existing_disks = [d for d in vm.config.hardware.device if isinstance(d, vim.vm.device.VirtualDisk)]
-            device_changes: list = []
-
-            # Grow existing disks when the request is larger (never shrink).
-            for index, requested in enumerate(disks):
-                if index < len(existing_disks):
-                    current_kb = existing_disks[index].capacityInKB
-                    requested_kb = requested.size_gb * 1024 * 1024
-                    if requested_kb > current_kb:
-                        disk_spec = vim.vm.device.VirtualDeviceSpec()
-                        disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
-                        disk = existing_disks[index]
-                        disk.capacityInKB = requested_kb
-                        disk_spec.device = disk
-                        device_changes.append(disk_spec)
-                else:
-                    disk_spec = vim.vm.device.VirtualDeviceSpec()
-                    disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-                    disk_spec.fileOperation = vim.vm.device.VirtualDeviceSpec.FileOperation.create
-                    disk = vim.vm.device.VirtualDisk()
-                    disk.capacityInKB = requested.size_gb * 1024 * 1024
-                    disk.unitNumber = len(existing_disks) + index
-                    disk.controllerKey = next(
-                        (c.key for c in vm.config.hardware.device
-                         if isinstance(c, vim.vm.device.VirtualSCSIController)),
-                        0,
-                    )
-                    backing_mode = (
-                        vim.vm.device.VirtualDisk.FlatVer2BackingInfo
-                    )
-                    backing = backing_mode()
-                    backing.thinProvisioned = requested.provisioning.value == "thin"
-                    if requested.datastore_id:
-                        ds = self._find_by_moref(content, requested.datastore_id)
-                        if ds is not None:
-                            backing.datastore = ds
-                    disk.backing = backing
-                    disk_spec.device = disk
-                    device_changes.append(disk_spec)
-
-            config.deviceChange = device_changes
+            if vm.config.hardware.numCPU == cpu and vm.config.hardware.memoryMB == memory_mb:
+                return
             try:
-                task = vm.ReconfigVM_Task(spec=config)
-                self._wait_for_task(task)
+                self._wait_for_task(
+                    vm.ReconfigVM_Task(spec=vim.VirtualMachineConfigSpec(numCPUs=cpu, memoryMB=memory_mb))
+                )
             except Exception as exc:  # noqa: BLE001
                 raise _wrap("configure_hardware", exc) from exc
 
@@ -1268,7 +1141,7 @@ class VsphereVMwareService(VMwareService):
             if vm is None:
                 raise InfraOperationError(
                     f"VM '{vm_id}' was not found while attaching the network adapter.",
-                    reason="VM removed after clone.",
+                    reason="VM removed after creation.",
                     recommended_action="Inspect the job timeline; the VM may need manual cleanup.",
                     retryable=False,
                 )
@@ -1329,7 +1202,7 @@ class VsphereVMwareService(VMwareService):
             if vm is None:
                 raise InfraOperationError(
                     f"VM '{vm_id}' was not found while powering on.",
-                    reason="VM removed after clone.",
+                    reason="VM removed after creation.",
                     recommended_action="Inspect the job timeline; the VM may need manual cleanup.",
                     retryable=False,
                 )
@@ -1374,7 +1247,52 @@ class VsphereVMwareService(VMwareService):
 
         return await self._with_session(target, op, operation="send-keystrokes")
 
-    async def attach_temporary_floppy(
+    def _missing_vm(self, vm_id: str, action: str) -> InfraOperationError:
+        return InfraOperationError(
+            f"VM '{vm_id}' was not found while {action}.",
+            reason="VM removed after creation.",
+            recommended_action="Inspect the job timeline; the VM may need manual cleanup.",
+            retryable=False,
+        )
+
+    def _reconfigure_answering_questions(self, vm, spec, operation: str) -> None:
+        """Reconfigure ``vm``, answering the CD-ROM door-lock question if it appears.
+
+        Disconnecting a CD the guest has locked raises a VM question that blocks
+        the task until answered; the only correct answer for unattended
+        provisioning is to override the lock.
+        """
+        try:
+            task = vm.ReconfigVM_Task(spec=spec)
+            deadline = time.monotonic() + 300
+            while task.info.state in (vim.TaskInfo.State.running, vim.TaskInfo.State.queued):
+                question = getattr(getattr(vm, "runtime", None), "question", None)
+                if question is not None:
+                    choices = list(getattr(getattr(question, "choice", None), "choiceInfo", None) or [])
+                    override = next(
+                        (choice for choice in choices if str(getattr(choice, "label", "")).lower() == "yes"),
+                        None,
+                    )
+                    if override is not None:
+                        vm.AnswerVM(questionId=question.id, answerChoice=override.key)
+                        log.info("Answered VM question %s on %s to release a locked CD-ROM", question.id, vm._moId)
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Reconfiguration did not finish within 300 seconds.")
+                time.sleep(_TASK_POLL_INTERVAL)
+            self._wait_for_task(task)
+        except Exception as exc:  # noqa: BLE001
+            raise _wrap(operation, exc) from exc
+
+    @staticmethod
+    def _free_unit(controller, devices, *, reserved: frozenset[int] = frozenset()) -> int | None:
+        used = {
+            device.unitNumber for device in devices
+            if getattr(device, "controllerKey", None) == controller.key and device.unitNumber is not None
+        }
+        limit = 30 if isinstance(controller, vim.vm.device.VirtualAHCIController) else 16
+        return next((unit for unit in range(limit) if unit not in used and unit not in reserved), None)
+
+    async def attach_answer_media(
         self,
         target: VCenterTarget,
         vm_id: str,
@@ -1392,7 +1310,7 @@ class VsphereVMwareService(VMwareService):
             datacenter = self._find_by_moref(inventory, datacenter_id)
             if vm is None or datacenter is None or not isinstance(datacenter, vim.Datacenter):
                 raise InfraOperationError(
-                    "The VM or datacenter disappeared before unattended media could be attached.",
+                    "The VM or datacenter disappeared before the answer media could be attached.",
                     reason="vCenter inventory changed after validation.",
                     recommended_action="Refresh inventory and retry the preparation stage.",
                     retryable=True,
@@ -1404,13 +1322,13 @@ class VsphereVMwareService(VMwareService):
             )
             if datastore is None:
                 raise InfraOperationError(
-                    "No VM datastore is available for temporary unattended media.",
+                    "No VM datastore is available for the temporary answer media.",
                     reason="The selected datastore is not attached to the VM.",
                     recommended_action="Select a datastore accessible to the VM and retry.",
                     retryable=False,
                 )
 
-            folder = f"[{datastore.name}] infraops-unattend"
+            folder = f"[{datastore.name}] {ANSWER_MEDIA_FOLDER}"
             datastore_path = f"{folder}/{safe_name}"
             try:
                 inventory.fileManager.MakeDirectory(
@@ -1421,56 +1339,68 @@ class VsphereVMwareService(VMwareService):
             except vim.fault.FileAlreadyExists:
                 pass
 
-            context = vcenter_ssl_context_or_unverified(target)
-            relative = urllib.parse.quote(f"infraops-unattend/{safe_name}", safe="/")
-            query = urllib.parse.urlencode({"dcPath": datacenter.name, "dsName": datastore.name})
-            url = f"https://{target.host}:{target.port}/folder/{relative}?{query}"
-            request = urllib.request.Request(url, data=content, method="PUT")
+            request = urllib.request.Request(
+                self._datastore_file_url(target, inventory, datacenter, datastore_path),
+                data=content,
+                method="PUT",
+            )
             request.add_header("Content-Type", "application/octet-stream")
             cookie = getattr(getattr(si, "_stub", None), "cookie", None)
             if cookie:
                 request.add_header("Cookie", cookie)
+            context = vcenter_ssl_context_or_unverified(target)
             with urllib.request.urlopen(request, context=context, timeout=120) as response:  # noqa: S310
                 if response.status not in (200, 201):
                     raise RuntimeError(f"datastore upload returned HTTP {response.status}")
 
+            devices = list(vm.config.hardware.device)
             existing = next(
                 (
-                    device for device in vm.config.hardware.device
-                    if isinstance(device, vim.vm.device.VirtualFloppy)
+                    device for device in devices
+                    if isinstance(device, vim.vm.device.VirtualCdrom)
                     and getattr(getattr(device, "backing", None), "fileName", None) == datastore_path
                 ),
                 None,
             )
-            if existing is None:
-                changes = []
-                backing = vim.vm.device.VirtualFloppy.ImageBackingInfo(
-                    fileName=datastore_path,
-                    datastore=datastore,
+            if existing is not None:
+                return TemporaryMediaRef(datastore_path=datastore_path)
+            sata = next(
+                (device for device in devices if isinstance(device, vim.vm.device.VirtualAHCIController)),
+                None,
+            )
+            unit = self._free_unit(sata, devices) if sata is not None else None
+            if sata is None or unit is None:
+                raise InfraOperationError(
+                    "The VM has no free SATA slot for the answer media.",
+                    reason="The SATA controller created with the VM is missing or full.",
+                    recommended_action="Delete the VM and submit a new request.",
+                    retryable=False,
                 )
-                floppy = vim.vm.device.VirtualFloppy(
-                    key=-291,
-                    backing=backing,
-                    connectable=vim.vm.device.VirtualDevice.ConnectInfo(
-                        startConnected=True,
-                        allowGuestControl=False,
-                        connected=True,
-                    ),
-                )
-                floppy_change = vim.vm.device.VirtualDeviceSpec()
-                floppy_change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-                floppy_change.device = floppy
-                changes.append(floppy_change)
-                reconfigure = vim.vm.ConfigSpec(deviceChange=changes)
-                self._wait_for_task(vm.ReconfigVM_Task(spec=reconfigure))
+            # A read-only CD is "removable read-only media" to Windows Setup,
+            # which reads Autounattend.xml from its root under BIOS and EFI.
+            cdrom = vim.vm.device.VirtualCdrom(
+                key=-291,
+                controllerKey=sata.key,
+                unitNumber=unit,
+                backing=vim.vm.device.VirtualCdrom.IsoBackingInfo(fileName=datastore_path, datastore=datastore),
+                connectable=vim.vm.device.VirtualDevice.ConnectInfo(
+                    startConnected=True,
+                    allowGuestControl=False,
+                    connected=True,
+                ),
+            )
+            change = vim.vm.device.VirtualDeviceSpec()
+            change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+            change.device = cdrom
+            self._wait_for_task(vm.ReconfigVM_Task(spec=vim.vm.ConfigSpec(deviceChange=[change])))
             return TemporaryMediaRef(datastore_path=datastore_path)
 
         try:
-            return await self._with_session(target, op, operation="attach-unattended-media")
+            return await self._with_session(target, op, operation="attach-answer-media")
         except Exception as exc:  # noqa: BLE001
-            raise _wrap("attach-unattended-media", exc) from exc
+            raise _wrap("attach-answer-media", exc) from exc
 
-    async def remove_temporary_floppy(
+    async def remove_answer_media(
         self,
         target: VCenterTarget,
         vm_id: str,
@@ -1486,7 +1416,7 @@ class VsphereVMwareService(VMwareService):
                 changes = []
                 for device in vm.config.hardware.device:
                     if (
-                        isinstance(device, vim.vm.device.VirtualFloppy)
+                        isinstance(device, vim.vm.device.VirtualCdrom)
                         and getattr(getattr(device, "backing", None), "fileName", None) == datastore_path
                     ):
                         change = vim.vm.device.VirtualDeviceSpec()
@@ -1494,7 +1424,9 @@ class VsphereVMwareService(VMwareService):
                         change.device = device
                         changes.append(change)
                 if changes:
-                    self._wait_for_task(vm.ReconfigVM_Task(spec=vim.vm.ConfigSpec(deviceChange=changes)))
+                    self._reconfigure_answering_questions(
+                        vm, vim.vm.ConfigSpec(deviceChange=changes), "remove-answer-media"
+                    )
             try:
                 task = inventory.fileManager.DeleteDatastoreFile_Task(
                     name=datastore_path,
@@ -1504,63 +1436,147 @@ class VsphereVMwareService(VMwareService):
             except vim.fault.FileNotFound:
                 pass
 
-        await self._with_session(target, op, operation="remove-unattended-media")
+        await self._with_session(target, op, operation="remove-answer-media")
 
-    async def mount_tools_installer(self, target: VCenterTarget, vm_id: str) -> bool:
+    async def wait_for_tools(self, target: VCenterTarget, vm_id: str, timeout_seconds: float) -> None:
+        deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=timeout_seconds)
+        while dt.datetime.now(dt.UTC) < deadline:
+            info = await self.get_vm_info_by_id(target, vm_id)
+            if (
+                info is not None
+                and (
+                    info.tools_status in ("toolsOk", "toolsOld")
+                    or info.tools_running_status == "guestToolsRunning"
+                )
+                and info.guest_operations_ready
+            ):
+                return
+            await asyncio.sleep(_TOOLS_POLL_INTERVAL)
+        raise InfraOperationError(
+            "VMware Tools did not become ready within the configured timeout.",
+            reason=f"Tools heartbeat absent after {int(timeout_seconds)} seconds.",
+            recommended_action=(
+                "Open the console screenshot attached to this step to see where the guest stopped, "
+                "then retry the failed stage."
+            ),
+            technical_detail=f"waited {timeout_seconds}s for toolsOk/toolsOld on {vm_id}",
+            retryable=True,
+        )
+
+    async def detach_installation_media(self, target: VCenterTarget, vm_id: str) -> list[str]:
         def op(si):
             vm = self._find_by_moref(self._content(si), vm_id)
             if vm is None:
-                return False
-            try:
-                vm.MountToolsInstaller()
-                return True
-            except (vim.fault.InvalidState, vim.fault.ToolsUnavailable):
-                return False
+                raise self._missing_vm(vm_id, "removing installation media")
+            detached: list[str] = []
+            changes = []
+            for device in vm.config.hardware.device:
+                if not isinstance(device, vim.vm.device.VirtualCdrom):
+                    continue
+                file_name = getattr(getattr(device, "backing", None), "fileName", None)
+                if not isinstance(device.backing, vim.vm.device.VirtualCdrom.IsoBackingInfo):
+                    continue
+                if f"{ANSWER_MEDIA_FOLDER}/" in str(file_name or ""):
+                    continue  # removed with its datastore file by remove_answer_media
+                device.backing = vim.vm.device.VirtualCdrom.RemotePassthroughBackingInfo(
+                    deviceName="", exclusive=False
+                )
+                device.connectable = vim.vm.device.VirtualDevice.ConnectInfo(
+                    startConnected=False, allowGuestControl=True, connected=False
+                )
+                change = vim.vm.device.VirtualDeviceSpec()
+                change.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                change.device = device
+                changes.append(change)
+                detached.append(str(file_name or ""))
+            disks = [
+                device for device in vm.config.hardware.device
+                if isinstance(device, vim.vm.device.VirtualDisk)
+            ]
+            spec = vim.vm.ConfigSpec(deviceChange=changes)
+            if disks:
+                # Windows is installed; never boot installation media again.
+                spec.bootOptions = vim.vm.BootOptions(
+                    bootOrder=[vim.vm.BootOptions.BootableDiskDevice(deviceKey=disks[0].key)]
+                )
+            if changes or disks:
+                self._reconfigure_answering_questions(vm, spec, "detach-installation-media")
+            return detached
 
-        return bool(await self._with_session(target, op, operation="mount-tools-installer"))
+        return await self._with_session(target, op, operation="detach-installation-media")
 
-    async def wait_for_tools(
-        self,
-        target: VCenterTarget,
-        vm_id: str,
-        timeout_seconds: float,
-        *,
-        mount_if_missing: bool = False,
-    ) -> None:
-        async def poll() -> None:
-            deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=timeout_seconds)
-            next_mount_attempt = dt.datetime.min.replace(tzinfo=dt.UTC)
-            while dt.datetime.now(dt.UTC) < deadline:
-                info = await self.get_vm_info_by_id(target, vm_id)
-                if (
-                    info is not None
-                    and (
-                        info.tools_status in ("toolsOk", "toolsOld")
-                        or info.tools_running_status == "guestToolsRunning"
-                    )
-                    and info.guest_operations_ready
-                ):
-                    return
-                now = dt.datetime.now(dt.UTC)
-                if mount_if_missing and now >= next_mount_attempt:
-                    try:
-                        await self.mount_tools_installer(target, vm_id)
-                    except InfraOperationError:
-                        pass
-                    next_mount_attempt = now + dt.timedelta(seconds=30)
-                await asyncio.sleep(_TOOLS_POLL_INTERVAL)
-            raise InfraOperationError(
-                "VMware Tools did not become ready within the configured timeout.",
-                reason=f"Tools heartbeat absent after {int(timeout_seconds)} seconds.",
-                recommended_action=(
-                    "Verify VMware Tools status in vCenter, then retry the "
-                    "'Wait for VMware Tools' stage."
-                ),
-                technical_detail=f"waited {timeout_seconds}s for toolsOk/toolsOld on {vm_id}",
-                retryable=True,
+    async def add_data_disks(self, target: VCenterTarget, vm_id: str, disks: list[DiskSpec]) -> int:
+        def op(si):
+            vm = self._find_by_moref(self._content(si), vm_id)
+            if vm is None:
+                raise self._missing_vm(vm_id, "adding data disks")
+            devices = list(vm.config.hardware.device)
+            existing = [device for device in devices if isinstance(device, vim.vm.device.VirtualDisk)]
+            # The OS disk is the first; anything beyond it was added by an
+            # earlier attempt of this stage, so a retry only adds the rest.
+            missing = disks[max(len(existing) - 1, 0):]
+            if not missing:
+                return 0
+            controller = next(
+                (device for device in devices if isinstance(device, vim.vm.device.VirtualLsiLogicSASController)),
+                None,
             )
+            if controller is None:
+                raise InfraOperationError(
+                    "The VM's disk controller was not found.",
+                    reason="The LSI Logic SAS controller created with the VM is missing.",
+                    recommended_action="Delete the VM and submit a new request.",
+                    retryable=False,
+                )
+            changes = []
+            pending = list(devices)
+            for index, disk in enumerate(missing):
+                # Unit 7 is the SCSI controller itself.
+                unit = self._free_unit(controller, pending, reserved=frozenset({7}))
+                if unit is None:
+                    raise InfraOperationError(
+                        "The VM's disk controller has no free slot for another disk.",
+                        reason="All 15 disk slots on SCSI controller 0 are in use.",
+                        recommended_action="Request fewer data disks.",
+                        retryable=False,
+                    )
+                backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
+                backing.fileName = ""
+                backing.diskMode = "persistent"
+                backing.thinProvisioned = disk.provisioning.value == "thin"
+                device = vim.vm.device.VirtualDisk()
+                device.key = -300 - index
+                device.controllerKey = controller.key
+                device.unitNumber = unit
+                device.capacityInKB = disk.size_gb * 1024 * 1024
+                device.backing = backing
+                change = vim.vm.device.VirtualDeviceSpec()
+                change.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                change.fileOperation = vim.vm.device.VirtualDeviceSpec.FileOperation.create
+                change.device = device
+                changes.append(change)
+                pending.append(device)
+            try:
+                self._wait_for_task(vm.ReconfigVM_Task(spec=vim.vm.ConfigSpec(deviceChange=changes)))
+            except Exception as exc:  # noqa: BLE001
+                raise _wrap("add_data_disks", exc) from exc
+            return len(changes)
 
-        await poll()
+        return await self._with_session(target, op, operation="add-data-disks")
+
+    async def capture_screenshot(self, target: VCenterTarget, vm_id: str) -> str:
+        def op(si):
+            vm = self._find_by_moref(self._content(si), vm_id)
+            if vm is None:
+                raise self._missing_vm(vm_id, "capturing a console screenshot")
+            try:
+                task = vm.CreateScreenshot_Task()
+                self._wait_for_task(task)
+            except Exception as exc:  # noqa: BLE001
+                raise _wrap("capture_screenshot", exc) from exc
+            return str(task.info.result or "")
+
+        return await self._with_session(target, op, operation="capture-screenshot")
 
     async def get_vm_info_by_id(self, target: VCenterTarget, vm_id: str) -> PowerStateInfo | None:
         def op(si):

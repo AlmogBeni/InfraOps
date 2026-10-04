@@ -6,11 +6,11 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import uuid
 
 from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.api.deps import ClientIp, DbSession, require
@@ -41,8 +41,8 @@ from app.schemas.provisioning import (
     IpConflictCheckRequest,
     IpConflictReport,
     PreflightReport,
-    ProvisioningRequest,
     ProvisioningSubmissionRequest,
+    parse_stored_request,
 )
 from app.services.network.conflict import (
     DnsForwardProvider,
@@ -54,6 +54,7 @@ from app.services.provisioning.preflight import PreflightValidator
 from app.services.provisioning.service import cancel_job, retry_stages, submit_provisioning
 from app.services.vmware.base import VCenterTarget
 from app.services.vmware.factory import get_vmware_service
+from app.workers.context import build_vcenter_target
 from app.workers.events import JobEventPublisher
 
 router = APIRouter(prefix="/provisioning", tags=["provisioning"])
@@ -86,32 +87,15 @@ async def list_provisioning_credentials(
 
 # ── serialisation helpers ────────────────────────────────────────────────────
 
-def _normalized_request_payload(payload: dict | None) -> dict | None:
-    """Upgrade stored legacy request JSON to the current public contract."""
+def _request_view(payload: dict | None) -> tuple[dict | None, bool]:
+    """The stored request in the current contract, or — for a job created by a
+    workflow that no longer exists — the raw stored JSON (read-only)."""
     if not isinstance(payload, dict):
-        return None
-
-    candidate = copy.deepcopy(payload)
-    # Missing markers identify stored jobs written under the historical rule
-    # where guest.hostname, rather than vm.name, controlled AD/DNS identity.
-    candidate.setdefault("identity_policy_version", "v1")
-    guest = candidate.get("guest")
-    if isinstance(guest, dict):
-        guest.setdefault("iso_id", None)
-        if "source_type" not in candidate:
-            candidate["source_type"] = (
-                "template" if guest.get("template_id") else "blank"
-            )
-    candidate.setdefault("certificate_package_ids", [])
-    candidate.setdefault("application_ids", [])
-
-    try:
-        return ProvisioningRequest.model_validate(candidate).model_dump(mode="json")
-    except ValidationError:
-        # Very old or externally imported rows can contain fields the current
-        # schema cannot safely reinterpret. Preserve their data while still
-        # supplying the discriminators/defaults required by current readers.
-        return candidate
+        return None, False
+    parsed = parse_stored_request(copy.deepcopy(payload))
+    if parsed is None:
+        return copy.deepcopy(payload), True
+    return parsed.model_dump(mode="json"), False
 
 
 def _step_out(step: ProvisioningJobStep, *, include_technical: bool = False) -> JobStepOut:
@@ -268,6 +252,7 @@ async def get_job(job_id: uuid.UUID, db: DbSession, user=require(Permission.JOBS
     job = await _get_job(db, job_id)
     usernames = await _username_map(db, [job])
     base = job_out(job, usernames)
+    request_payload, legacy = _request_view(job.request.payload if job.request else None)
     detail = JobDetailOut(
         **base.model_dump(),
         steps=[
@@ -277,11 +262,8 @@ async def get_job(job_id: uuid.UUID, db: DbSession, user=require(Permission.JOBS
             )
             for step in sorted(job.steps, key=lambda s: s.sequence)
         ],
-        request_payload=(
-            _normalized_request_payload(job.request.payload)
-            if job.request
-            else None
-        ),
+        request_payload=request_payload,
+        legacy_request=legacy,
     )
     return detail
 
@@ -301,7 +283,41 @@ async def get_job_request(job_id: uuid.UUID, db: DbSession, user=require(Permiss
     job = await _get_job(db, job_id)
     if job.request is None:
         raise NotFoundError("No stored request for this job.")
-    return _normalized_request_payload(job.request.payload)
+    return _request_view(job.request.payload)[0]
+
+
+# Written by the worker from CreateScreenshot_Task's result: "[datastore] folder/file.png".
+_SCREENSHOT_PATH = re.compile(r"^\[[^\]/\\]+\] (?!.*\.\.)[^\x00]+\.png$")
+_MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024
+
+
+@router.get("/jobs/{job_id}/steps/{stage_key}/console-screenshot")
+async def get_console_screenshot(
+    job_id: uuid.UUID,
+    stage_key: str,
+    db: DbSession,
+    user=require(Permission.ADMIN_SETTINGS),
+) -> Response:
+    """The VM console as captured when this installation stage failed."""
+    job = await _get_job(db, job_id)
+    step = next((item for item in job.steps if item.stage_key == stage_key), None)
+    path = (step.artifacts or {}).get("console_screenshot") if step is not None else None
+    if not isinstance(path, str) or not _SCREENSHOT_PATH.fullmatch(path):
+        raise NotFoundError("No console screenshot was captured for this stage.")
+    payload = job.request.payload if job.request else {}
+    compute = payload.get("compute", {}) if isinstance(payload, dict) else {}
+    try:
+        vcenter_id = uuid.UUID(str(compute.get("vcenter_id")))
+        target = await build_vcenter_target(db, vcenter_id)
+    except (ValueError, LookupError) as exc:
+        raise NotFoundError("The vCenter that holds this screenshot is no longer registered.") from exc
+    content = await get_vmware_service().read_datastore_file(
+        target,
+        str(compute.get("datacenter_id") or job.datacenter_id or ""),
+        path,
+        max_bytes=_MAX_SCREENSHOT_BYTES,
+    )
+    return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 # ── retry / cancel ───────────────────────────────────────────────────────────

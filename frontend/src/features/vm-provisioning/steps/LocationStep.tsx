@@ -102,22 +102,12 @@ export function LocationStep() {
 
   useEffect(() => {
     if (!data.vcenter_id || !data.datacenter_id) return
-
-    if (data.source_type === 'template') {
-      void queryClient.prefetchQuery({
-        queryKey: ['templates', data.vcenter_id, data.datacenter_id],
-        queryFn: () => api.templates(data.vcenter_id, data.datacenter_id),
-        staleTime: 5 * 60 * 1000,
-      })
-      return
-    }
-
     void queryClient.prefetchQuery({
       queryKey: ['isos', data.vcenter_id, data.datacenter_id],
       queryFn: () => api.isos(data.vcenter_id, data.datacenter_id),
       staleTime: 5 * 60 * 1000,
     })
-  }, [data.datacenter_id, data.source_type, data.vcenter_id, queryClient])
+  }, [data.datacenter_id, data.vcenter_id, queryClient])
 
   if (vcenters.isLoading) {
     return <LoadingState title="Loading infrastructure connections" description="Retrieving the vCenters available to your account." />
@@ -141,9 +131,9 @@ export function LocationStep() {
     <section aria-label="Deployment location" className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="console-kicker">Step 2 · Location</p>
+          <p className="console-kicker">Step 1 · Location</p>
           <h2>Where should this VM run?</h2>
-          <p>Choose the datacenter first. Networks, ISOs, compute, and storage are scoped to this location; deployment packages follow the selected vCenter library.</p>
+          <p>Choose the datacenter first. Networks, installation ISOs, compute, and storage are scoped to this location.</p>
         </div>
         <Badge tone="info"><Waypoints className="h-3 w-3" /> Datacenter scoped</Badge>
       </header>

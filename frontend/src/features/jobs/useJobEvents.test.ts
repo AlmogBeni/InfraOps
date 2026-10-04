@@ -10,7 +10,7 @@ function seededClient(): QueryClient {
     id: 'job-1',
     status: 'RUNNING',
     progress: 10,
-    current_stage: 'clone_vm',
+    current_stage: 'create_vm',
     steps: [],
   } as unknown as JobDetailOut)
   return client
@@ -35,7 +35,7 @@ describe('job event handling', () => {
 
   it('replaces the step list from a snapshot', () => {
     const client = seededClient()
-    const steps = [{ stage_key: 'clone_vm', status: 'SUCCEEDED' }] as unknown as JobStepOut[]
+    const steps = [{ stage_key: 'create_vm', status: 'SUCCEEDED' }] as unknown as JobStepOut[]
     applySnapshot(client, 'job-1', { job: { progress: 20 }, steps })
     const job = client.getQueryData<JobDetailOut>(['job', 'job-1'])
     expect(job?.steps).toEqual(steps)

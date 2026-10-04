@@ -19,6 +19,7 @@ import asyncio
 import datetime as dt
 import json
 import re
+import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -37,13 +38,13 @@ from app.models.jobs import (
     InfrastructureStatus,
     VMwareToolsStatus,
 )
-from app.schemas.provisioning import IpMode, VmSourceType
+from app.schemas.provisioning import IpMode
 from app.services.applications.installer import ApplicationDefinition
 from app.services.applications.paths import path_within_roots
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
 from app.services.guest.base import GuestCredentialsRejected
-from app.services.guest.scripts import HOSTNAME_PATH, new_temp_path, new_token
+from app.services.guest.scripts import HOSTNAME_PATH
 from app.services.guest.scripts import ps_quote as ps_single_quote
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
@@ -52,14 +53,11 @@ from app.services.settings_store import (
 )
 from app.services.vmware.base import PowerStateInfo, VmRef
 from app.services.windows_unattend import (
-    WindowsFirstBootSpec,
     WindowsUnattendSpec,
+    build_answer_iso,
     build_autounattend_xml,
-    build_first_boot_unattend_xml,
-    build_unattend_floppy,
 )
 from app.workers.context import JobRunContext
-from app.workers.state_machine import ORDERED_STAGES
 
 log = get_logger(__name__)
 
@@ -282,7 +280,6 @@ class WindowsSetupState:
     system_setup_in_progress: bool
     oobe_in_progress: bool
     computer_name: str
-    sysprep_running: bool = False
 
     @property
     def complete(self) -> bool:
@@ -311,41 +308,10 @@ def build_windows_setup_state_script() -> str:
         "$image = (Get-ItemProperty -LiteralPath "
         "'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State' "
         "-ErrorAction SilentlyContinue).ImageState; "
-        "$sysprep = [bool](Get-Process -Name sysprep -ErrorAction SilentlyContinue); "
         "[pscustomobject]@{ImageState=[string]$image;"
         "SystemSetupInProgress=[int]$setup.SystemSetupInProgress;"
         "OOBEInProgress=[int]$setup.OOBEInProgress;"
-        "ComputerName=[string]$env:COMPUTERNAME;SysprepRunning=$sysprep} | ConvertTo-Json -Compress"
-    )
-
-
-SYSPREP_PATH = r"C:\Windows\System32\Sysprep\sysprep.exe"
-SYSPREP_ERROR_LOG = r"C:\Windows\System32\Sysprep\Panther\setuperr.log"
-
-
-def build_start_sysprep_script(answer_path: str) -> str:
-    """Generalize this copy with an explicit answer file.
-
-    Windows does not reliably discover answer media on the first boot of a
-    generalized image, so InfraOps passes its answer file to Sysprep itself.
-    Sysprep reboots the guest, so it is started detached and never awaited.
-    """
-    return (
-        "$ErrorActionPreference = 'Stop'\n"
-        f"$answer = {ps_single_quote(answer_path)}\n"
-        "if (-not (Test-Path -LiteralPath $answer)) { throw 'The InfraOps answer file is missing.' }\n"
-        "if (Get-Process -Name sysprep -ErrorAction SilentlyContinue) { 'SYSPREP-ALREADY-RUNNING'; exit 0 }\n"
-        f"Start-Process -FilePath {ps_single_quote(SYSPREP_PATH)} -ArgumentList @("
-        "'/generalize', '/oobe', '/reboot', '/quiet', ('/unattend:' + $answer)) | Out-Null\n"
-        "'SYSPREP-STARTED'"
-    )
-
-
-def build_sysprep_error_script() -> str:
-    return (
-        f"$log = {ps_single_quote(SYSPREP_ERROR_LOG)}\n"
-        "if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 40 } "
-        "else { 'Sysprep wrote no error log.' }"
+        "ComputerName=[string]$env:COMPUTERNAME} | ConvertTo-Json -Compress"
     )
 
 
@@ -362,7 +328,6 @@ def parse_windows_setup_state(stdout: str) -> WindowsSetupState:
                     system_setup_in_progress=int(payload.get("SystemSetupInProgress") or 0) != 0,
                     oobe_in_progress=int(payload.get("OOBEInProgress") or 0) != 0,
                     computer_name=str(payload.get("ComputerName") or "").strip(),
-                    sysprep_running=payload.get("SysprepRunning") in (True, "True", "true"),
                 )
             except (TypeError, ValueError) as exc:
                 raise ValueError("The Windows Setup probe returned non-numeric flags.") from exc
@@ -400,14 +365,88 @@ def build_domain_join_script(
     )
 
 
+DATA_DISKS_NOT_VISIBLE_EXIT = 3
+
+
+def build_initialize_data_disks_script(expected_count: int) -> str:
+    """Bring hot-added data disks online and format them (idempotent).
+
+    Every disk except the boot/system disk is a data disk. Windows' SAN policy
+    can leave new disks offline or read-only, so both are cleared first. A
+    disk that is already partitioned and formatted is left untouched, so a
+    retry never reformats anything. Exits DATA_DISKS_NOT_VISIBLE_EXIT while
+    Windows has not detected all hot-added disks yet.
+    """
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        "Update-HostStorageCache\n"
+        "$data = @(Get-Disk | Where-Object { -not ($_.IsBoot -or $_.IsSystem) } | Sort-Object Number)\n"
+        f"if ($data.Count -lt {int(expected_count)}) {{ \"FOUND:$($data.Count)\"; "
+        f"exit {DATA_DISKS_NOT_VISIBLE_EXIT} }}\n"
+        "$index = 0\n"
+        "$volumes = foreach ($disk in $data) {\n"
+        "    $index++\n"
+        "    if ($disk.IsOffline) { Set-Disk -Number $disk.Number -IsOffline $false }\n"
+        "    if ($disk.IsReadOnly) { Set-Disk -Number $disk.Number -IsReadOnly $false }\n"
+        "    $disk = Get-Disk -Number $disk.Number\n"
+        "    if ($disk.PartitionStyle -eq 'RAW') { Initialize-Disk -Number $disk.Number -PartitionStyle GPT }\n"
+        "    $partition = Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue |\n"
+        "        Where-Object { $_.Type -eq 'Basic' } | Select-Object -First 1\n"
+        "    if (-not $partition) {\n"
+        "        $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter\n"
+        "    }\n"
+        "    $volume = $partition | Get-Volume\n"
+        "    if (-not $volume.FileSystem) {\n"
+        "        $volume = Format-Volume -Partition $partition -FileSystem NTFS "
+        "-NewFileSystemLabel ('Data' + $index) -Confirm:$false\n"
+        "    }\n"
+        "    [pscustomobject]@{Number=[int]$disk.Number; SizeGB=[int][math]::Round($disk.Size / 1GB);"
+        " DriveLetter=[string]$partition.DriveLetter; Label=[string]$volume.FileSystemLabel;"
+        " FileSystem=[string]$volume.FileSystem}\n"
+        "}\n"
+        "ConvertTo-Json -Compress -InputObject @($volumes)"
+    )
+
+
+@dataclass(frozen=True)
+class DataVolume:
+    number: int
+    size_gb: int
+    drive_letter: str
+    label: str
+    file_system: str
+
+
+def parse_data_volumes(stdout: str) -> list[DataVolume]:
+    for line in reversed([entry.strip() for entry in stdout.splitlines() if entry.strip()]):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        items = payload if isinstance(payload, list) else [payload]
+        if all(isinstance(item, dict) and "Number" in item for item in items):
+            return [
+                DataVolume(
+                    number=int(item["Number"]),
+                    size_gb=int(item.get("SizeGB") or 0),
+                    drive_letter=str(item.get("DriveLetter") or ""),
+                    label=str(item.get("Label") or ""),
+                    file_system=str(item.get("FileSystem") or ""),
+                )
+                for item in items
+            ]
+    raise ValueError("The data-disk script did not return a JSON list.")
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 _TIMEOUT_KEY_MAP: dict[str, tuple[str, ...]] = {
-    "clone_vm": ("clone_minutes",),
-    "wait_for_guest_os": ("vmware_tools_minutes",),
+    "create_vm": ("create_vm_minutes",),
+    "wait_for_guest_os": ("os_installation_minutes",),
     "wait_for_tools": ("vmware_tools_minutes",),
     "configure_guest_network": ("network_configuration_minutes",),
     "validate_network": ("network_configuration_minutes",),
+    "initialize_data_disks": ("guest_operations_minutes",),
     "join_domain": ("guest_operations_minutes",),
     "reboot_guest": ("guest_operations_minutes",),
     "wait_guest_ready": ("guest_operations_minutes",),
@@ -425,26 +464,15 @@ async def effective_timeout_seconds(ctx: JobRunContext, stage_key: str) -> float
             override = {k: int(v) for k, v in raw.items()}
     except Exception:  # noqa: BLE001 - fall back to defaults when settings unavailable
         pass
-    mapped = stage_timeout(stage_key, DEFAULT_STAGE_TIMEOUTS)
     for setting_key in _TIMEOUT_KEY_MAP.get(stage_key, ()):
         if setting_key in override:
-            configured = float(override[setting_key]) * 60
-            if (
-                stage_key in ("wait_for_guest_os", "wait_for_tools")
-                and ctx.request.source_type == VmSourceType.BLANK
-                and ctx.request.guest.iso_id is not None
-            ):
-                return max(configured, 7200.0)
-            if stage_key == "wait_for_guest_os" and ctx.request.source_type == VmSourceType.TEMPLATE:
-                # First boot of a generalized package: specialize, reboot, OOBE.
-                return max(configured, 3600.0)
-            return configured
-    return float(mapped)
+            return float(override[setting_key]) * 60
+    return float(stage_timeout(stage_key, DEFAULT_STAGE_TIMEOUTS))
 
 
 def _require_vm_id(ctx: JobRunContext) -> str:
     if ctx.vm_ref is None:
-        step = ctx.steps_by_key.get("clone_vm")
+        step = ctx.steps_by_key.get("create_vm")
         stored = (step.artifacts or {}).get("vm_id") if step is not None else None
         if stored:
             ctx.vm_ref = VmRef(id=stored, name=ctx.vm_name)
@@ -456,21 +484,6 @@ def _require_vm_id(ctx: JobRunContext) -> str:
             retryable=True,
         )
     return ctx.vm_ref.id
-
-
-def _blank_guest_skip(ctx: JobRunContext, operation: str) -> StageOutcome | None:
-    if (
-        ctx.request.source_type != VmSourceType.BLANK
-        or ctx.request.guest.iso_id is not None
-    ):
-        return None
-    return StageOutcome(
-        status="NOT_APPLICABLE",
-        output=(
-            f"{operation} is not applicable to a blank VM. The VM is left powered off "
-            "until an operating system is installed."
-        ),
-    )
 
 
 def _tools_lifecycle(info: PowerStateInfo | None) -> VMwareToolsStatus:
@@ -558,17 +571,17 @@ def _definition_from_orm(app: Application) -> ApplicationDefinition:
     )
 
 
+def _os_disk_datastore(ctx: JobRunContext) -> str | None:
+    disks = ctx.request.hardware.disks
+    return disks[0].datastore_id or next((d.datastore_id for d in disks if d.datastore_id), None)
+
+
 # ── stage handlers ───────────────────────────────────────────────────────────
 
 async def stage_validate_request(ctx: JobRunContext) -> StageOutcome:
     ctx.job.infrastructure_status = InfrastructureStatus.PENDING.value
-    if ctx.request.source_type == VmSourceType.BLANK:
-        ctx.job.guest_os_status = (
-            GuestOsStatus.UNKNOWN.value
-            if ctx.request.guest.iso_id
-            else GuestOsStatus.NOT_PRESENT.value
-        )
-        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
+    ctx.job.guest_os_status = GuestOsStatus.UNKNOWN.value
+    ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
     rows = await load_effective(ctx.db)
     policy = str(rows.get(SETTING_VM_NAME_POLICY) or "")
     if policy and re.fullmatch(policy, ctx.vm_name) is None:
@@ -623,10 +636,10 @@ async def stage_validate_request(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(
         output=(
             f"Request validated.\n"
-            f"Source: {r.source_type.value}\n"
             f"VM: {r.vm.name}\nInfrastructure placement supplied.\n"
             f"CPU/Memory: {r.hardware.cpu} vCPU / {r.hardware.memory_mb} MB\n"
-            f"Disks: {len(r.hardware.disks)}\nMode: {r.network.mode.value}"
+            f"Disks: {len(r.hardware.disks)} (OS disk + {len(r.hardware.disks) - 1} data)\n"
+            f"Network: {r.network.mode.value}"
         ),
         artifacts={"validated_at": dt.datetime.now(dt.UTC).isoformat()},
     )
@@ -706,23 +719,17 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
     if network is None:
         problems.append(f"network '{r.network.network_id}' missing")
 
-    if r.source_type == VmSourceType.TEMPLATE:
-        templates = {
-            t.id: t
-            for t in await ctx.vmware.get_templates(ctx.target, r.compute.datacenter_id)
-        }
-        if r.guest.template_id not in templates:
-            problems.append(f"template '{r.guest.template_id}' missing")
-    elif r.guest.iso_id:
-        isos = {
-            image.id: image
-            for image in await ctx.vmware.get_isos(ctx.target, r.compute.datacenter_id)
-        }
-        image = isos.get(r.guest.iso_id)
-        if image is None:
-            problems.append("selected ISO missing from the datacenter")
-        elif image.datastore_id not in datastores:
-            problems.append("selected ISO datastore unavailable to the cluster")
+    isos = {
+        image.id: image
+        for image in (
+            await ctx.vmware.get_isos(ctx.target, r.compute.datacenter_id) if dc is not None else []
+        )
+    }
+    image = isos.get(r.guest.iso_id)
+    if image is None:
+        problems.append("selected ISO missing from the datacenter")
+    elif image.datastore_id not in datastores:
+        problems.append("selected ISO datastore unavailable to the cluster")
 
     if problems:
         raise InfraOperationError(
@@ -732,19 +739,19 @@ async def stage_validate_infrastructure(ctx: JobRunContext) -> StageOutcome:
             technical_detail=json.dumps(problems),
             retryable=True,
         )
-    source_detail = " and template" if r.source_type == VmSourceType.TEMPLATE else ""
     return StageOutcome(
-        output=f"Datacenter, cluster, placement, storage, network{source_detail} verified.",
+        output="Datacenter, cluster, placement, storage, network and installation ISO verified.",
         artifacts={
             "datacenter_name": dc.name if dc is not None else None,
             "network_name": network.name if network is not None else None,
+            "iso_name": image.name if image is not None else None,
         },
     )
 
 
-async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
+async def stage_create_vm(ctx: JobRunContext) -> StageOutcome:
     from app.audit.recorder import record_audit
-    from app.services.vmware.base import BlankVmSpec, CloneSpec, VmRef
+    from app.services.vmware.base import VmCreateSpec
 
     r = ctx.request
     job_marker = str(ctx.job_id)
@@ -782,54 +789,26 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
             artifacts={"vm_id": existing.vm_id, "vm_name": existing.name, "owner_job_id": job_marker},
         )
 
-    datastore_id = next((d.datastore_id for d in r.hardware.disks if d.datastore_id), None)
-    if r.source_type == VmSourceType.TEMPLATE:
-        spec = CloneSpec(
-            template_id=r.guest.template_id or "",
-            vm_name=r.vm.name,
-            datacenter_id=r.compute.datacenter_id,
-            description=r.vm.description,
-            cluster_id=r.compute.cluster_id,
-            host_id=r.compute.host_id,
-            resource_pool_id=r.compute.resource_pool_id,
-            datastore_id=datastore_id,
-            cpu=r.hardware.cpu,
-            memory_mb=r.hardware.memory_mb,
-            disks=tuple(r.hardware.disks),
-            network_id=r.network.network_id,
-            adapter_type=r.network.adapter_type,
-            firmware=r.hardware.firmware,
-            secure_boot=r.hardware.secure_boot,
-            job_id=job_marker,
-        )
-        vm_ref = await ctx.vmware.clone_from_template(ctx.target, spec)
-        output = f"Deployed '{vm_ref.name}' from the selected OVF/OVA package."
-    else:
-        blank_spec = BlankVmSpec(
-            vm_name=r.vm.name,
-            datacenter_id=r.compute.datacenter_id,
-            description=r.vm.description,
-            cluster_id=r.compute.cluster_id,
-            host_id=r.compute.host_id,
-            resource_pool_id=r.compute.resource_pool_id,
-            datastore_id=datastore_id,
-            cpu=r.hardware.cpu,
-            memory_mb=r.hardware.memory_mb,
-            disks=tuple(r.hardware.disks),
-            firmware=r.hardware.firmware,
-            secure_boot=r.hardware.secure_boot,
-            iso_id=r.guest.iso_id,
-            job_id=job_marker,
-        )
-        vm_ref = await ctx.vmware.create_blank_vm(ctx.target, blank_spec)
-        media = " with the selected ISO mounted" if r.guest.iso_id else " without installation media"
-        output = f"Created blank virtual machine '{vm_ref.name}'{media} in powered-off state."
+    os_disk = r.hardware.disks[0]
+    spec = VmCreateSpec(
+        vm_name=r.vm.name,
+        datacenter_id=r.compute.datacenter_id,
+        iso_id=r.guest.iso_id,
+        os_disk=os_disk,
+        description=r.vm.description,
+        cluster_id=r.compute.cluster_id,
+        host_id=r.compute.host_id,
+        resource_pool_id=r.compute.resource_pool_id,
+        datastore_id=_os_disk_datastore(ctx),
+        cpu=r.hardware.cpu,
+        memory_mb=r.hardware.memory_mb,
+        firmware=r.hardware.firmware,
+        secure_boot=r.hardware.secure_boot,
+        job_id=job_marker,
+    )
+    vm_ref = await ctx.vmware.create_vm(ctx.target, spec)
     ctx.vm_ref = vm_ref
     ctx.job.infrastructure_status = InfrastructureStatus.READY.value
-    if r.source_type == VmSourceType.BLANK and r.guest.iso_id is None:
-        ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_REQUIRED.value
-        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
     await record_audit(ctx.db).record(
         AuditAction.VM_CREATED,
         resource_type="virtual_machine",
@@ -842,14 +821,17 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
         details={
             "computer_name": r.effective_computer_name or None,
             "requested_fqdn": r.effective_fqdn,
-            "source_type": r.source_type.value,
-            "template_id": r.guest.template_id,
             "iso_id": r.guest.iso_id,
             "vm_id": vm_ref.id,
         },
     )
+    data_disks = len(r.hardware.disks) - 1
     return StageOutcome(
-        output=output,
+        output=(
+            f"Created '{vm_ref.name}' powered off with its {os_disk.size_gb} GB OS disk, the Windows "
+            "installation ISO and the host's VMware Tools ISO."
+            + (f" {data_disks} data disk(s) are added after Windows is installed." if data_disks else "")
+        ),
         artifacts={"vm_id": vm_ref.id, "vm_name": vm_ref.name, "owner_job_id": job_marker},
     )
 
@@ -857,22 +839,12 @@ async def stage_clone_vm(ctx: JobRunContext) -> StageOutcome:
 async def stage_configure_hardware(ctx: JobRunContext) -> StageOutcome:
     vm_id = _require_vm_id(ctx)
     hw = ctx.request.hardware
-    # An installed package boots only with the firmware it was installed
-    # under; switching BIOS/EFI would leave it unbootable.
-    from_package = ctx.request.source_type == VmSourceType.TEMPLATE
-    await ctx.vmware.configure_hardware(
-        ctx.target, vm_id,
-        cpu=hw.cpu, memory_mb=hw.memory_mb, disks=list(hw.disks),
-        firmware=None if from_package else hw.firmware, secure_boot=hw.secure_boot,
-    )
-    disk_summary = ", ".join(f"{d.size_gb} GB {d.provisioning.value}" for d in hw.disks)
-    firmware = (
-        "inherited from the package"
-        if from_package
-        else f"{hw.firmware.value}{' + Secure Boot' if hw.secure_boot else ''}"
-    )
+    await ctx.vmware.configure_hardware(ctx.target, vm_id, cpu=hw.cpu, memory_mb=hw.memory_mb)
     return StageOutcome(
-        output=f"CPU: {hw.cpu} vCPU\nMemory: {hw.memory_mb} MB\nFirmware: {firmware}\nDisks: {disk_summary}",
+        output=(
+            f"CPU: {hw.cpu} vCPU\nMemory: {hw.memory_mb} MB\nFirmware: {hw.firmware.value}"
+            f"{' + Secure Boot' if hw.secure_boot else ''}"
+        ),
     )
 
 
@@ -889,115 +861,70 @@ async def stage_attach_network_adapter(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(output=f"{net.adapter_type.value} network adapter connected.")
 
 
-def _unusable_setup_credential(exc: ValueError) -> InfraOperationError:
-    return InfraOperationError(
-        "The provisioning credential cannot be used by Windows Setup.",
-        reason=str(exc),
-        recommended_action=(
-            "Select a credential whose username is a local account such as 'Administrator' "
-            "(no domain prefix), then submit a new request."
-        ),
-        retryable=False,
-    )
-
-
-def first_boot_answer_xml(ctx: JobRunContext, credentials) -> bytes:
-    """Answer file for specialize + OOBE of a deployed Windows package."""
+async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
+    vm_id = _require_vm_id(ctx)
     guest = ctx.request.guest
+    credentials = await ctx.resolve_guest_credentials()
+    product_key = None
+    if guest.product_key_secret_ref:
+        product_key = (await ctx.secrets.get_secret(f"{guest.product_key_secret_ref}/password")).strip()
     try:
-        return build_first_boot_unattend_xml(
-            WindowsFirstBootSpec(
+        xml = build_autounattend_xml(
+            WindowsUnattendSpec(
                 computer_name=ctx.request.effective_computer_name,
                 administrator_username=credentials.username,
                 administrator_password=credentials.password,
+                image_index=guest.windows_image_index,
                 locale=guest.installation_locale,
                 input_locale=guest.input_locale,
                 timezone=guest.timezone or "UTC",
+                firmware=ctx.request.hardware.firmware.value,
+                product_key=product_key,
+                builtin_administrator_password=f"{secrets.token_urlsafe(24)}aA1!",
             )
         )
     except ValueError as exc:
-        raise _unusable_setup_credential(exc) from exc
-
-
-async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
-    request = ctx.request
-    if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
-        return StageOutcome(
-            status="NOT_APPLICABLE",
-            output="No operating system is installed on a blank VM without an ISO.",
-        )
-    vm_id = _require_vm_id(ctx)
-    guest = request.guest
-    if request.source_type == VmSourceType.TEMPLATE:
-        info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
-        if info is None or not info.configured_for_windows:
-            configured = (info.configured_guest_id if info else None) or "unknown"
-            return StageOutcome(
-                status="NOT_APPLICABLE",
-                output=(
-                    f"The package is configured for guest OS '{configured}', not Windows, so no "
-                    "Windows answer media was attached."
-                ),
-            )
-        if info.power_state == "poweredOn":
-            return StageOutcome(
-                status="SKIPPED",
-                output="The VM is already running, so its first boot has already happened.",
-            )
-
-    credentials = await ctx.resolve_guest_credentials()
-    if request.source_type == VmSourceType.TEMPLATE:
-        xml = first_boot_answer_xml(ctx, credentials)
-        summary = (
-            "Temporary first-boot answer media attached (computer name, time zone, locale, "
-            "keyboard layout, administrator password, every OOBE page skipped). After the first "
-            "boot InfraOps also runs Sysprep with the same answer file inside the guest, so the "
-            "deployment does not depend on Windows discovering this media."
-        )
-    else:
-        try:
-            xml = build_autounattend_xml(
-                WindowsUnattendSpec(
-                    computer_name=request.effective_computer_name,
-                    administrator_username=credentials.username,
-                    administrator_password=credentials.password,
-                    image_index=guest.windows_image_index,
-                    locale=guest.installation_locale,
-                    input_locale=guest.input_locale,
-                    timezone=guest.timezone or "UTC",
-                    firmware=request.hardware.firmware.value,
-                )
-            )
-        except ValueError as exc:
-            raise _unusable_setup_credential(exc) from exc
-        summary = (
-            "Temporary answer media attached. Windows Setup will configure the selected "
-            "administrator, locale, keyboard layout and computer name without OOBE prompts."
-        )
-    # The media contains a plaintext Windows Setup password by necessity. It is
-    # held only in memory here, uploaded directly, and removed once Windows
-    # Setup has finished (or when the job stops earlier).
-    media = build_unattend_floppy(xml)
-    datastore_id = next(
-        (disk.datastore_id for disk in ctx.request.hardware.disks if disk.datastore_id),
-        None,
-    )
-    ref = await ctx.vmware.attach_temporary_floppy(
+        raise InfraOperationError(
+            "The answer file could not be generated from the selected credentials.",
+            reason=str(exc),
+            recommended_action=(
+                "Select a provisioning credential whose username is a local account such as "
+                "'Administrator' and, for a product key, a valid 25-character key; then submit a "
+                "new request."
+            ),
+            retryable=False,
+        ) from exc
+    # The media contains a plaintext Setup password (and product key) by
+    # necessity. It is held only in memory here, uploaded directly, and removed
+    # once Windows is installed — or as soon as the job stops earlier.
+    ref = await ctx.vmware.attach_answer_media(
         ctx.target,
         vm_id,
         datacenter_id=ctx.request.compute.datacenter_id,
-        datastore_id=datastore_id,
-        file_name=f"infraops-{ctx.job_id}.flp",
-        content=media,
+        datastore_id=_os_disk_datastore(ctx),
+        file_name=f"infraops-{ctx.job_id}.iso",
+        content=build_answer_iso(xml),
     )
-    return StageOutcome(output=summary, artifacts={"datastore_path": ref.datastore_path})
+    return StageOutcome(
+        output=(
+            "Temporary answer media attached as a CD drive. Windows Setup installs the selected "
+            "image to disk 0 and configures the administrator account, locale, keyboard, time zone "
+            "and computer name without showing any page"
+            + (", using the selected product key." if product_key else ".")
+        ),
+        artifacts={"datastore_path": ref.datastore_path},
+    )
 
 
 # USB HID usage ID of the space bar.
 _HID_SPACEBAR = 0x2C
 # Windows installation media boots only after "Press any key to boot from CD or
-# DVD", shown for about five seconds right after the firmware starts.
-_BOOT_KEY_SECONDS = 20.0
+# DVD", shown for about five seconds once the firmware reaches the CD. On a
+# slow host that can take a while, and the firmware retries the CD every few
+# seconds when it is missed, so presses continue for a minute. Setup's first
+# restart, after which a key press would boot the CD again, is many minutes
+# later.
+_BOOT_KEY_SECONDS = 60.0
 _BOOT_KEY_INTERVAL_SECONDS = 1.0
 
 
@@ -1028,19 +955,9 @@ async def press_key_to_boot_from_iso(ctx: JobRunContext, vm_id: str) -> int:
 
 
 async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Power-on")
-    if skipped:
-        return skipped
     vm_id = _require_vm_id(ctx)
-    from_iso = ctx.request.source_type == VmSourceType.BLANK and ctx.request.guest.iso_id is not None
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
     already_on = info is not None and info.power_state == "poweredOn"
-    if already_on and not from_iso:
-        return StageOutcome(status="SKIPPED", output="VM is already powered on.")
-    if not from_iso:
-        await ctx.vmware.power_on(ctx.target, vm_id)
-        return StageOutcome(output="Power-on task completed.")
-
     # This stage reruns only after it failed, so Setup cannot have started:
     # restart the firmware to get the boot prompt back.
     if already_on:
@@ -1048,6 +965,7 @@ async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
     else:
         await ctx.vmware.power_on(ctx.target, vm_id)
     sent = await press_key_to_boot_from_iso(ctx, vm_id)
+    ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
     return StageOutcome(
         output=(
             f"{'Reset' if already_on else 'Power-on'} task completed. The space bar was pressed "
@@ -1058,19 +976,20 @@ async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
     )
 
 
-async def _wait_for_installation_from_iso(ctx: JobRunContext, vm_id: str) -> StageOutcome:
+async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
     """Windows installs from the ISO, then installs VMware Tools at first logon
-    from the host's Tools ISO; its heartbeat is the first sign of the new OS."""
+    from the host's Tools ISO; its heartbeat is the first sign of the new OS.
+    Power state is never accepted as proof of an installed OS."""
+    vm_id = _require_vm_id(ctx)
     ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
     ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
     loop = asyncio.get_running_loop()
     timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
+    # Finish with a clear error before the pipeline's own stage timeout fires.
     deadline = loop.time() + max(60.0, timeout - 30.0)
     try:
-        await ctx.vmware.wait_for_tools(
-            ctx.target, vm_id, max(1.0, deadline - loop.time() - 120.0), mount_if_missing=False
-        )
+        await ctx.vmware.wait_for_tools(ctx.target, vm_id, max(1.0, deadline - loop.time() - 120.0))
     except InfraOperationError as exc:
         raise InfraOperationError(
             "Windows did not finish installing from the ISO in time.",
@@ -1079,230 +998,62 @@ async def _wait_for_installation_from_iso(ctx: JobRunContext, vm_id: str) -> Sta
                 "first-logon VMware Tools installation did not complete."
             ),
             recommended_action=(
-                "Open the VM console. An EFI boot list or 'Press any key to boot from CD or DVD' "
-                "means Setup never started; a Windows Setup error usually points at the image index "
-                "or the ISO; a Windows desktop without VMware Tools means the host's Tools ISO "
-                "([] /vmimages/tools-isoimages/windows.iso) was not available on the second CD "
-                "drive. Fix the cause and redeploy."
+                "Check the console screenshot in the administrator diagnostics: an EFI boot list or "
+                "'Press any key to boot from CD or DVD' means Setup never started; a Windows Setup "
+                "error usually points at the image index, product key or ISO; a Windows desktop "
+                "without VMware Tools means the host's Tools ISO "
+                "([] /vmimages/tools-isoimages/windows.iso) was not available. Fix the cause and "
+                "submit a new request."
             ),
             technical_detail=exc.technical_detail,
             retryable=True,
         ) from exc
-    first_boot = await wait_for_windows_setup(ctx, deadline)
-    state = first_boot.state
+    info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
+    if info is not None and info.guest_family and "windows" not in info.guest_family.casefold():
+        raise InfraOperationError(
+            f"The installed guest reports '{info.guest_family}', not Windows.",
+            reason="Only Windows Server installation media is supported.",
+            recommended_action="Select a Windows Server ISO and submit a new request.",
+            retryable=False,
+        )
+    state, probes = await wait_for_windows_setup(ctx, deadline)
     ctx.job.guest_os_status = GuestOsStatus.READY.value
-    ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+    ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
     return StageOutcome(
         output=(
             f"Windows was installed unattended from the ISO; Setup has finished as "
             f"'{state.computer_name}' and the provisioning account signs in through VMware Tools "
-            f"({first_boot.probes} probe(s)).\n{state.detail}"
+            f"({probes} probe(s)).\n{state.detail}"
         ),
         artifacts={
             "windows_setup": {
                 "image_state": state.image_state,
                 "computer_name": state.computer_name,
-                "generalized_by_infraops": first_boot.generalized_by_infraops,
-            }
-        },
-    )
-
-
-async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
-    """Prove guest readiness without equating VM existence or power with an OS."""
-    vm_id = _require_vm_id(ctx)
-    request = ctx.request
-
-    if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
-        step = ctx.steps_by_key.get("wait_for_guest_os")
-        confirmed = bool((step.artifacts or {}).get("administrator_confirmed")) if step else False
-        if confirmed:
-            ctx.job.guest_os_status = GuestOsStatus.READY.value
-            ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
-            return StageOutcome(
-                output="An administrator confirmed that the guest OS is installed and booted."
-            )
-        ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_REQUIRED.value
-        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
-        return StageOutcome(
-            status="WAITING_FOR_PREREQUISITE",
-            output=(
-                "VM hardware was created successfully. No operating system is installed by "
-                "InfraOps because no ISO was selected. Attach installation media, install and boot "
-                "the guest OS, then confirm readiness. VMware Tools and guest configuration are waiting."
-            ),
-            artifacts={"required_action": "INSTALL_AND_CONFIRM_GUEST_OS"},
-        )
-
-    if request.source_type == VmSourceType.BLANK:
-        return await _wait_for_installation_from_iso(ctx, vm_id)
-
-    timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
-    # Finish with a clear error before the pipeline's own stage timeout fires.
-    deadline = asyncio.get_running_loop().time() + max(60.0, timeout - 30.0)
-    # An OVF/OVA deploy result proves only that the vCenter resource exists.
-    # Wait for an existing heartbeat and never mount/reinstall Tools silently.
-    try:
-        await ctx.vmware.wait_for_tools(
-            ctx.target, vm_id, max(1.0, min(timeout, 900.0) - 5.0), mount_if_missing=False
-        )
-    except InfraOperationError:
-        info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
-        tools = _tools_lifecycle(info)
-        ctx.job.guest_os_status = GuestOsStatus.UNKNOWN.value
-        ctx.job.vmware_tools_status = tools.value
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
-        return StageOutcome(
-            status="WAITING_FOR_PREREQUISITE",
-            output=(
-                "The OVF/OVA resource was deployed, but InfraOps cannot verify a ready guest because "
-                "VMware Tools/open-vm-tools has no heartbeat. Verify that the package contains a "
-                "bootable OS and start or install its supported Tools implementation."
-            ),
-            artifacts={"required_action": "VERIFY_GUEST_OS_AND_TOOLS"},
-        )
-    info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
-    if info is not None and info.guest_family and "windows" not in info.guest_family.casefold():
-        ctx.job.guest_os_status = GuestOsStatus.READY.value
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.FAILED.value
-        return StageOutcome(
-            status="WAITING_FOR_PREREQUISITE",
-            output=(
-                f"The package booted a '{info.guest_family}' guest. This InfraOps workflow only "
-                "implements Windows guest commands, so Windows networking/domain/application "
-                "steps were not offered to the guest. Deploy it without Windows customization "
-                "when that capability is added, or choose a prepared Windows package."
-            ),
-            artifacts={"required_action": "SELECT_SUPPORTED_WINDOWS_PACKAGE"},
-        )
-    # A VMware Tools heartbeat also appears during specialize and OOBE of a
-    # generalized package, so it does not prove the OS is ready.
-    ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
-    first_boot = await wait_for_windows_setup(ctx, deadline)
-    state = first_boot.state
-    ctx.job.guest_os_status = GuestOsStatus.READY.value
-    ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
-    how = (
-        "InfraOps generalized this copy with Sysprep and its answer file"
-        if first_boot.generalized_by_infraops
-        else "Windows already reports the requested computer name"
-    )
-    return StageOutcome(
-        output=(
-            f"{how}; Setup has finished as '{state.computer_name}' and the provisioning account "
-            f"signs in through VMware Tools ({first_boot.probes} probe(s)).\n{state.detail}"
-        ),
-        artifacts={
-            "windows_setup": {
-                "image_state": state.image_state,
-                "computer_name": state.computer_name,
-                "generalized_by_infraops": first_boot.generalized_by_infraops,
             }
         },
     )
 
 
 _SETUP_POLL_SECONDS = 10.0
-# Sign-ins are spaced out while Windows Setup may not have applied the
-# provisioning password yet: after a rejection the next attempt waits long
-# enough that failures stay below the default lockout threshold (10 bad
-# sign-ins within 10 minutes on current Windows releases).
-_SETUP_PROBE_SECONDS_NAME_APPLIED = 15.0
-_SETUP_PROBE_SECONDS_OTHERWISE = 60.0
+_SETUP_PROBE_SECONDS = 30.0
+# After a rejected sign-in the next attempt waits long enough that failures
+# stay below the default lockout threshold (10 bad sign-ins in 10 minutes).
 _SETUP_PROBE_SECONDS_AFTER_REJECTION = 75.0
-_SETUP_MAX_REJECTED_LOGINS = 12
-# A sealed package still parked at OOBE without the requested name after this
-# long did not pick up the answer media; Sysprep restarts it explicitly.
-_OOBE_STALL_SECONDS = 120.0
-# Sysprep reboots the guest within minutes; exiting without doing so means
-# it failed.
-_SYSPREP_GRACE_SECONDS = 90.0
+_SETUP_MAX_REJECTED_LOGINS = 8
 
 
-@dataclass(frozen=True)
-class WindowsFirstBoot:
-    state: WindowsSetupState
-    probes: int
-    generalized_by_infraops: bool
-
-
-async def _start_sysprep(ctx: JobRunContext, credentials) -> None:
-    """Upload the answer file and start ``sysprep /generalize /oobe /reboot``."""
-    answer_path = new_temp_path(f"unattend-{new_token()}", "xml")
-    # Holds the administrator password until the cleanup stage deletes it;
-    # files an administrator creates in C:\Windows\Temp are not readable by users.
-    await ctx.guest_ops.upload_file(
-        ctx.target, ctx.vm_name, credentials, first_boot_answer_xml(ctx, credentials), answer_path
-    )
-    result = await ctx.guest_ops.run_powershell(
-        ctx.target, ctx.vm_name, credentials, build_start_sysprep_script(answer_path), 120
-    )
-    if not result.succeeded:
-        raise InfraOperationError(
-            "Sysprep could not be started in the deployed VM.",
-            reason=f"The start command exited with code {result.exit_code}.",
-            recommended_action="Check that the provisioning account is a local administrator, then retry.",
-            technical_detail=(result.stdout + "\n" + result.stderr)[-1500:],
-            retryable=True,
-        )
-
-
-async def _sysprep_failure(ctx: JobRunContext, credentials) -> InfraOperationError:
-    try:
-        result = await ctx.guest_ops.run_powershell(
-            ctx.target, ctx.vm_name, credentials, build_sysprep_error_script(), 60
-        )
-        log_tail = result.stdout.strip() or "Sysprep wrote no error log."
-    except InfraOperationError as exc:
-        log_tail = f"The Sysprep error log could not be read: {exc.human_message}"
-    return InfraOperationError(
-        "Sysprep could not generalize the deployed copy of the package.",
-        reason="Sysprep exited without restarting Windows; its error log is in the technical output.",
-        recommended_action=(
-            "Fix the reported problem in the template, republish it and redeploy. Common causes are "
-            "pending updates or a pending restart, apps installed for a single user, a domain-joined "
-            "template, or the Sysprep generalize limit."
-        ),
-        technical_detail=f"{SYSPREP_ERROR_LOG}:\n{log_tail}"[-4000:],
-        retryable=True,
-    )
-
-
-async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> WindowsFirstBoot:
-    """Bring a deployed Windows package to a finished, personalized Setup.
+async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[WindowsSetupState, int]:
+    """Wait until Windows itself reports Setup and OOBE finished.
 
     Readiness is proven inside the guest: the provisioning account signs in
-    through VMware Tools, the registry shows no Setup or OOBE in progress and
-    Windows reports the requested computer name. A package that has not been
-    generalized with the InfraOps answer file is generalized here, with the
-    answer file passed to Sysprep explicitly.
+    through VMware Tools and the registry shows no Setup or OOBE in progress.
     """
     loop = asyncio.get_running_loop()
-    desired = ctx.request.effective_computer_name.casefold()
     credentials = await ctx.resolve_guest_credentials()
     next_probe = loop.time()
     probes = 0
     rejected = 0
-    sysprep_started_at: float | None = None
-    # Set once Windows has left its finished state after Sysprep started
-    # (restart, specialize or OOBE observed).
-    setup_seen_since_sysprep = False
-    oobe_stalled_since: float | None = None
     last = "VMware Tools has not reported yet."
-
-    def has_requested_name(state: WindowsSetupState) -> bool:
-        return bool(desired) and state.computer_name.casefold() == desired
-
-    async def start_sysprep(reason: str) -> None:
-        nonlocal sysprep_started_at, setup_seen_since_sysprep, rejected, next_probe, last
-        await _start_sysprep(ctx, credentials)
-        sysprep_started_at = loop.time()
-        setup_seen_since_sysprep = False
-        rejected = 0
-        next_probe = loop.time() + _SETUP_PROBE_SECONDS_NAME_APPLIED
-        last = reason
-
     while loop.time() < deadline:
         info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
         tools_running = info is not None and info.guest_operations_ready and (
@@ -1310,15 +1061,9 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> Windows
             or info.tools_status in ("toolsOk", "toolsOld")
         )
         if not tools_running:
-            if sysprep_started_at is not None:
-                setup_seen_since_sysprep = True
-            last = "VMware Tools is not running (Windows restarts during Sysprep and Setup)."
+            last = "VMware Tools is not running (Windows restarts during Setup)."
         elif loop.time() >= next_probe:
-            reported = (info.guest_host_name or "").split(".", 1)[0].casefold()
-            name_applied = bool(desired) and reported == desired
-            next_probe = loop.time() + (
-                _SETUP_PROBE_SECONDS_NAME_APPLIED if name_applied else _SETUP_PROBE_SECONDS_OTHERWISE
-            )
+            next_probe = loop.time() + _SETUP_PROBE_SECONDS
             probes += 1
             try:
                 result = await ctx.guest_ops.run_powershell(
@@ -1327,24 +1072,17 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> Windows
             except GuestCredentialsRejected as exc:
                 rejected += 1
                 next_probe = loop.time() + _SETUP_PROBE_SECONDS_AFTER_REJECTION
-                last = (
-                    "Windows rejected the provisioning account (expected until OOBE applies its "
-                    f"password; {rejected} rejection(s))."
-                )
+                last = f"Windows rejected the provisioning account ({rejected} rejection(s))."
                 if rejected >= _SETUP_MAX_REJECTED_LOGINS:
                     raise InfraOperationError(
                         "Windows keeps rejecting the provisioning account.",
                         reason=(
-                            f"{rejected} sign-in attempts through VMware Tools were rejected while "
-                            "waiting for Windows Setup."
+                            f"{rejected} sign-in attempts through VMware Tools were rejected after "
+                            "Windows Setup set the account's password from the answer file."
                         ),
                         recommended_action=(
-                            "If the VM console shows the Windows 'Hi there' (OOBE) page, the package "
-                            "was sealed with Sysprep and its administrator password no longer works, "
-                            "so InfraOps cannot finish Setup. Publish the template without running "
-                            "Sysprep (InfraOps generalizes every deployment itself) with its local "
-                            "Administrator password set to the selected provisioning credential. "
-                            "Otherwise, correct the credential and retry this stage."
+                            "Check that the provisioning credential was not changed while the job "
+                            "ran, then submit a new request."
                         ),
                         technical_detail=exc.technical_detail,
                         retryable=True,
@@ -1360,52 +1098,9 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> Windows
                     except ValueError as exc:
                         last = str(exc)
                     else:
-                        now = loop.time()
-                        if sysprep_started_at is not None and not state.complete:
-                            setup_seen_since_sysprep = True
-                        if (
-                            state.complete
-                            and has_requested_name(state)
-                            and (sysprep_started_at is None or setup_seen_since_sysprep)
-                        ):
-                            return WindowsFirstBoot(state, probes, sysprep_started_at is not None)
-                        if sysprep_started_at is not None:
-                            if state.complete and setup_seen_since_sysprep:
-                                raise InfraOperationError(
-                                    "Windows Setup finished without applying the InfraOps answer file.",
-                                    reason=f"Windows reports {state.detail}.",
-                                    recommended_action=(
-                                        "Check C:\\Windows\\Panther\\setuperr.log in the VM, fix the "
-                                        "template and redeploy."
-                                    ),
-                                    retryable=True,
-                                )
-                            if (
-                                state.complete
-                                and not state.sysprep_running
-                                and now - sysprep_started_at >= _SYSPREP_GRACE_SECONDS
-                            ):
-                                raise await _sysprep_failure(ctx, credentials)
-                            last = (
-                                "Sysprep is generalizing Windows."
-                                if state.complete
-                                else f"Windows Setup is running with the InfraOps answer file ({state.detail})."
-                            )
-                        elif state.complete:
-                            # Not generalized with our answer file (a template that
-                            # was never sealed): give this copy its own identity.
-                            await start_sysprep("Sysprep started with the InfraOps answer file.")
-                        elif state.oobe_in_progress and not has_requested_name(state):
-                            oobe_stalled_since = oobe_stalled_since if oobe_stalled_since is not None else now
-                            last = f"Windows is waiting at OOBE without the answer media ({state.detail})."
-                            if now - oobe_stalled_since >= _OOBE_STALL_SECONDS:
-                                await start_sysprep(
-                                    "Windows stopped at OOBE without the answer media; Sysprep "
-                                    "restarted Setup with the InfraOps answer file."
-                                )
-                        else:
-                            oobe_stalled_since = None
-                            last = f"Windows Setup is still running ({state.detail})."
+                        if state.complete:
+                            return state, probes
+                        last = f"Windows Setup is still running ({state.detail})."
         remaining = deadline - loop.time()
         if remaining <= 0:
             break
@@ -1414,20 +1109,16 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> Windows
         "Windows did not finish its first-boot setup in time.",
         reason=f"Last observation: {last}",
         recommended_action=(
-            "Open the VM console in vCenter. If Windows shows an OOBE page, an unanswered page "
-            "(such as a product key prompt) stopped Setup; fix the template and redeploy. If Setup "
-            "is still progressing, retry this stage."
+            "Check the console screenshot in the administrator diagnostics for the page Windows "
+            "Setup stopped on, fix the cause (answer settings, product key or media) and submit a "
+            "new request."
         ),
-        technical_detail=(
-            f"probes={probes} rejected_logins={rejected} "
-            f"sysprep_started={sysprep_started_at is not None}"
-        ),
+        technical_detail=f"probes={probes} rejected_logins={rejected}",
         retryable=True,
     )
 
 
 async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
-    vm_id = _require_vm_id(ctx)
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
     state = _tools_lifecycle(info)
     ctx.job.vmware_tools_status = state.value
@@ -1437,88 +1128,18 @@ async def stage_wait_for_tools(ctx: JobRunContext) -> StageOutcome:
         return StageOutcome(
             status="WARNING",
             output=(
-                "VMware Tools is running but outdated. InfraOps continued with a warning and did "
-                "not silently upgrade the guest."
+                "VMware Tools is running but outdated (the host's Tools ISO is older than the "
+                "latest release). Provisioning continued; upgrade Tools during regular patching."
             ),
         )
-    if (
-        ctx.request.source_type == VmSourceType.BLANK
-        and ctx.request.guest.iso_id is not None
-        and state in (VMwareToolsStatus.UNKNOWN, VMwareToolsStatus.NOT_INSTALLED)
-    ):
-        try:
-            mounted = await ctx.vmware.mount_tools_installer(ctx.target, vm_id)
-        except InfraOperationError as exc:
-            ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
-            return StageOutcome(
-                status="WAITING_FOR_PREREQUISITE",
-                output=(
-                    "The guest OS is ready, but vCenter could not supply VMware Tools media. "
-                    "Disconnect the Windows installation ISO or provide an available CD/DVD "
-                    "device, then resume."
-                ),
-                artifacts={
-                    "required_action": "PREPARE_CDROM_FOR_VMWARE_TOOLS",
-                    "last_observation": exc.human_message,
-                },
-            )
-        if mounted:
-            ctx.job.vmware_tools_status = VMwareToolsStatus.INSTALLING.value
-            timeout = await effective_timeout_seconds(ctx, "wait_for_tools")
-            try:
-                await ctx.vmware.wait_for_tools(
-                    ctx.target,
-                    vm_id,
-                    max(1.0, timeout - 5.0),
-                    mount_if_missing=False,
-                )
-            except InfraOperationError as exc:
-                ctx.job.guest_provisioning_status = (
-                    GuestProvisioningStatus.WAITING_FOR_TOOLS.value
-                )
-                return StageOutcome(
-                    status="WAITING_FOR_PREREQUISITE",
-                    output=(
-                        "VMware Tools media was supplied only after OS readiness was confirmed, "
-                        "but no Tools heartbeat was observed. Run or troubleshoot the installer "
-                        "inside Windows, then resume."
-                    ),
-                    artifacts={
-                        "required_action": "COMPLETE_VMWARE_TOOLS_INSTALLATION",
-                        "last_observation": exc.human_message,
-                    },
-                )
-            ctx.job.vmware_tools_status = VMwareToolsStatus.RUNNING.value
-            ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
-            return StageOutcome(
-                output="VMware Tools was installed inside Windows and its heartbeat is ready."
-            )
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
-        return StageOutcome(
-            status="WAITING_FOR_PREREQUISITE",
-            output=(
-                "The guest OS is ready, but vCenter could not mount VMware Tools media. "
-                "Disconnect the Windows installation ISO from the CD/DVD device, then resume."
-            ),
-            artifacts={"required_action": "PREPARE_CDROM_FOR_VMWARE_TOOLS"},
-        )
-    ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
-    if state == VMwareToolsStatus.NOT_RUNNING:
-        message = (
-            "VMware Tools is installed but not running. Start or troubleshoot the guest service; "
-            "InfraOps will not reinstall it blindly."
-        )
-    else:
-        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_INSTALLED.value
-        message = (
-            "VMware Tools/open-vm-tools is not installed or has never reported. Install the "
-            "guest-appropriate implementation inside the confirmed OS, then resume. Merely "
-            "mounting the Tools ISO is not installation."
-        )
-    return StageOutcome(
-        status="WAITING_FOR_PREREQUISITE",
-        output=message,
-        artifacts={"required_action": "MAKE_VMWARE_TOOLS_READY"},
+    raise InfraOperationError(
+        "VMware Tools stopped reporting after Windows was installed.",
+        reason=f"VMware Tools state: {state.value}.",
+        recommended_action=(
+            "Check the console screenshot in the administrator diagnostics, then retry this stage; "
+            "InfraOps does not reinstall Tools over a running installation."
+        ),
+        retryable=True,
     )
 
 
@@ -1538,29 +1159,18 @@ ANSWER_FILE_SCRUB_SCRIPT = (
     "    }\n"
     "}\n"
     "$winlogon = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'\n"
-    "Get-ChildItem -LiteralPath 'C:\\Windows\\Temp' -Filter 'infraops-unattend-*.xml' "
-    "-ErrorAction SilentlyContinue | ForEach-Object {\n"
-    "    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop\n"
-    "    \"REMOVED $($_.FullName)\"\n"
+    "foreach ($name in 'DefaultPassword', 'AutoLogonCount') {\n"
+    "    Remove-ItemProperty -Path $winlogon -Name $name -ErrorAction SilentlyContinue\n"
     "}\n"
-    "Remove-ItemProperty -Path $winlogon -Name DefaultPassword -ErrorAction SilentlyContinue\n"
     "Set-ItemProperty -Path $winlogon -Name AutoAdminLogon -Value '0' -ErrorAction SilentlyContinue\n"
     "'ANSWER-FILE-SCRUBBED'"
 )
 
 
-def _uses_unattended_media(ctx: JobRunContext) -> bool:
-    if ctx.request.source_type == VmSourceType.BLANK:
-        return ctx.request.guest.iso_id is not None
-    # Templates receive first-boot media only when configured for Windows.
-    prepare = ctx.steps_by_key.get("prepare_unattended_install")
-    return bool(prepare is not None and (prepare.artifacts or {}).get("datastore_path"))
-
-
 async def release_unattended_media(ctx: JobRunContext, *, reason: str) -> bool:
-    """Detach and delete the answer-file floppy on a failure/cancel/interrupt path.
+    """Detach and delete the answer media on a failure/cancel/interrupt path.
 
-    The floppy holds the local administrator password in plain text, so it
+    The media holds the local administrator password in plain text, so it
     must never outlive a job that stops before the cleanup stage. When the VM
     has not booted from it yet, the preparation stage is reset so a retry
     regenerates the media. Returns True when media was removed.
@@ -1580,7 +1190,7 @@ async def release_unattended_media(ctx: JobRunContext, *, reason: str) -> bool:
     try:
         vm_id = _require_vm_id(ctx)
         await asyncio.wait_for(
-            ctx.vmware.remove_temporary_floppy(
+            ctx.vmware.remove_answer_media(
                 ctx.target,
                 vm_id,
                 datacenter_id=ctx.request.compute.datacenter_id,
@@ -1616,47 +1226,145 @@ async def release_unattended_media(ctx: JobRunContext, *, reason: str) -> bool:
 
 
 async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
-    if not _uses_unattended_media(ctx):
-        return StageOutcome(
-            status="NOT_APPLICABLE",
-            output="No temporary unattended answer media was created for this deployment type.",
-        )
+    vm_id = _require_vm_id(ctx)
     prepare = ctx.steps_by_key.get("prepare_unattended_install")
     datastore_path = ((prepare.artifacts or {}).get("datastore_path") if prepare else None)
     lines: list[str] = []
+    status = "SUCCEEDED"
     if datastore_path:
-        await ctx.vmware.remove_temporary_floppy(
+        await ctx.vmware.remove_answer_media(
             ctx.target,
-            _require_vm_id(ctx),
+            vm_id,
             datacenter_id=ctx.request.compute.datacenter_id,
             datastore_path=str(datastore_path),
         )
-        lines.append("Temporary unattended answer media was detached and deleted.")
-    else:
-        lines.append("No temporary unattended media was recorded.")
-    if prepare is not None and datastore_path:
         prepare.artifacts = {**(prepare.artifacts or {}), "media_removed": True}
+        lines.append("Temporary answer media was detached and deleted.")
+    else:
+        lines.append("No temporary answer media was recorded.")
 
     # Windows Setup caches the answer file inside the guest. Remove every copy
-    # and any AutoLogon residue so the plaintext password does not survive.
-    status = "SUCCEEDED"
+    # and the AutoLogon residue so the plaintext password does not survive;
+    # the job does not continue while a copy may remain.
+    credentials = await ctx.resolve_guest_credentials()
     try:
-        credentials = await ctx.resolve_guest_credentials()
         result = await ctx.guest_ops.run_powershell(
             ctx.target, ctx.vm_name, credentials, ANSWER_FILE_SCRUB_SCRIPT, 120
         )
-        if result.succeeded:
-            lines.append("Cached answer-file copies and AutoLogon residue were removed from the guest.")
-        else:
-            status = "WARNING"
-            lines.append(
-                f"The in-guest answer-file scrub exited with code {result.exit_code}; "
-                "remove C:\\Windows\\Panther\\unattend.xml manually."
-            )
+    except InfraOperationError as exc:
+        raise InfraOperationError(
+            "The cached answer file could not be removed from Windows.",
+            reason=f"The in-guest cleanup could not run: {exc.human_message}",
+            recommended_action="Retry this stage once VMware Tools reports the guest as running.",
+            technical_detail=exc.technical_detail,
+            retryable=True,
+        ) from exc
+    if not result.succeeded:
+        raise InfraOperationError(
+            "The cached answer file could not be removed from Windows.",
+            reason=f"The in-guest cleanup exited with code {result.exit_code}.",
+            recommended_action="Review the technical output, then retry this stage.",
+            technical_detail=(result.stdout + "\n" + result.stderr)[-1500:],
+            retryable=True,
+        )
+    lines.append("Cached answer-file copies and AutoLogon values were removed from the guest.")
+
+    # The installation and Tools ISOs are no longer needed; the VM now boots
+    # from its disk only, so later restarts never reach the DVD prompt.
+    try:
+        released = await ctx.vmware.detach_installation_media(ctx.target, vm_id)
+        lines.append(
+            "Installation media disconnected and boot order set to disk only"
+            + (f": {', '.join(released)}." if released else ".")
+        )
     except InfraOperationError as exc:
         status = "WARNING"
-        lines.append(f"The in-guest answer-file scrub could not run: {exc.human_message}")
+        lines.append(f"The installation ISOs could not be disconnected: {exc.human_message}")
     return StageOutcome(status=status, output="\n".join(lines))
+
+
+async def stage_add_data_disks(ctx: JobRunContext) -> StageOutcome:
+    data_disks = list(ctx.request.hardware.disks[1:])
+    if not data_disks:
+        return StageOutcome(status="SKIPPED", output="No data disks were requested.")
+    added = await ctx.vmware.add_data_disks(ctx.target, _require_vm_id(ctx), data_disks)
+    sizes = ", ".join(f"{disk.size_gb} GB {disk.provisioning.value}" for disk in data_disks)
+    return StageOutcome(
+        output=(
+            f"{len(data_disks)} data disk(s) attached to the running VM ({sizes}); "
+            f"{added} added now, {len(data_disks) - added} already present."
+        ),
+        artifacts={"data_disks": [disk.size_gb for disk in data_disks]},
+    )
+
+
+# Windows detects hot-added disks within seconds; allow for a slow rescan.
+_DATA_DISK_DETECTION_DELAYS = (5.0, 10.0, 20.0, 30.0, 30.0)
+
+
+async def stage_initialize_data_disks(ctx: JobRunContext) -> StageOutcome:
+    expected = sorted(disk.size_gb for disk in ctx.request.hardware.disks[1:])
+    if not expected:
+        return StageOutcome(status="SKIPPED", output="No data disks were requested.")
+    credentials = await ctx.resolve_guest_credentials()
+    timeout = await effective_timeout_seconds(ctx, "initialize_data_disks")
+    script = build_initialize_data_disks_script(len(expected))
+    result = None
+    for delay in (0.0, *_DATA_DISK_DETECTION_DELAYS):
+        if delay:
+            await asyncio.sleep(delay)
+        result = await ctx.guest_ops.run_powershell(
+            ctx.target, ctx.vm_name, credentials, script, timeout
+        )
+        if result.exit_code != DATA_DISKS_NOT_VISIBLE_EXIT:
+            break
+    assert result is not None
+    if result.exit_code == DATA_DISKS_NOT_VISIBLE_EXIT:
+        raise InfraOperationError(
+            "Windows did not detect every hot-added data disk.",
+            reason=f"Expected {len(expected)} data disk(s); Windows reported {result.stdout.strip()}.",
+            recommended_action="Check the VM's disks in vCenter, then retry this stage.",
+            technical_detail=result.stdout[-1000:],
+            retryable=True,
+        )
+    if not result.succeeded:
+        raise InfraOperationError(
+            "The data disks could not be brought online and formatted.",
+            reason=f"The disk script exited with code {result.exit_code}.",
+            recommended_action="Review the technical output, then retry this stage.",
+            technical_detail=(result.stdout + "\n" + result.stderr)[-1500:],
+            retryable=True,
+        )
+    try:
+        volumes = parse_data_volumes(result.stdout)
+    except ValueError as exc:
+        raise InfraOperationError(
+            "The data-disk result could not be interpreted.",
+            reason=str(exc),
+            recommended_action="Retry this stage.",
+            technical_detail=result.stdout[-1500:],
+            retryable=True,
+        ) from exc
+    found = sorted(volume.size_gb for volume in volumes)
+    unformatted = [volume for volume in volumes if not volume.file_system]
+    if found != expected or unformatted:
+        raise InfraOperationError(
+            "The data disks Windows reports do not match the request.",
+            reason=f"Requested sizes {expected} GB; Windows reports {found} GB.",
+            recommended_action="Check the VM's disks in vCenter, then retry this stage.",
+            technical_detail=result.stdout[-1500:],
+            retryable=True,
+        )
+    lines = [
+        f"Disk {volume.number}: {volume.size_gb} GB {volume.file_system} "
+        f"{volume.drive_letter + ':' if volume.drive_letter else '(no drive letter)'} "
+        f"'{volume.label}'"
+        for volume in volumes
+    ]
+    return StageOutcome(
+        output="Data disks online and formatted:\n" + "\n".join(lines),
+        artifacts={"volumes": [asdict(volume) for volume in volumes]},
+    )
 
 
 async def assert_static_address_unclaimed(ctx: JobRunContext, address: str, prefix: int) -> None:
@@ -1693,9 +1401,6 @@ async def assert_static_address_unclaimed(ctx: JobRunContext, address: str, pref
 
 
 async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Guest network configuration")
-    if skipped:
-        return skipped
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
     credentials = await ctx.resolve_guest_credentials()
     net = ctx.request.network
@@ -1736,9 +1441,6 @@ async def stage_configure_guest_network(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Guest network validation")
-    if skipped:
-        return skipped
     credentials = await ctx.resolve_guest_credentials()
     net = ctx.request.network
     checks: list[str] = []
@@ -1803,9 +1505,6 @@ async def stage_validate_network(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Hostname configuration")
-    if skipped:
-        return skipped
     # Rename-Computer accepts only the short Windows computer name. The DNS
     # suffix is established by Add-Computer during the following domain join.
     desired = ctx.request.effective_computer_name.upper()
@@ -1854,9 +1553,6 @@ async def stage_configure_hostname(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Domain join")
-    if skipped:
-        return skipped
     join = ctx.request.guest.domain_join
     if join is None:
         return StageOutcome(status="SKIPPED", output="Domain join not requested.")
@@ -1963,9 +1659,6 @@ async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Guest restart")
-    if skipped:
-        return skipped
     steps = ctx.steps_by_key
     join_step = steps.get("join_domain")
     join_artifacts = (join_step.artifacts or {}) if join_step else {}
@@ -1995,9 +1688,6 @@ async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_wait_guest_ready(ctx: JobRunContext) -> StageOutcome:
-    skipped = _blank_guest_skip(ctx, "Guest availability check")
-    if skipped:
-        return skipped
     steps = ctx.steps_by_key
     join_step = steps.get("join_domain")
     joined = bool((join_step.artifacts or {}).get("joined")) if join_step else False
@@ -2232,18 +1922,9 @@ async def stage_validate_applications(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
-    automates_guest = not (
-        ctx.request.source_type == VmSourceType.BLANK
-        and getattr(getattr(ctx.request, "guest", None), "iso_id", None) is None
-    )
     checklist: list[dict] = []
     observed_computer_name = (
-        ctx.request.effective_computer_name
-        if (
-            automates_guest
-            and ctx.request.guest.domain_join is None
-        )
-        else None
+        ctx.request.effective_computer_name if ctx.request.guest.domain_join is None else None
     )
     observed_fqdn = None
 
@@ -2254,26 +1935,23 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
     add("VM", "Exists in vCenter", info is not None)
     if info is not None:
-        if not automates_guest:
-            add("VM", "Left powered off for OS installation", info.power_state == "poweredOff",
-                info.power_state)
-        else:
-            add("VM", "Powered on", info.power_state == "poweredOn", info.power_state)
-            add("VM", "VMware Tools running", info.tools_status in ("toolsOk", "toolsOld"),
-                info.tools_status or "unknown")
+        add("VM", "Powered on", info.power_state == "poweredOn", info.power_state)
+        add("VM", "VMware Tools running", info.tools_status in ("toolsOk", "toolsOld"),
+            info.tools_status or "unknown")
+
+    disk_step = ctx.steps_by_key.get("initialize_data_disks")
+    for volume in ((disk_step.artifacts or {}).get("volumes") if disk_step else None) or []:
+        letter = volume.get("drive_letter")
+        add(
+            "Storage",
+            f"{volume.get('size_gb')} GB data volume {letter + ':' if letter else ''} online",
+            bool(volume.get("file_system")),
+            str(volume.get("label") or ""),
+        )
 
     net_step = ctx.steps_by_key.get("configure_guest_network")
     net_artifacts = net_step.artifacts if net_step else {}
-    if not automates_guest:
-        inventory_step = ctx.steps_by_key.get("validate_infrastructure")
-        inventory_artifacts = inventory_step.artifacts if inventory_step else {}
-        add(
-            "Network",
-            "Virtual adapter attached",
-            True,
-            str(inventory_artifacts.get("network_name") or ""),
-        )
-    elif ctx.request.network.mode == IpMode.STATIC and ctx.request.network.ipv4 is not None:
+    if ctx.request.network.mode == IpMode.STATIC and ctx.request.network.ipv4 is not None:
         expected = ctx.request.network.ipv4.address
         observed = info.ip_addresses if info else []
         add("Network", f"Correct IP address ({expected})", expected in observed,
@@ -2287,7 +1965,7 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
         add("Network", "DHCP address acquired", bool(info and info.ip_addresses),
             ", ".join(info.ip_addresses) if info else "")
 
-    if automates_guest and ctx.request.guest.domain_join is not None:
+    if ctx.request.guest.domain_join is not None:
         credentials = await ctx.resolve_guest_credentials()
         identity = await probe_windows_identity(
             ctx,
@@ -2342,11 +2020,7 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     rendered = "\n\n".join(f"{group}\n" + "\n".join(items) for group, items in grouped_output.items())
     if hasattr(ctx, "job"):
         ctx.job.infrastructure_status = InfrastructureStatus.READY.value
-        ctx.job.guest_provisioning_status = (
-            GuestProvisioningStatus.COMPLETED.value
-            if automates_guest
-            else GuestProvisioningStatus.NOT_REQUESTED.value
-        )
+        ctx.job.guest_provisioning_status = GuestProvisioningStatus.COMPLETED.value
     return StageOutcome(
         output=rendered,
         artifacts={
@@ -2362,38 +2036,31 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     )
 
 
-async def asyncio_sleep(seconds: float) -> None:
-    import asyncio
-
-    await asyncio.sleep(seconds)
-
-
 STAGE_HANDLERS: dict[str, StageHandler] = {
-    stage.key: handler
-    for stage, handler in zip(ORDERED_STAGES, (
-        stage_validate_request,
-        stage_connect_vcenter,
-        stage_validate_infrastructure,
-        stage_clone_vm,
-        stage_configure_hardware,
-        stage_attach_network_adapter,
-        stage_prepare_unattended_install,
-        stage_power_on,
-        stage_wait_for_guest_os,
-        stage_wait_for_tools,
-        stage_cleanup_unattended_media,
-        stage_configure_guest_network,
-        stage_validate_network,
-        stage_configure_hostname,
-        stage_join_domain,
-        stage_reboot_guest,
-        stage_wait_guest_ready,
-        stage_install_root_certificates,
-        stage_install_intermediate_certificates,
-        stage_validate_certificates,
-        stage_resolve_dependencies,
-        stage_install_applications,
-        stage_validate_applications,
-        stage_final_validation,
-    ), strict=False)
+    "validate_request": stage_validate_request,
+    "connect_vcenter": stage_connect_vcenter,
+    "validate_infrastructure": stage_validate_infrastructure,
+    "create_vm": stage_create_vm,
+    "configure_hardware": stage_configure_hardware,
+    "attach_network_adapter": stage_attach_network_adapter,
+    "prepare_unattended_install": stage_prepare_unattended_install,
+    "power_on": stage_power_on,
+    "wait_for_guest_os": stage_wait_for_guest_os,
+    "wait_for_tools": stage_wait_for_tools,
+    "cleanup_unattended_media": stage_cleanup_unattended_media,
+    "add_data_disks": stage_add_data_disks,
+    "initialize_data_disks": stage_initialize_data_disks,
+    "configure_guest_network": stage_configure_guest_network,
+    "validate_network": stage_validate_network,
+    "configure_hostname": stage_configure_hostname,
+    "join_domain": stage_join_domain,
+    "reboot_guest": stage_reboot_guest,
+    "wait_guest_ready": stage_wait_guest_ready,
+    "install_root_certificates": stage_install_root_certificates,
+    "install_intermediate_certificates": stage_install_intermediate_certificates,
+    "validate_certificates": stage_validate_certificates,
+    "resolve_dependencies": stage_resolve_dependencies,
+    "install_applications": stage_install_applications,
+    "validate_applications": stage_validate_applications,
+    "final_validation": stage_final_validation,
 }

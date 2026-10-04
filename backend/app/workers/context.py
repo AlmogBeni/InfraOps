@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.models.infrastructure import VCenterConnection
 from app.models.jobs import ProvisioningJob
-from app.schemas.provisioning import ProvisioningRequest
+from app.schemas.provisioning import ProvisioningRequest, parse_stored_request
 from app.secrets.service import SecretsService
 from app.services.applications.installer import ApplicationInstaller
 from app.services.certificates.deployer import CertificateDeployer
@@ -64,7 +64,7 @@ class JobRunContext:
         """Resolve the latest guest credential revision (never log or persist it)."""
         # VMware Tools authenticates to the guest before it has joined the
         # domain. Domain-join credentials are used only by Add-Computer inside
-        # the guest and must never replace the template's local administrator.
+        # the guest and must never replace the local administrator.
         base = self.request.guest.credential_secret_ref
         username_ref = f"{base}/username"
         password_ref = f"{base}/password"
@@ -76,11 +76,13 @@ class JobRunContext:
 async def load_request_payload(job: ProvisioningJob) -> ProvisioningRequest:
     if job.request is None:
         raise RuntimeError(f"Job {job.id} has no stored provisioning request.")
-    payload = copy.deepcopy(job.request.payload)
-    # Jobs written before identity policy versioning used guest.hostname as
-    # their Windows/AD identity. Never reinterpret those rows with v2 rules.
-    payload.setdefault("identity_policy_version", "v1")
-    return ProvisioningRequest.model_validate(payload)
+    request = parse_stored_request(copy.deepcopy(job.request.payload))
+    if request is None:
+        raise RuntimeError(
+            "This job was created by a provisioning workflow that no longer exists; "
+            "submit a new request."
+        )
+    return request
 
 
 async def build_vcenter_target(db: AsyncSession, vcenter_id: uuid.UUID) -> VCenterTarget:

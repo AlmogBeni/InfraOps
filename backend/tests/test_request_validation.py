@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.api.v1.provisioning import _normalized_request_payload
+from app.api.v1.provisioning import _request_view
 from app.core.errors import DomainValidationError
 from app.schemas.provisioning import (
     FirmwareType,
@@ -16,7 +16,7 @@ from app.schemas.provisioning import (
     NetworkSpec,
     ProvisioningRequest,
     ProvisioningSubmissionRequest,
-    VmSourceType,
+    parse_stored_request,
 )
 from app.services.provisioning.service import submit_provisioning
 from app.workers.context import load_request_payload
@@ -172,17 +172,18 @@ class TestVmSpec:
         with pytest.raises(ValidationError, match="valid Windows computer name"):
             ProvisioningRequest.model_validate(payload)
 
-    def test_legacy_request_defaults_to_template_source(self):
+    def test_request_without_source_type_installs_from_iso(self):
         payload = make_request().model_dump(mode="json")
         payload.pop("source_type")
         rebuilt = ProvisioningRequest.model_validate(payload)
-        assert rebuilt.source_type == VmSourceType.TEMPLATE
+        assert rebuilt.source_type == "blank"
+        assert rebuilt.guest.iso_id == "iso-corp-windows-2025"
 
-    def test_legacy_job_payload_is_normalized_for_current_readers(self):
+    def test_previous_release_payload_is_normalized_for_current_readers(self):
         payload = make_request().model_dump(mode="json")
-        payload.pop("source_type")
         payload.pop("identity_policy_version")
-        payload["guest"].pop("iso_id")
+        # The previous release serialized its removed guest field as null.
+        payload["guest"]["template_id"] = None
         payload["vm"]["name"] = "NEW-INVENTORY-NAME"
         payload["guest"]["hostname"] = "LEGACY-AD-NAME"
         payload["guest"]["domain_join"] = {
@@ -191,12 +192,13 @@ class TestVmSpec:
             "credential_secret_ref": "Domain-Join",
         }
 
-        normalized = _normalized_request_payload(payload)
+        normalized, legacy = _request_view(payload)
 
+        assert legacy is False
         assert normalized is not None
-        assert normalized["source_type"] == "template"
+        assert normalized["source_type"] == "blank"
         assert normalized["identity_policy_version"] == "v1"
-        assert normalized["guest"]["iso_id"] is None
+        assert "template_id" not in normalized["guest"]
         assert normalized["guest"]["hostname"] == "LEGACY-AD-NAME"
         assert normalized["guest"]["domain_join"]["credential_secret_ref"] == "Domain-Join"
 
@@ -238,78 +240,66 @@ class TestVmSpec:
         assert rebuilt.effective_computer_name == "LEGACY-AD-NAME"
         assert rebuilt.effective_fqdn == "legacy-ad-name.corp.example.com"
 
-    def test_template_source_requires_template(self):
+    @pytest.mark.parametrize("source", ["template", "package", "", 7])
+    def test_other_vm_sources_are_rejected(self, source):
         payload = make_request().model_dump(mode="json")
-        payload["guest"]["template_id"] = None
-        with pytest.raises(ValidationError, match="template_id is required"):
-            ProvisioningRequest.model_validate(payload)
+        payload["source_type"] = source
+        with pytest.raises(ValidationError, match="every VM is installed from a Windows ISO"):
+            ProvisioningSubmissionRequest.model_validate(payload)
 
-    def test_blank_source_without_iso_creates_infrastructure_only(self):
+    def test_package_reference_is_rejected(self):
         payload = make_request().model_dump(mode="json")
-        payload["source_type"] = "blank"
-        payload["guest"] = {
-            "template_id": None,
-            "iso_id": None,
-            "hostname": None,
-            "timezone": None,
-            "domain_join": None,
-        }
-        payload["network"] = {
-            "network_id": payload["network"]["network_id"],
-            "adapter_type": payload["network"]["adapter_type"],
-            "mode": "DHCP",
-            "ipv4": None,
-        }
-        rebuilt = ProvisioningRequest.model_validate(payload)
-        assert rebuilt.guest.iso_id is None
-        assert rebuilt.effective_computer_name == ""
+        payload["guest"]["template_id"] = "corp-windows-2025"
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            ProvisioningSubmissionRequest.model_validate(payload)
 
-    def test_blank_source_without_iso_rejects_guest_ip_configuration(self):
+    @pytest.mark.parametrize("missing", [None, "", "absent"])
+    def test_installation_iso_is_required(self, missing):
         payload = make_request().model_dump(mode="json")
-        payload["source_type"] = "blank"
-        payload["guest"].update({"template_id": None, "iso_id": None, "hostname": None})
-        payload["guest"]["domain_join"] = None
-        with pytest.raises(ValidationError, match="Guest IP configuration is unavailable"):
-            ProvisioningRequest.model_validate(payload)
+        if missing == "absent":
+            payload["guest"].pop("iso_id")
+        else:
+            payload["guest"]["iso_id"] = missing
+        with pytest.raises(ValidationError, match="iso_id"):
+            ProvisioningSubmissionRequest.model_validate(payload)
 
-    def test_historical_blank_source_without_iso_remains_readable(self):
+    def test_product_key_reference_must_be_a_safe_secret_reference(self):
         payload = make_request().model_dump(mode="json")
-        payload["source_type"] = "blank"
-        payload["identity_policy_version"] = "v1"
-        payload["guest"] = {
-            "template_id": None,
-            "iso_id": None,
-            "hostname": None,
-            "timezone": None,
-            "domain_join": None,
-        }
-        rebuilt = ProvisioningRequest.model_validate(payload)
-        assert rebuilt.effective_computer_name == ""
+        payload["guest"]["product_key_secret_ref"] = "windows-server-2025-key"
+        assert (
+            ProvisioningSubmissionRequest.model_validate(payload).guest.product_key_secret_ref
+            == "windows-server-2025-key"
+        )
+        payload["guest"]["product_key_secret_ref"] = "../Product Key"
+        with pytest.raises(ValidationError, match="product_key_secret_ref"):
+            ProvisioningSubmissionRequest.model_validate(payload)
 
-    def test_blank_source_accepts_selected_iso(self):
+    @pytest.mark.parametrize(
+        "guest",
+        [
+            {"template_id": "corp-windows-2025", "iso_id": None, "hostname": None},
+            {"template_id": None, "iso_id": None, "hostname": None},
+        ],
+    )
+    def test_jobs_of_removed_workflows_are_read_only(self, guest):
         payload = make_request().model_dump(mode="json")
-        payload["source_type"] = "blank"
-        payload["guest"] = {
-            "template_id": None,
-            "iso_id": "iso-corp-windows-2025",
-            "hostname": None,
-            "timezone": None,
-            "domain_join": None,
-        }
-        rebuilt = ProvisioningRequest.model_validate(payload)
-        assert rebuilt.guest.iso_id == "iso-corp-windows-2025"
+        payload["source_type"] = "template" if guest["template_id"] else "blank"
+        payload["guest"] = guest
 
-    def test_template_source_rejects_iso(self):
-        payload = make_request().model_dump(mode="json")
-        payload["guest"]["iso_id"] = "iso-corp-windows-2025"
-        with pytest.raises(ValidationError, match="iso_id must be null"):
-            ProvisioningRequest.model_validate(payload)
+        assert parse_stored_request(payload) is None
+        view, legacy = _request_view(payload)
+        assert legacy is True
+        assert view == payload
 
-    def test_blank_source_rejects_stale_template(self):
+    @pytest.mark.asyncio
+    async def test_worker_refuses_jobs_of_removed_workflows(self):
         payload = make_request().model_dump(mode="json")
-        payload["source_type"] = "blank"
-        with pytest.raises(ValidationError, match="template_id must be null"):
-            ProvisioningRequest.model_validate(payload)
+        payload["source_type"] = "template"
+        payload["guest"] = {"template_id": "corp-windows-2025", "iso_id": None}
+        job = SimpleNamespace(id="legacy-job", request=SimpleNamespace(payload=payload))
+
+        with pytest.raises(RuntimeError, match="no longer exists"):
+            await load_request_payload(job)
 
     def test_legacy_site_id_is_ignored(self):
         payload = make_request().model_dump(mode="json")

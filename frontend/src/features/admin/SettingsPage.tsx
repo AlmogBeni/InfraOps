@@ -27,15 +27,16 @@ interface SettingsValidation {
   isValid: boolean
 }
 
-function timeoutError(value: number, max: number): string | null {
-  if (!Number.isFinite(value) || !Number.isInteger(value)) return `Enter a whole number from 1 to ${max} minutes.`
-  if (value < 1 || value > max) return `Enter a value from 1 to ${max} minutes.`
+function timeoutError(value: number, max: number, min = 1): string | null {
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return `Enter a whole number from ${min} to ${max} minutes.`
+  if (value < min || value > max) return `Enter a value from ${min} to ${max} minutes.`
   return null
 }
 
 export function validatePlatformSettings(value: PlatformSettingsOut): SettingsValidation {
   const timeoutErrors: SettingsValidation['timeoutErrors'] = {
-    clone_minutes: timeoutError(value.default_timeouts.clone_minutes, 240),
+    create_vm_minutes: timeoutError(value.default_timeouts.create_vm_minutes, 240),
+    os_installation_minutes: timeoutError(value.default_timeouts.os_installation_minutes, 480, 30),
     vmware_tools_minutes: timeoutError(value.default_timeouts.vmware_tools_minutes, 120),
     network_configuration_minutes: timeoutError(value.default_timeouts.network_configuration_minutes, 60),
     guest_operations_minutes: timeoutError(value.default_timeouts.guest_operations_minutes, 120),
@@ -85,6 +86,7 @@ function TimeoutField({
   description,
   value,
   max,
+  min = 1,
   error,
   onChange,
 }: {
@@ -93,6 +95,7 @@ function TimeoutField({
   description: string
   value: number
   max: number
+  min?: number
   error: string | null
   onChange: (value: number) => void
 }) {
@@ -106,7 +109,7 @@ function TimeoutField({
         <Input
           id={id}
           type="number"
-          min={1}
+          min={min}
           max={max}
           value={Number.isFinite(value) ? value : ''}
           aria-invalid={Boolean(error)}
@@ -115,7 +118,7 @@ function TimeoutField({
         />
         <span className="rounded-lg border border-[#d7ded7] bg-white px-2.5 py-2 text-[10px] font-semibold text-[#657069]">minutes</span>
       </div>
-      {error ? <p id={errorId} className="mt-2 text-[10px] font-medium text-red-700" role="alert">{error}</p> : <p className="mt-2 text-[10px] text-[#87908a]">Allowed range: 1–{max} minutes</p>}
+      {error ? <p id={errorId} className="mt-2 text-[10px] font-medium text-red-700" role="alert">{error}</p> : <p className="mt-2 text-[10px] text-[#87908a]">Allowed range: {min}–{max} minutes</p>}
     </div>
   )
 }
@@ -247,9 +250,10 @@ export function SettingsPage() {
         description="Choose how long a provisioning stage may run before InfraOps marks it as timed out. Every value is measured in minutes."
         aside={<Badge tone="info">Minutes</Badge>}
       >
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <TimeoutField id="timeout-clone" label="Clone virtual machine" description="Maximum time to copy the selected template or source image." value={draft.default_timeouts.clone_minutes} max={240} error={validation.timeoutErrors.clone_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, clone_minutes: value } })} />
-          <TimeoutField id="timeout-tools" label="Wait for VMware Tools" description="Maximum time to wait for guest readiness after power-on." value={draft.default_timeouts.vmware_tools_minutes} max={120} error={validation.timeoutErrors.vmware_tools_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, vmware_tools_minutes: value } })} />
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <TimeoutField id="timeout-create" label="Create virtual machine" description="Maximum time for vCenter to create the VM and its OS disk." value={draft.default_timeouts.create_vm_minutes} max={240} error={validation.timeoutErrors.create_vm_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, create_vm_minutes: value } })} />
+          <TimeoutField id="timeout-install" label="Install Windows" description="Maximum time for Windows Setup from the ISO through first logon and VMware Tools." value={draft.default_timeouts.os_installation_minutes} min={30} max={480} error={validation.timeoutErrors.os_installation_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, os_installation_minutes: value } })} />
+          <TimeoutField id="timeout-tools" label="Verify VMware Tools" description="Maximum time to confirm VMware Tools after Windows is installed." value={draft.default_timeouts.vmware_tools_minutes} max={120} error={validation.timeoutErrors.vmware_tools_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, vmware_tools_minutes: value } })} />
           <TimeoutField id="timeout-network" label="Configure guest network" description="Maximum time to apply and verify network settings inside the VM." value={draft.default_timeouts.network_configuration_minutes} max={60} error={validation.timeoutErrors.network_configuration_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, network_configuration_minutes: value } })} />
           <TimeoutField id="timeout-guest" label="Run guest operations" description="Maximum time for certificates, installers, and other guest tasks." value={draft.default_timeouts.guest_operations_minutes} max={120} error={validation.timeoutErrors.guest_operations_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, guest_operations_minutes: value } })} />
         </div>

@@ -49,6 +49,7 @@ export function CredentialsPage() {
     refetchInterval: 5_000,
     staleTime: 0,
   })
+  const productKey = form.purpose === 'windows_product_key'
   const normalizedReferenceName = form.name.trim()
   const referenceNameError = form.name.length > 0 && !isValidSecretReference(normalizedReferenceName)
     ? 'Enter a valid secret reference from 2 to 150 characters.'
@@ -268,12 +269,27 @@ export function CredentialsPage() {
             <option value="vcenter">vCenter service account</option>
             <option value="guest_administrator">Windows provisioning administrator</option>
             <option value="domain_join">Active Directory domain join</option>
+            <option value="windows_product_key">Windows product key</option>
           </Select>
         </FormRow>
-        <FormRow label="Username" htmlFor="cred-username" required={!editing} hint={editing ? 'Leave blank to keep the current username.' : undefined}>
+        <FormRow
+          label={productKey ? 'Edition' : 'Username'}
+          htmlFor="cred-username"
+          required={!editing}
+          hint={editing
+            ? `Leave blank to keep the current ${productKey ? 'edition' : 'username'}.`
+            : productKey ? 'The edition this key activates, for example Windows Server 2025 Standard.' : undefined}
+        >
           <Input id="cred-username" autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
         </FormRow>
-        <FormRow label="Password" htmlFor="cred-password" required={!editing} hint={editing ? 'Leave blank to keep the current password.' : undefined}>
+        <FormRow
+          label={productKey ? 'Product key' : 'Password'}
+          htmlFor="cred-password"
+          required={!editing}
+          hint={editing
+            ? `Leave blank to keep the current ${productKey ? 'key' : 'password'}.`
+            : productKey ? 'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX. Only retail and MAK media need one; it is stored encrypted like a password.' : undefined}
+        >
           <Input id="cred-password" type="password" autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
         </FormRow>
         <FormRow label="Description" htmlFor="cred-desc" hint="Explain which workflow or operator group should use this reference.">

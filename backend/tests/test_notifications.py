@@ -107,23 +107,8 @@ async def test_failed_stage_notifies_the_requester() -> None:
     (note,) = added_notifications(ctx)
     assert note.kind == "JOB_FAILED"
     assert note.title == "TEST3 deployment failed"
-    assert "Wait for guest operating system" in note.message
+    assert "Install Windows" in note.message
     assert "Windows Setup is still running" in note.message
-
-
-@pytest.mark.asyncio
-async def test_action_required_notifies_the_requester() -> None:
-    ctx = pipeline_context()
-    stage = STAGES_BY_KEY["wait_for_guest_os"]
-    step = SimpleNamespace(stage_key=stage.key)
-
-    await pipeline()._handle_action_required(
-        ctx, stage, step, "VMware Tools has no heartbeat.", dt.datetime.now(dt.UTC)
-    )
-
-    (note,) = added_notifications(ctx)
-    assert note.kind == "JOB_ACTION_REQUIRED"
-    assert note.title == "TEST3 needs attention"
 
 
 @pytest.mark.asyncio

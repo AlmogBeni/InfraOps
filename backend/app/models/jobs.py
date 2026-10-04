@@ -43,7 +43,6 @@ class JobStatus(str, enum.Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED"
-    ACTION_REQUIRED = "ACTION_REQUIRED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     # The worker that owned a RUNNING job stopped heartbeating (crash, OOM,
@@ -58,7 +57,6 @@ class StepStatus(str, enum.Enum):
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
     WARNING = "WARNING"
-    WAITING_FOR_PREREQUISITE = "WAITING_FOR_PREREQUISITE"
     NOT_APPLICABLE = "NOT_APPLICABLE"
     CANCELLED = "CANCELLED"
 
@@ -104,7 +102,6 @@ TERMINAL_JOB_STATUSES = frozenset(
     {
         JobStatus.COMPLETED,
         JobStatus.PARTIALLY_COMPLETED,
-        JobStatus.ACTION_REQUIRED,
         JobStatus.FAILED,
         JobStatus.CANCELLED,
     }
@@ -114,7 +111,7 @@ TERMINAL_JOB_STATUSES = frozenset(
 # concurrent submissions can never both pass the read-then-insert check.
 ACTIVE_JOB_STATUSES = (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.INTERRUPTED)
 # Statuses that hold a static IPv4 reservation (the job may still configure it).
-IP_RESERVING_JOB_STATUSES = (*ACTIVE_JOB_STATUSES, JobStatus.ACTION_REQUIRED)
+IP_RESERVING_JOB_STATUSES = ACTIVE_JOB_STATUSES
 
 
 def _status_predicate(statuses: tuple[JobStatus, ...]):
@@ -175,7 +172,6 @@ class ProvisioningJob(Base):
     guest_provisioning_status: Mapped[str] = mapped_column(
         String(40), nullable=False, default=GuestProvisioningStatus.PENDING.value
     )
-    action_required: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

@@ -1,7 +1,8 @@
-"""Prerequisite-aware VM lifecycle regression tests."""
+"""Unattended ISO installation lifecycle regression tests."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from types import SimpleNamespace
@@ -14,38 +15,37 @@ from app.models.jobs import (
     GuestOsStatus,
     GuestProvisioningStatus,
     InfrastructureStatus,
+    JobStatus,
     StepStatus,
     VMwareToolsStatus,
 )
-from app.schemas.provisioning import ProvisioningRequest
+from app.schemas.provisioning import DiskProvisioning, DiskSpec, ProvisioningRequest
 from app.services.guest.base import CommandResult, GuestCredentialsRejected
-from app.services.vmware.base import PowerStateInfo, TemporaryMediaRef, VmOwnership, VmRef
+from app.services.vmware.base import PowerStateInfo, VmOwnership, VmRef
 from app.workers.stages import (
-    stage_clone_vm,
-    stage_prepare_unattended_install,
+    DATA_DISKS_NOT_VISIBLE_EXIT,
+    stage_add_data_disks,
+    stage_cleanup_unattended_media,
+    stage_configure_hardware,
+    stage_create_vm,
+    stage_initialize_data_disks,
+    stage_power_on,
     stage_wait_for_guest_os,
     stage_wait_for_tools,
 )
 from tests.conftest import make_request
 
-
-def request_for(source: str, *, iso: str | None = None) -> ProvisioningRequest:
-    payload = make_request().model_dump(mode="json")
-    payload["source_type"] = source
-    if source == "blank":
-        payload["guest"].update(
-            template_id=None,
-            iso_id=iso,
-            hostname="SERVER-PROD-042" if iso else None,
-            timezone=None,
-            domain_join=None,
-        )
-        if iso is None:
-            payload["network"].update(mode="DHCP", ipv4=None)
-    return ProvisioningRequest.model_validate(payload)
+JOB_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 
 
-def context(request: ProvisioningRequest, vmware) -> SimpleNamespace:
+def with_disks(*sizes: int) -> ProvisioningRequest:
+    request = make_request()
+    request.hardware.disks = [DiskSpec(size_gb=size, provisioning=DiskProvisioning.THIN) for size in sizes]
+    return request
+
+
+def context(vmware, request: ProvisioningRequest | None = None) -> SimpleNamespace:
+    request = request or make_request()
     return SimpleNamespace(
         request=request,
         vmware=vmware,
@@ -53,265 +53,25 @@ def context(request: ProvisioningRequest, vmware) -> SimpleNamespace:
         vm_name=request.vm.name,
         vm_ref=VmRef(id="vm-101", name=request.vm.name),
         steps_by_key={"wait_for_guest_os": SimpleNamespace(artifacts={})},
+        job_id=JOB_ID,
+        db=None,  # effective_timeout_seconds falls back to the defaults
+        resolve_guest_credentials=AsyncMock(
+            return_value=SimpleNamespace(username="Administrator", password="secret")
+        ),
         job=SimpleNamespace(
             infrastructure_status=InfrastructureStatus.READY.value,
             guest_os_status=GuestOsStatus.UNKNOWN.value,
             vmware_tools_status=VMwareToolsStatus.UNKNOWN.value,
             guest_provisioning_status=GuestProvisioningStatus.PENDING.value,
+            datacenter_name="DC01",
         ),
     )
 
 
-@pytest.mark.asyncio
-async def test_blank_without_iso_waits_for_os_and_never_attempts_tools() -> None:
-    vmware = SimpleNamespace(wait_for_tools=AsyncMock())
-    ctx = context(request_for("blank"), vmware)
-
-    outcome = await stage_wait_for_guest_os(ctx)
-
-    assert outcome.status == "WAITING_FOR_PREREQUISITE"
-    assert outcome.artifacts["required_action"] == "INSTALL_AND_CONFIRM_GUEST_OS"
-    assert ctx.job.guest_os_status == GuestOsStatus.INSTALLATION_REQUIRED.value
-    assert ctx.job.vmware_tools_status == VMwareToolsStatus.NOT_APPLICABLE_YET.value
-    vmware.wait_for_tools.assert_not_awaited()
-
-
-def iso_setup_context(vmware, probes: list) -> SimpleNamespace:
-    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-    ctx.resolve_guest_credentials = AsyncMock(
-        return_value=SimpleNamespace(username="Administrator", password="secret")
-    )
-    ctx.guest_ops = SimpleNamespace(
-        run_powershell=AsyncMock(side_effect=probes), upload_file=AsyncMock()
-    )
+def setup_context(vmware, probes: list) -> SimpleNamespace:
+    ctx = context(vmware)
+    ctx.guest_ops = SimpleNamespace(run_powershell=AsyncMock(side_effect=probes), upload_file=AsyncMock())
     return ctx
-
-
-@pytest.mark.asyncio
-async def test_iso_installation_is_detected_without_any_confirmation(fast_setup_polling) -> None:
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
-        mount_tools_installer=AsyncMock(),
-    )
-    ctx = iso_setup_context(vmware, [_setup_state()])
-
-    outcome = await stage_wait_for_guest_os(ctx)
-
-    assert outcome.status == "SUCCEEDED"
-    assert "installed unattended from the ISO" in outcome.output
-    assert ctx.job.guest_os_status == GuestOsStatus.READY.value
-    # Tools comes from the second CD drive at first logon; nothing is swapped.
-    assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
-    vmware.mount_tools_installer.assert_not_awaited()
-    ctx.guest_ops.upload_file.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_iso_installation_without_tools_fails_with_console_guidance() -> None:
-    from app.core.errors import InfraOperationError as Error
-
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(
-            side_effect=Error("Tools never ready", reason="timeout", recommended_action="n/a")
-        )
-    )
-    ctx = iso_setup_context(vmware, [])
-
-    with pytest.raises(InfraOperationError, match="did not finish installing from the ISO") as caught:
-        await stage_wait_for_guest_os(ctx)
-
-    assert "Press any key to boot from CD or DVD" in caught.value.recommended_action
-
-
-@pytest.mark.asyncio
-async def test_iso_boot_prompt_is_answered_with_keystrokes(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.workers import stages
-    from app.workers.stages import stage_power_on
-
-    monkeypatch.setattr(stages, "_BOOT_KEY_SECONDS", 0.0)
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
-        power_on=AsyncMock(),
-        reset=AsyncMock(),
-        send_keystrokes=AsyncMock(return_value=1),
-    )
-    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-
-    outcome = await stage_power_on(ctx)
-
-    vmware.power_on.assert_awaited_once()
-    vmware.reset.assert_not_awaited()
-    assert vmware.send_keystrokes.await_args.args[2] == [0x2C]  # space bar
-    assert outcome.artifacts == {"boot_keys_sent": 1}
-
-    # A rerun (after this stage failed) restarts the firmware to get the prompt back.
-    vmware.get_vm_info.return_value = PowerStateInfo(power_state="poweredOn")
-    await stage_power_on(ctx)
-    vmware.reset.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_refused_keystrokes_explain_the_missing_privilege(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.workers import stages
-    from app.workers.stages import stage_power_on
-
-    monkeypatch.setattr(stages, "_BOOT_KEY_SECONDS", 0.0)
-    refused = InfraOperationError("vCenter denied it", reason="NoPermission", recommended_action="n/a")
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
-        power_on=AsyncMock(),
-        send_keystrokes=AsyncMock(side_effect=refused),
-    )
-    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-
-    with pytest.raises(InfraOperationError, match="could not be started from the ISO") as caught:
-        await stage_power_on(ctx)
-
-    assert "Inject USB HID scan codes" in caught.value.recommended_action
-    assert caught.value.retryable is True
-
-
-@pytest.mark.asyncio
-async def test_template_power_on_sends_no_keystrokes() -> None:
-    from app.workers.stages import stage_power_on
-
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
-        power_on=AsyncMock(),
-        send_keystrokes=AsyncMock(),
-    )
-    ctx = context(request_for("template"), vmware)
-
-    outcome = await stage_power_on(ctx)
-
-    assert outcome.output == "Power-on task completed."
-    vmware.send_keystrokes.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_tools_media_is_mounted_only_when_tools_is_missing_after_installation() -> None:
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(
-            return_value=PowerStateInfo(
-                power_state="poweredOn",
-                tools_status="toolsNotInstalled",
-                guest_family="windowsGuest",
-            )
-        ),
-        mount_tools_installer=AsyncMock(return_value=True),
-        wait_for_tools=AsyncMock(),
-    )
-    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-    ctx.job.guest_os_status = GuestOsStatus.READY.value
-
-    tools_outcome = await stage_wait_for_tools(ctx)
-
-    assert tools_outcome.status == "SUCCEEDED"
-    vmware.mount_tools_installer.assert_awaited_once()
-    assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
-    assert ctx.job.vmware_tools_status == VMwareToolsStatus.RUNNING.value
-
-
-@pytest.mark.asyncio
-async def test_blank_iso_reports_busy_cdrom_before_tools_installation() -> None:
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(
-            return_value=PowerStateInfo(
-                power_state="poweredOn",
-                tools_status="toolsNotInstalled",
-                guest_family="windowsGuest",
-            )
-        ),
-        mount_tools_installer=AsyncMock(return_value=False),
-        wait_for_tools=AsyncMock(),
-    )
-    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-    ctx.job.guest_os_status = GuestOsStatus.READY.value
-
-    outcome = await stage_wait_for_tools(ctx)
-
-    assert outcome.status == "WAITING_FOR_PREREQUISITE"
-    assert outcome.artifacts["required_action"] == "PREPARE_CDROM_FOR_VMWARE_TOOLS"
-    vmware.wait_for_tools.assert_not_awaited()
-
-
-def _floppy_answer_file(content: bytes) -> str:
-    start = content.index(b"<?xml")
-    end = content.index(b"</unattend>") + len(b"</unattend>")
-    return content[start:end].decode("utf-8")
-
-
-@pytest.mark.asyncio
-async def test_windows_template_gets_first_boot_media_that_never_touches_disks() -> None:
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(
-            return_value=PowerStateInfo(
-                power_state="poweredOff", configured_guest_id="windows2019srv_64Guest"
-            )
-        ),
-        attach_temporary_floppy=AsyncMock(
-            return_value=TemporaryMediaRef(datastore_path="[datastore] infraops-unattend/a.flp")
-        ),
-    )
-    ctx = context(request_for("template"), vmware)
-    ctx.job_id = uuid.uuid4()
-    ctx.resolve_guest_credentials = AsyncMock(
-        return_value=SimpleNamespace(username="Administrator", password="secret")
-    )
-
-    outcome = await stage_prepare_unattended_install(ctx)
-
-    assert outcome.status == "SUCCEEDED"
-    assert outcome.artifacts == {"datastore_path": "[datastore] infraops-unattend/a.flp"}
-    xml = _floppy_answer_file(vmware.attach_temporary_floppy.await_args.kwargs["content"])
-    assert 'pass="specialize"' in xml and 'pass="oobeSystem"' in xml
-    assert f"<ComputerName>{ctx.request.effective_computer_name}</ComputerName>" in xml
-    assert "<HideEULAPage>true</HideEULAPage>" in xml
-    # A deployed image must never see Setup disk layout or an auto-logon.
-    for forbidden in ('pass="windowsPE"', "WillWipeDisk", "DiskConfiguration", "AutoLogon"):
-        assert forbidden not in xml
-
-
-@pytest.mark.asyncio
-async def test_non_windows_template_gets_no_answer_media() -> None:
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(
-            return_value=PowerStateInfo(power_state="poweredOff", configured_guest_id="ubuntu64Guest")
-        ),
-        attach_temporary_floppy=AsyncMock(),
-    )
-    ctx = context(request_for("template"), vmware)
-    ctx.resolve_guest_credentials = AsyncMock()
-
-    outcome = await stage_prepare_unattended_install(ctx)
-
-    assert outcome.status == "NOT_APPLICABLE"
-    vmware.attach_temporary_floppy.assert_not_awaited()
-    ctx.resolve_guest_credentials.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_blank_iso_uses_answer_floppy_not_a_second_datastore_iso() -> None:
-    vmware = SimpleNamespace(
-        attach_temporary_floppy=AsyncMock(
-            return_value=TemporaryMediaRef(
-                datastore_path="[datastore] infraops-unattend/answer.flp"
-            )
-        )
-    )
-    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-    ctx.job_id = uuid.uuid4()
-    ctx.resolve_guest_credentials = AsyncMock(
-        return_value=SimpleNamespace(username="Administrator", password="secret")
-    )
-
-    outcome = await stage_prepare_unattended_install(ctx)
-
-    assert outcome.status == "SUCCEEDED"
-    call = vmware.attach_temporary_floppy.await_args
-    assert call.kwargs["file_name"].endswith(".flp")
-    assert len(call.kwargs["content"]) == 1_474_560
 
 
 def _tools_running(host_name: str | None = None) -> PowerStateInfo:
@@ -325,21 +85,9 @@ def _tools_running(host_name: str | None = None) -> PowerStateInfo:
     )
 
 
-def _setup_state(
-    *,
-    setup: int = 0,
-    oobe: int = 0,
-    image: str = "IMAGE_STATE_COMPLETE",
-    name: str = "SERVER-PROD-042",
-    sysprep: bool = False,
-) -> CommandResult:
-    payload = {
-        "ImageState": image,
-        "SystemSetupInProgress": setup,
-        "OOBEInProgress": oobe,
-        "ComputerName": name,
-        "SysprepRunning": sysprep,
-    }
+def _setup_state(*, setup: int = 0, oobe: int = 0, image: str = "IMAGE_STATE_COMPLETE",
+                 name: str = "SERVER-PROD-042") -> CommandResult:
+    payload = {"ImageState": image, "SystemSetupInProgress": setup, "OOBEInProgress": oobe, "ComputerName": name}
     return CommandResult(exit_code=0, stdout=json.dumps(payload), stderr="", duration_seconds=0.1)
 
 
@@ -355,52 +103,66 @@ def _rejected() -> GuestCredentialsRejected:
 def fast_setup_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.workers import stages
 
-    for name in (
-        "_SETUP_POLL_SECONDS",
-        "_SETUP_PROBE_SECONDS_NAME_APPLIED",
-        "_SETUP_PROBE_SECONDS_OTHERWISE",
-        "_SETUP_PROBE_SECONDS_AFTER_REJECTION",
-        "_OOBE_STALL_SECONDS",
-        "_SYSPREP_GRACE_SECONDS",
-    ):
+    for name in ("_SETUP_POLL_SECONDS", "_SETUP_PROBE_SECONDS", "_SETUP_PROBE_SECONDS_AFTER_REJECTION"):
         monkeypatch.setattr(stages, name, 0.0)
+    monkeypatch.setattr(stages, "_DATA_DISK_DETECTION_DELAYS", (0.0, 0.0))
 
 
-def template_setup_context(vmware, probes: list) -> SimpleNamespace:
-    ctx = context(request_for("template"), vmware)
-    ctx.resolve_guest_credentials = AsyncMock(
-        return_value=SimpleNamespace(username="Administrator", password="secret")
-    )
-    ctx.guest_ops = SimpleNamespace(
-        run_powershell=AsyncMock(side_effect=probes), upload_file=AsyncMock()
-    )
-    return ctx
+# ── Windows Setup ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_template_wait_observes_existing_tools_without_mounting(fast_setup_polling) -> None:
+async def test_iso_installation_is_detected_without_any_confirmation(fast_setup_polling) -> None:
     vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
+        wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042"))
     )
-    ctx = template_setup_context(vmware, [_setup_state()])
+    ctx = setup_context(vmware, [_setup_state()])
 
     outcome = await stage_wait_for_guest_os(ctx)
 
     assert outcome.status == "SUCCEEDED"
-    assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
+    assert "installed unattended from the ISO" in outcome.output
     assert ctx.job.guest_os_status == GuestOsStatus.READY.value
-    assert "Setup has finished as 'SERVER-PROD-042'" in outcome.output
+    assert ctx.job.guest_provisioning_status == GuestProvisioningStatus.IN_PROGRESS.value
+    # The whole installation is one bounded wait: no prompt, no second Tools mount.
+    assert vmware.wait_for_tools.await_args.args[1] == "vm-101"
+    assert not vmware.wait_for_tools.await_args.kwargs
+    ctx.guest_ops.upload_file.assert_not_awaited()
 
 
-@pytest.mark.asyncio
+async def test_installation_that_never_reports_tools_fails_with_console_guidance() -> None:
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(
+            side_effect=InfraOperationError("Tools never ready", reason="timeout", recommended_action="n/a")
+        )
+    )
+    ctx = setup_context(vmware, [])
+
+    with pytest.raises(InfraOperationError, match="did not finish installing from the ISO") as caught:
+        await stage_wait_for_guest_os(ctx)
+
+    assert "console screenshot" in caught.value.recommended_action
+    assert "Press any key to boot from CD or DVD" in caught.value.recommended_action
+    assert caught.value.retryable is True
+
+
+async def test_media_that_installs_another_operating_system_fails_clearly() -> None:
+    linux = PowerStateInfo(power_state="poweredOn", tools_status="toolsOk", guest_family="linuxGuest")
+    vmware = SimpleNamespace(wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=linux))
+    ctx = setup_context(vmware, [])
+
+    with pytest.raises(InfraOperationError, match="not Windows") as caught:
+        await stage_wait_for_guest_os(ctx)
+
+    assert caught.value.retryable is False
+    ctx.guest_ops.run_powershell.assert_not_awaited()
+
+
 async def test_tools_heartbeat_during_oobe_is_not_os_readiness(fast_setup_polling) -> None:
     vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
+        wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042"))
     )
     in_oobe = _setup_state(setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE")
-    ctx = template_setup_context(vmware, [_rejected(), in_oobe, _setup_state()])
+    ctx = setup_context(vmware, [_rejected(), in_oobe, _setup_state()])
 
     outcome = await stage_wait_for_guest_os(ctx)
 
@@ -409,15 +171,11 @@ async def test_tools_heartbeat_during_oobe_is_not_os_readiness(fast_setup_pollin
     assert outcome.artifacts["windows_setup"]["image_state"] == "IMAGE_STATE_COMPLETE"
 
 
-@pytest.mark.asyncio
 async def test_no_guest_sign_in_is_attempted_while_tools_is_down(fast_setup_polling) -> None:
-    import asyncio
-
     from app.workers.stages import wait_for_windows_setup
 
     restarting = PowerStateInfo(power_state="poweredOn", tools_running_status="guestToolsNotRunning")
-    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=restarting))
-    ctx = template_setup_context(vmware, [])
+    ctx = setup_context(SimpleNamespace(get_vm_info=AsyncMock(return_value=restarting)), [])
 
     with pytest.raises(InfraOperationError, match="did not finish its first-boot setup") as caught:
         await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 0.05)
@@ -426,14 +184,11 @@ async def test_no_guest_sign_in_is_attempted_while_tools_is_down(fast_setup_poll
     assert "VMware Tools is not running" in caught.value.reason
 
 
-@pytest.mark.asyncio
 async def test_persistent_credential_rejection_stops_the_wait(fast_setup_polling) -> None:
-    import asyncio
-
     from app.workers.stages import _SETUP_MAX_REJECTED_LOGINS, wait_for_windows_setup
 
-    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-NAME")))
-    ctx = template_setup_context(vmware, [_rejected() for _ in range(_SETUP_MAX_REJECTED_LOGINS)])
+    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")))
+    ctx = setup_context(vmware, [_rejected() for _ in range(_SETUP_MAX_REJECTED_LOGINS)])
 
     with pytest.raises(InfraOperationError, match="keeps rejecting"):
         await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 60)
@@ -446,16 +201,72 @@ def test_windows_setup_state_parsing() -> None:
 
     assert parse_windows_setup_state(_setup_state().stdout).complete
     assert not parse_windows_setup_state(_setup_state(oobe=1).stdout).complete
-    assert not parse_windows_setup_state(
-        _setup_state(image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE").stdout
-    ).complete
+    assert not parse_windows_setup_state(_setup_state(image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE").stdout).complete
     # Releases that do not record ImageState rely on the in-progress flags.
     assert parse_windows_setup_state(_setup_state(image="").stdout).complete
     with pytest.raises(ValueError):
         parse_windows_setup_state("not json")
 
 
-@pytest.mark.asyncio
+# ── Boot prompt ──────────────────────────────────────────────────────────────
+
+
+async def test_iso_boot_prompt_is_answered_with_keystrokes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import stages
+
+    monkeypatch.setattr(stages, "_BOOT_KEY_SECONDS", 0.0)
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
+        power_on=AsyncMock(),
+        reset=AsyncMock(),
+        send_keystrokes=AsyncMock(return_value=1),
+    )
+    ctx = context(vmware)
+
+    outcome = await stage_power_on(ctx)
+
+    vmware.power_on.assert_awaited_once()
+    vmware.reset.assert_not_awaited()
+    assert vmware.send_keystrokes.await_args.args[2] == [0x2C]  # space bar
+    assert outcome.artifacts == {"boot_keys_sent": 1}
+    assert ctx.job.guest_os_status == GuestOsStatus.INSTALLATION_IN_PROGRESS.value
+
+    # A rerun (after this stage failed) restarts the firmware to get the prompt back.
+    vmware.get_vm_info.return_value = PowerStateInfo(power_state="poweredOn")
+    await stage_power_on(ctx)
+    vmware.reset.assert_awaited_once()
+
+
+def test_boot_prompt_window_covers_slow_firmware_but_ends_long_before_setup_restarts() -> None:
+    from app.workers import stages
+
+    # The prompt shows for ~5 s once the firmware reaches the CD; Setup's
+    # first restart (where a key press would boot the ISO again) is minutes later.
+    assert 30 <= stages._BOOT_KEY_SECONDS <= 120
+    assert stages._BOOT_KEY_INTERVAL_SECONDS <= 2
+
+
+async def test_refused_keystrokes_explain_the_missing_privilege(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import stages
+
+    monkeypatch.setattr(stages, "_BOOT_KEY_SECONDS", 0.0)
+    refused = InfraOperationError("vCenter denied it", reason="NoPermission", recommended_action="n/a")
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
+        power_on=AsyncMock(),
+        send_keystrokes=AsyncMock(side_effect=refused),
+    )
+
+    with pytest.raises(InfraOperationError, match="could not be started from the ISO") as caught:
+        await stage_power_on(context(vmware))
+
+    assert "Inject USB HID scan codes" in caught.value.recommended_action
+    assert caught.value.retryable is True
+
+
+# ── VMware Tools ─────────────────────────────────────────────────────────────
+
+
 @pytest.mark.parametrize(
     ("raw_status", "expected"),
     [
@@ -463,30 +274,24 @@ def test_windows_setup_state_parsing() -> None:
         ("toolsNotRunning", VMwareToolsStatus.NOT_RUNNING.value),
     ],
 )
-async def test_unhealthy_tools_waits_instead_of_reinstalling(
-    raw_status: str, expected: str
-) -> None:
+async def test_unhealthy_tools_fails_instead_of_waiting_for_a_person(raw_status: str, expected: str) -> None:
     vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(
-            return_value=PowerStateInfo(power_state="poweredOn", tools_status=raw_status)
-        )
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOn", tools_status=raw_status))
     )
-    ctx = context(request_for("template"), vmware)
+    ctx = context(vmware)
 
-    outcome = await stage_wait_for_tools(ctx)
+    with pytest.raises(InfraOperationError, match="stopped reporting") as caught:
+        await stage_wait_for_tools(ctx)
 
-    assert outcome.status == "WAITING_FOR_PREREQUISITE"
+    assert caught.value.retryable is True
     assert ctx.job.vmware_tools_status == expected
 
 
-@pytest.mark.asyncio
 async def test_outdated_running_tools_continues_with_warning() -> None:
     vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(
-            return_value=PowerStateInfo(power_state="poweredOn", tools_status="toolsOld")
-        )
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOn", tools_status="toolsOld"))
     )
-    ctx = context(request_for("template"), vmware)
+    ctx = context(vmware)
 
     outcome = await stage_wait_for_tools(ctx)
 
@@ -494,7 +299,6 @@ async def test_outdated_running_tools_continues_with_warning() -> None:
     assert ctx.job.vmware_tools_status == VMwareToolsStatus.OUTDATED.value
 
 
-@pytest.mark.asyncio
 async def test_modern_tools_fields_take_precedence_over_deprecated_status() -> None:
     vmware = SimpleNamespace(
         get_vm_info=AsyncMock(
@@ -507,7 +311,7 @@ async def test_modern_tools_fields_take_precedence_over_deprecated_status() -> N
             )
         )
     )
-    ctx = context(request_for("template"), vmware)
+    ctx = context(vmware)
 
     outcome = await stage_wait_for_tools(ctx)
 
@@ -515,159 +319,7 @@ async def test_modern_tools_fields_take_precedence_over_deprecated_status() -> N
     assert ctx.job.vmware_tools_status == VMwareToolsStatus.OUTDATED.value
 
 
-JOB_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
-
-
-def clone_context(vmware) -> SimpleNamespace:
-    ctx = context(request_for("template"), vmware)
-    ctx.job_id = JOB_ID
-    return ctx
-
-
-@pytest.mark.asyncio
-async def test_retry_resumes_only_a_vm_created_by_this_job() -> None:
-    vmware = SimpleNamespace(
-        find_vm_ownership=AsyncMock(
-            return_value=VmOwnership(vm_id="vm-existing", name="SERVER-PROD-042", owner_job_id=str(JOB_ID))
-        ),
-        clone_from_template=AsyncMock(),
-        create_blank_vm=AsyncMock(),
-    )
-    ctx = clone_context(vmware)
-
-    outcome = await stage_clone_vm(ctx)
-
-    assert outcome.status == "SKIPPED"
-    assert outcome.artifacts["vm_id"] == "vm-existing"
-    vmware.clone_from_template.assert_not_awaited()
-    vmware.create_blank_vm.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("owner", [None, "33333333-3333-4333-8333-333333333333"])
-async def test_existing_vm_not_created_by_this_job_is_never_adopted(owner) -> None:
-    from app.core.errors import InfraOperationError
-
-    vmware = SimpleNamespace(
-        find_vm_ownership=AsyncMock(
-            return_value=VmOwnership(vm_id="vm-prod", name="SERVER-PROD-042", owner_job_id=owner)
-        ),
-        clone_from_template=AsyncMock(),
-        create_blank_vm=AsyncMock(),
-    )
-    ctx = clone_context(vmware)
-
-    with pytest.raises(InfraOperationError) as raised:
-        await stage_clone_vm(ctx)
-
-    assert raised.value.retryable is False
-    assert "not created by this job" in raised.value.human_message
-    vmware.clone_from_template.assert_not_awaited()
-    vmware.create_blank_vm.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_created_vm_carries_the_job_ownership_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.audit import recorder as recorder_module
-
-    monkeypatch.setattr(
-        recorder_module, "record_audit", lambda _db: SimpleNamespace(record=AsyncMock())
-    )
-    vmware = SimpleNamespace(
-        find_vm_ownership=AsyncMock(return_value=None),
-        clone_from_template=AsyncMock(return_value=VmRef(id="vm-new", name="SERVER-PROD-042")),
-    )
-    ctx = clone_context(vmware)
-    ctx.db = object()
-    ctx.actor_username = "operator"
-    ctx.job.datacenter_name = "DC01"
-
-    outcome = await stage_clone_vm(ctx)
-
-    spec = vmware.clone_from_template.await_args.args[1]
-    assert spec.job_id == str(JOB_ID)
-    assert outcome.artifacts["owner_job_id"] == str(JOB_ID)
-
-
-@pytest.mark.asyncio
-async def test_pipeline_stops_after_clone_failure_before_guest_operations() -> None:
-    from app.workers.pipeline import ProvisioningPipeline
-
-    clone = SimpleNamespace(stage_key="clone_vm", status=StepStatus.PENDING)
-    tools = SimpleNamespace(stage_key="wait_for_tools", status=StepStatus.PENDING)
-    job = SimpleNamespace(cancel_requested=False, steps=[clone, tools])
-    db = SimpleNamespace(refresh=AsyncMock())
-    ctx = SimpleNamespace(
-        db=db,
-        job=job,
-        steps_by_key={"clone_vm": clone, "wait_for_tools": tools},
-    )
-
-    class RecordingPipeline(ProvisioningPipeline):
-        def __init__(self) -> None:
-            self.executed: list[str] = []
-
-        async def _run_stage(self, _ctx, stage, step) -> None:
-            self.executed.append(stage.key)
-            if stage.key == "clone_vm":
-                step.status = StepStatus.FAILED
-
-        async def _finalize_success(self, _ctx) -> None:  # pragma: no cover
-            raise AssertionError("a failed clone must not finalize")
-
-    pipeline = RecordingPipeline()
-    await pipeline.execute(ctx)
-
-    assert pipeline.executed == ["clone_vm"]
-    assert tools.status == StepStatus.PENDING
-
-
-@pytest.mark.asyncio
-async def test_static_address_taken_after_submission_blocks_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core.errors import InfraOperationError
-    from app.schemas.provisioning import ConflictProviderStatus, ProviderResult
-    from app.services.network import conflict
-    from app.workers.stages import assert_static_address_unclaimed
-
-    class Replies(conflict.IcmpPingProvider):
-        async def check(self, address, prefix):
-            return ProviderResult(provider="ICMP", status=ConflictProviderStatus.CONFLICT_DETECTED,
-                                  detail=f"A device responded to ICMP echo at {address}.")
-
-    monkeypatch.setattr(conflict, "IcmpPingProvider", Replies)
-    vmware = SimpleNamespace(
-        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOn", ip_addresses=[])),
-        get_used_ips=AsyncMock(return_value={"10.20.30.45": "SERVER-PROD-042"}),
-    )
-    ctx = context(request_for("template"), vmware)
-
-    with pytest.raises(InfraOperationError, match="already in use"):
-        await assert_static_address_unclaimed(ctx, "10.20.30.45", 24)
-
-    # The VM's own address (retry) is never reported as a conflict.
-    vmware.get_vm_info.return_value = PowerStateInfo(power_state="poweredOn", ip_addresses=["10.20.30.45"])
-    await assert_static_address_unclaimed(ctx, "10.20.30.45", 24)
-
-
-@pytest.mark.asyncio
-async def test_package_keeps_its_own_firmware() -> None:
-    from app.workers.stages import stage_configure_hardware
-
-    vmware = SimpleNamespace(configure_hardware=AsyncMock())
-    template_ctx = context(request_for("template"), vmware)
-
-    outcome = await stage_configure_hardware(template_ctx)
-
-    # Switching BIOS/EFI under an installed Windows leaves it unbootable.
-    assert vmware.configure_hardware.await_args.kwargs["firmware"] is None
-    assert "inherited from the package" in outcome.output
-
-    blank_ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-    await stage_configure_hardware(blank_ctx)
-    assert vmware.configure_hardware.await_args.kwargs["firmware"] is not None
-
-
-def test_vm_info_reports_tools_host_name_and_configured_guest_os() -> None:
+def test_vm_info_reports_tools_and_host_name() -> None:
     from app.services.vmware.vsphere import VsphereVMwareService
 
     vm = SimpleNamespace(
@@ -683,131 +335,318 @@ def test_vm_info_reports_tools_host_name_and_configured_guest_os() -> None:
             hostName="TEST3",
         ),
         runtime=SimpleNamespace(powerState="poweredOn", host=None),
-        config=SimpleNamespace(guestId="windows2019srv_64Guest"),
     )
 
     info = VsphereVMwareService._power_state_info(vm)
 
     assert info.guest_host_name == "TEST3"
-    assert info.configured_guest_id == "windows2019srv_64Guest"
-    assert info.configured_for_windows
-    assert not PowerStateInfo(power_state="poweredOff", configured_guest_id="rhel9_64Guest").configured_for_windows
+    assert info.guest_operations_ready is True
+    assert info.tools_running_status == "guestToolsRunning"
 
 
-def _started() -> CommandResult:
-    return CommandResult(exit_code=0, stdout="SYSPREP-STARTED", stderr="", duration_seconds=0.1)
+# ── VM creation ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_package_that_was_never_sealed_is_generalized_with_the_answer_file(
-    fast_setup_polling,
+async def test_retry_resumes_only_a_vm_created_by_this_job() -> None:
+    vmware = SimpleNamespace(
+        find_vm_ownership=AsyncMock(
+            return_value=VmOwnership(vm_id="vm-existing", name="SERVER-PROD-042", owner_job_id=str(JOB_ID))
+        ),
+        create_vm=AsyncMock(),
+    )
+    ctx = context(vmware)
+
+    outcome = await stage_create_vm(ctx)
+
+    assert outcome.status == "SKIPPED"
+    assert outcome.artifacts["vm_id"] == "vm-existing"
+    vmware.create_vm.assert_not_awaited()
+
+
+@pytest.mark.parametrize("owner", [None, "33333333-3333-4333-8333-333333333333"])
+async def test_existing_vm_not_created_by_this_job_is_never_adopted(owner) -> None:
+    vmware = SimpleNamespace(
+        find_vm_ownership=AsyncMock(
+            return_value=VmOwnership(vm_id="vm-prod", name="SERVER-PROD-042", owner_job_id=owner)
+        ),
+        create_vm=AsyncMock(),
+    )
+    ctx = context(vmware)
+
+    with pytest.raises(InfraOperationError) as raised:
+        await stage_create_vm(ctx)
+
+    assert raised.value.retryable is False
+    assert "not created by this job" in raised.value.human_message
+    vmware.create_vm.assert_not_awaited()
+
+
+async def test_vm_is_created_with_only_its_os_disk_and_the_ownership_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.audit import recorder as recorder_module
+
+    monkeypatch.setattr(recorder_module, "record_audit", lambda _db: SimpleNamespace(record=AsyncMock()))
+    vmware = SimpleNamespace(
+        find_vm_ownership=AsyncMock(return_value=None),
+        create_vm=AsyncMock(return_value=VmRef(id="vm-new", name="SERVER-PROD-042")),
+    )
+    ctx = context(vmware, with_disks(80, 200, 50))
+    ctx.actor_username = "operator"
+
+    outcome = await stage_create_vm(ctx)
+
+    spec = vmware.create_vm.await_args.args[1]
+    assert spec.job_id == str(JOB_ID)
+    assert spec.iso_id == "iso-corp-windows-2025"
+    # Setup sees exactly one disk, so DiskID 0 is always the OS disk.
+    assert spec.os_disk.size_gb == 80
+    assert outcome.artifacts["owner_job_id"] == str(JOB_ID)
+    assert "2 data disk(s) are added after Windows is installed" in outcome.output
+
+
+async def test_hardware_stage_sets_only_cpu_and_memory() -> None:
+    vmware = SimpleNamespace(configure_hardware=AsyncMock())
+
+    await stage_configure_hardware(context(vmware))
+
+    assert vmware.configure_hardware.await_args.kwargs == {"cpu": 4, "memory_mb": 16384}
+
+
+async def test_pipeline_stops_after_create_failure_before_guest_operations() -> None:
+    from app.workers.pipeline import ProvisioningPipeline
+
+    create = SimpleNamespace(stage_key="create_vm", status=StepStatus.PENDING)
+    tools = SimpleNamespace(stage_key="wait_for_tools", status=StepStatus.PENDING)
+    job = SimpleNamespace(cancel_requested=False, steps=[create, tools])
+    ctx = SimpleNamespace(
+        db=SimpleNamespace(refresh=AsyncMock()),
+        job=job,
+        steps_by_key={"create_vm": create, "wait_for_tools": tools},
+    )
+
+    class RecordingPipeline(ProvisioningPipeline):
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+
+        async def _run_stage(self, _ctx, stage, step) -> None:
+            self.executed.append(stage.key)
+            if stage.key == "create_vm":
+                step.status = StepStatus.FAILED
+
+        async def _finalize_success(self, _ctx) -> None:  # pragma: no cover
+            raise AssertionError("a failed creation must not finalize")
+
+    pipeline = RecordingPipeline()
+    await pipeline.execute(ctx)
+
+    assert pipeline.executed == ["create_vm"]
+    assert tools.status == StepStatus.PENDING
+
+
+@pytest.mark.parametrize(
+    ("stage_key", "screenshot"),
+    [("wait_for_guest_os", True), ("power_on", True), ("configure_guest_network", False)],
+)
+async def test_failed_console_stage_keeps_a_console_screenshot(
+    monkeypatch: pytest.MonkeyPatch, stage_key: str, screenshot: bool
 ) -> None:
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-01")),
+    from app.workers import pipeline as pipeline_module
+    from app.workers.pipeline import ProvisioningPipeline
+    from app.workers.state_machine import STAGES_BY_KEY
+
+    monkeypatch.setattr(pipeline_module, "release_unattended_media", AsyncMock(return_value=False))
+    monkeypatch.setattr(pipeline_module, "notify_requester", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline_module, "AuditRecorder", lambda _db: SimpleNamespace(record=AsyncMock()))
+    create = SimpleNamespace(stage_key="create_vm", status=StepStatus.SUCCEEDED, artifacts={"vm_id": "vm-101"})
+    step = SimpleNamespace(stage_key=stage_key, status=StepStatus.RUNNING, attempt=1, artifacts={},
+                           error_technical=None, retryable=True)
+    vmware = SimpleNamespace(capture_screenshot=AsyncMock(return_value="[ds] SERVER/SERVER-1.png"))
+    ctx = context(vmware)
+    ctx.steps_by_key = {"create_vm": create, stage_key: step}
+    ctx.db = SimpleNamespace(commit=AsyncMock())
+    ctx.actor_username = "operator"
+    ctx.job = SimpleNamespace(
+        steps=[create, step], status=JobStatus.RUNNING, started_at=None, datacenter_name="DC01",
+        vm_name="SERVER-PROD-042",
+        infrastructure_status="READY", guest_os_status="INSTALLATION_IN_PROGRESS",
+        vmware_tools_status="UNKNOWN", guest_provisioning_status="WAITING_FOR_OS",
     )
-    probes = [
-        _setup_state(name="TEMPLATE-01"),  # finished Setup, template identity
-        _started(),
-        _setup_state(setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE"),
-        _setup_state(),  # finished again, now with the requested name
-    ]
-    ctx = template_setup_context(vmware, probes)
+    failure = InfraOperationError("Windows did not finish", reason="timeout", recommended_action="look",
+                                  technical_detail="waited")
+    publisher = SimpleNamespace(publish_stage=AsyncMock())
 
-    outcome = await stage_wait_for_guest_os(ctx)
-
-    assert outcome.status == "SUCCEEDED"
-    assert outcome.artifacts["windows_setup"]["generalized_by_infraops"] is True
-    upload = ctx.guest_ops.upload_file.await_args
-    answer_path, answer = upload.args[4], upload.args[3].decode("utf-8")
-    assert answer_path.startswith("C:\Windows\Temp\infraops-unattend-") and answer_path.endswith(".xml")
-    assert "<ComputerName>SERVER-PROD-042</ComputerName>" in answer
-    start_script = ctx.guest_ops.run_powershell.await_args_list[1].args[3]
-    # Sysprep gets the answer file explicitly; Windows need not discover any media.
-    for flag in ("'/generalize'", "'/oobe'", "'/reboot'", "'/unattend:'"):
-        assert flag in start_script
-    assert f"$answer = '{answer_path}'" in start_script
-
-
-@pytest.mark.asyncio
-async def test_sysprep_that_exits_without_restarting_reports_its_error_log(fast_setup_polling) -> None:
-    import asyncio
-
-    from app.workers.stages import wait_for_windows_setup
-
-    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-01")))
-    error_log = CommandResult(
-        exit_code=0,
-        stdout="Error SYSPRP Package Contoso.App was installed for a user, but not provisioned.",
-        stderr="",
-        duration_seconds=0.1,
+    await ProvisioningPipeline(publisher)._handle_failure(
+        ctx, STAGES_BY_KEY[stage_key], step, failure, None, None
     )
-    probes = [_setup_state(name="TEMPLATE-01"), _started(), _setup_state(name="TEMPLATE-01"), error_log]
-    ctx = template_setup_context(vmware, probes)
 
-    with pytest.raises(InfraOperationError, match="Sysprep could not generalize") as caught:
-        await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 60)
-
-    assert "installed for a user, but not provisioned" in caught.value.technical_detail
-
-
-@pytest.mark.asyncio
-async def test_sealed_package_stuck_at_oobe_is_restarted_with_the_answer_file(fast_setup_polling) -> None:
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(return_value=_tools_running("WIN-P80372UTDOL")),
-    )
-    at_oobe = _setup_state(
-        setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE", name="WIN-P80372UTDOL"
-    )
-    probes = [
-        at_oobe,
-        _started(),
-        _setup_state(setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE"),
-        _setup_state(),
-    ]
-    ctx = template_setup_context(vmware, probes)
-
-    outcome = await stage_wait_for_guest_os(ctx)
-
-    assert outcome.status == "SUCCEEDED"
-    assert outcome.artifacts["windows_setup"]["generalized_by_infraops"] is True
-    ctx.guest_ops.upload_file.assert_awaited_once()
+    assert ctx.job.status == JobStatus.PARTIALLY_COMPLETED  # the VM exists; nothing waits for a person
+    assert step.status == StepStatus.FAILED
+    if screenshot:
+        assert step.artifacts["console_screenshot"] == "[ds] SERVER/SERVER-1.png"
+        assert "Console screenshot at failure: [ds] SERVER/SERVER-1.png" in step.error_technical
+    else:
+        vmware.capture_screenshot.assert_not_awaited()
+        assert "console_screenshot" not in step.artifacts
 
 
-@pytest.mark.asyncio
-async def test_package_already_personalized_is_not_generalized_again(fast_setup_polling) -> None:
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
-    )
-    ctx = template_setup_context(vmware, [_setup_state()])
-
-    outcome = await stage_wait_for_guest_os(ctx)
-
-    assert outcome.artifacts["windows_setup"]["generalized_by_infraops"] is False
-    ctx.guest_ops.upload_file.assert_not_awaited()
+# ── Media cleanup ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_mock_guest_completes_an_infraops_sysprep(fast_setup_polling) -> None:
-    from app.services.guest.mock import MockGuestOperations, mock_guest_state, reset_mock_guests
-
-    reset_mock_guests()
-    mock_guest_state("SERVER-PROD-042").hostname = "TEMPLATE-01"
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(),
-        get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-01")),
-    )
-    ctx = template_setup_context(vmware, [])
-    ctx.target = SimpleNamespace(id="mock-vcenter")
-    ctx.guest_ops = MockGuestOperations()
-
-    outcome = await stage_wait_for_guest_os(ctx)
-
-    assert outcome.artifacts["windows_setup"] == {
-        "image_state": "IMAGE_STATE_COMPLETE",
-        "computer_name": "SERVER-PROD-042",
-        "generalized_by_infraops": True,
+def cleanup_context(vmware, scrub_exit: int = 0) -> SimpleNamespace:
+    ctx = context(vmware)
+    ctx.steps_by_key = {
+        "prepare_unattended_install": SimpleNamespace(
+            artifacts={"datastore_path": "[ds] infraops-unattend/infraops-job.iso"}
+        )
     }
-    reset_mock_guests()
+    ctx.guest_ops = SimpleNamespace(
+        run_powershell=AsyncMock(
+            return_value=CommandResult(exit_code=scrub_exit, stdout="ANSWER-FILE-SCRUBBED", stderr="",
+                                       duration_seconds=0.1)
+        )
+    )
+    return ctx
+
+
+async def test_cleanup_removes_answer_media_scrubs_the_guest_and_disconnects_the_isos() -> None:
+    vmware = SimpleNamespace(
+        remove_answer_media=AsyncMock(),
+        detach_installation_media=AsyncMock(
+            return_value=["[PROD-SAN-01] ISO/Windows Server 2025.iso", "[] /vmimages/tools-isoimages/windows.iso"]
+        ),
+    )
+    ctx = cleanup_context(vmware)
+
+    outcome = await stage_cleanup_unattended_media(ctx)
+
+    assert outcome.status == "SUCCEEDED"
+    assert vmware.remove_answer_media.await_args.kwargs["datastore_path"] == "[ds] infraops-unattend/infraops-job.iso"
+    assert ctx.steps_by_key["prepare_unattended_install"].artifacts["media_removed"] is True
+    script = ctx.guest_ops.run_powershell.await_args.args[3]
+    assert "DefaultPassword" in script and "AutoAdminLogon" in script and "Panther" in script
+    vmware.detach_installation_media.assert_awaited_once_with(ctx.target, "vm-101")
+    assert "boot order set to disk only" in outcome.output
+
+
+async def test_iso_that_cannot_be_disconnected_is_a_warning_not_a_failure() -> None:
+    vmware = SimpleNamespace(
+        remove_answer_media=AsyncMock(),
+        detach_installation_media=AsyncMock(
+            side_effect=InfraOperationError("CD-ROM locked", reason="busy", recommended_action="n/a")
+        ),
+    )
+
+    outcome = await stage_cleanup_unattended_media(cleanup_context(vmware))
+
+    assert outcome.status == "WARNING"
+    assert "could not be disconnected" in outcome.output
+
+
+# ── Data disks ───────────────────────────────────────────────────────────────
+
+
+async def test_vm_without_data_disks_skips_both_disk_stages() -> None:
+    vmware = SimpleNamespace(add_data_disks=AsyncMock())
+    ctx = context(vmware, with_disks(100))
+    ctx.guest_ops = SimpleNamespace(run_powershell=AsyncMock())
+
+    assert (await stage_add_data_disks(ctx)).status == "SKIPPED"
+    assert (await stage_initialize_data_disks(ctx)).status == "SKIPPED"
+    vmware.add_data_disks.assert_not_awaited()
+    ctx.guest_ops.run_powershell.assert_not_awaited()
+
+
+async def test_data_disks_are_hot_added_after_installation() -> None:
+    vmware = SimpleNamespace(add_data_disks=AsyncMock(return_value=2))
+    ctx = context(vmware, with_disks(100, 200, 50))
+
+    outcome = await stage_add_data_disks(ctx)
+
+    disks = vmware.add_data_disks.await_args.args[2]
+    assert [disk.size_gb for disk in disks] == [200, 50]
+    assert outcome.artifacts == {"data_disks": [200, 50]}
+
+
+def _volumes(*sizes: int, file_system: str = "NTFS") -> CommandResult:
+    payload = [
+        {"Number": index, "SizeGB": size, "DriveLetter": chr(ord("D") + index), "Label": f"Data{index}",
+         "FileSystem": file_system}
+        for index, size in enumerate(sizes, start=1)
+    ]
+    return CommandResult(exit_code=0, stdout=json.dumps(payload), stderr="", duration_seconds=0.1)
+
+
+async def test_data_disks_are_formatted_once_windows_detects_them(fast_setup_polling) -> None:
+    not_yet = CommandResult(exit_code=DATA_DISKS_NOT_VISIBLE_EXIT, stdout="FOUND:1", stderr="", duration_seconds=0.1)
+    ctx = context(SimpleNamespace(), with_disks(100, 200, 50))
+    ctx.guest_ops = SimpleNamespace(run_powershell=AsyncMock(side_effect=[not_yet, _volumes(200, 50)]))
+
+    outcome = await stage_initialize_data_disks(ctx)
+
+    script = ctx.guest_ops.run_powershell.await_args.args[3]
+    assert "Initialize-Disk" in script and "IsOffline" in script and "IsReadOnly" in script
+    assert "Format-Volume" in script
+    assert [volume["size_gb"] for volume in outcome.artifacts["volumes"]] == [200, 50]
+    assert "Disk 1: 200 GB NTFS E:" in outcome.output
+
+
+async def test_disks_windows_never_detects_fail_the_stage(fast_setup_polling) -> None:
+    not_yet = CommandResult(exit_code=DATA_DISKS_NOT_VISIBLE_EXIT, stdout="FOUND:0", stderr="", duration_seconds=0.1)
+    ctx = context(SimpleNamespace(), with_disks(100, 200))
+    ctx.guest_ops = SimpleNamespace(run_powershell=AsyncMock(return_value=not_yet))
+
+    with pytest.raises(InfraOperationError, match="did not detect every hot-added data disk") as caught:
+        await stage_initialize_data_disks(ctx)
+
+    assert caught.value.retryable is True
+
+
+async def test_unexpected_disk_sizes_fail_the_stage(fast_setup_polling) -> None:
+    ctx = context(SimpleNamespace(), with_disks(100, 200))
+    ctx.guest_ops = SimpleNamespace(run_powershell=AsyncMock(return_value=_volumes(150)))
+
+    with pytest.raises(InfraOperationError, match="do not match the request"):
+        await stage_initialize_data_disks(ctx)
+
+
+# ── Network re-check ─────────────────────────────────────────────────────────
+
+
+async def test_static_address_taken_after_submission_blocks_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.schemas.provisioning import ConflictProviderStatus, ProviderResult
+    from app.services.network import conflict
+    from app.workers.stages import assert_static_address_unclaimed
+
+    class Replies(conflict.IcmpPingProvider):
+        async def check(self, address, prefix):
+            return ProviderResult(provider="ICMP", status=ConflictProviderStatus.CONFLICT_DETECTED,
+                                  detail=f"A device responded to ICMP echo at {address}.")
+
+    monkeypatch.setattr(conflict, "IcmpPingProvider", Replies)
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOn", ip_addresses=[])),
+        get_used_ips=AsyncMock(return_value={"10.20.30.45": "SERVER-PROD-042"}),
+    )
+    ctx = context(vmware)
+
+    with pytest.raises(InfraOperationError, match="already in use"):
+        await assert_static_address_unclaimed(ctx, "10.20.30.45", 24)
+
+    # The VM's own address (retry) is never reported as a conflict.
+    vmware.get_vm_info.return_value = PowerStateInfo(power_state="poweredOn", ip_addresses=["10.20.30.45"])
+    await assert_static_address_unclaimed(ctx, "10.20.30.45", 24)
+
+
+@pytest.mark.parametrize("scrub_exit", [1, None])
+async def test_answer_file_left_in_the_guest_stops_the_job(scrub_exit) -> None:
+    vmware = SimpleNamespace(remove_answer_media=AsyncMock(), detach_installation_media=AsyncMock())
+    ctx = cleanup_context(vmware, scrub_exit=scrub_exit or 0)
+    if scrub_exit is None:
+        ctx.guest_ops.run_powershell.side_effect = InfraOperationError(
+            "Guest operations unavailable", reason="Tools restarting", recommended_action="n/a"
+        )
+
+    with pytest.raises(InfraOperationError, match="cached answer file could not be removed") as caught:
+        await stage_cleanup_unattended_media(ctx)
+
+    assert caught.value.retryable is True
+    vmware.detach_installation_media.assert_not_awaited()

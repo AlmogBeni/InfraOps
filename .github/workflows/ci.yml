@@ -68,6 +68,8 @@ jobs:
       - name: Database integration tests (runtime role)
         env:
           INFRAOPS_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+          # Owner role: the migration test creates and drops scratch databases.
+          INFRAOPS_MIGRATION_TEST_URL: postgresql+asyncpg://infraops:infraops-ci@localhost:5432/postgres
         run: pytest tests/integration
 
   frontend:

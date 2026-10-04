@@ -1,8 +1,9 @@
 """Integration tests against the fully-mocked infrastructure providers.
 
 These exercise the same service interfaces the production adapters implement —
-discovery, cloning, guest automation, certificate deployment and application
-installation — without requiring vCenter or Windows.
+discovery, VM creation and unattended installation, guest automation,
+certificate deployment and application installation — without requiring
+vCenter or Windows.
 """
 
 from __future__ import annotations
@@ -14,13 +15,39 @@ import pytest
 from app.schemas.provisioning import AdapterType, DiskProvisioning, DiskSpec
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
 from app.services.guest.mock import MockGuestOperations, mock_guest_state, reset_mock_guests
-from app.services.vmware.base import BlankVmSpec, CloneSpec
+from app.services.vmware.base import VmCreateSpec
 from app.services.vmware.mock import (
     DEFAULT_MOCK_VCENTER_ID,
     MockVMwareService,
     get_mock_inventory,
     reset_mock_estates,
 )
+from app.services.windows_media import (
+    ISO_HEADER_BYTES,
+    WindowsMediaKind,
+    classify_windows_media,
+    iso_volume_label,
+)
+
+
+def create_spec(name: str = "TEST-VM-001", *, iso_id: str = "iso-corp-windows-2025", os_disk_gb: int = 100,
+                job_id: str | None = None) -> VmCreateSpec:
+    return VmCreateSpec(
+        vm_name=name, datacenter_id="datacenter-21", cluster_id="domain-c7", host_id="host-11",
+        iso_id=iso_id, os_disk=DiskSpec(size_gb=os_disk_gb, provisioning=DiskProvisioning.THIN),
+        cpu=4, memory_mb=16384, job_id=job_id,
+    )
+
+
+async def installed_vm(service: MockVMwareService, target, name: str = "TEST-VM-001"):
+    ref = await service.create_vm(target, create_spec(name))
+    await service.attach_answer_media(
+        target, ref.id, datacenter_id="datacenter-21", datastore_id=None,
+        file_name=f"infraops-{name}.iso", content=b"answer",
+    )
+    await service.power_on(target, ref.id)
+    await service.wait_for_tools(target, ref.id, timeout_seconds=15)
+    return ref
 
 
 @pytest.fixture(autouse=True)
@@ -72,17 +99,6 @@ class TestDiscovery:
         assert by_name["esx03.company.local"].available_for_provisioning is False
         assert by_name["esx01.company.local"].available_for_provisioning is True
 
-    async def test_templates_are_ovf_ova_only_and_scoped_to_datacenter(self, target):
-        service = MockVMwareService()
-        primary = await service.get_templates(target, "datacenter-21")
-        lab = await service.get_templates(target, "datacenter-22")
-        assert {template.id for template in primary} == {
-            "ovf-corp-windows-2022",
-            "ova-corp-windows-2025",
-        }
-        assert {template.id for template in lab} == {"ovf-lab-integration"}
-        assert {template.type for template in primary + lab} == {"OVF", "OVA"}
-
     async def test_networks_are_strictly_scoped_to_datacenter(self, target):
         service = MockVMwareService()
         primary = await service.get_networks(target, "datacenter-21")
@@ -99,9 +115,27 @@ class TestDiscovery:
         service = MockVMwareService()
         primary = await service.get_isos(target, "datacenter-21")
         lab = await service.get_isos(target, "datacenter-22")
-        assert {image.id for image in primary} == {"iso-corp-windows-2025"}
-        assert {image.id for image in lab} == {"iso-lab-ubuntu-2404"}
-        assert primary[0].datastore_id == "datastore-41"
+        assert {image.id for image in primary} == {
+            "iso-corp-windows-2025", "iso-corp-windows-2022", "iso-corp-windows-11",
+        }
+        assert {image.id for image in lab} == {"iso-lab-windows-2022", "iso-lab-ubuntu-2404"}
+
+    async def test_iso_volume_labels_identify_windows_server_media(self, target):
+        service = MockVMwareService()
+        kinds = {}
+        for datacenter in ("datacenter-21", "datacenter-22"):
+            for image in await service.get_isos(target, datacenter):
+                header = await service.read_datastore_file(
+                    target, datacenter, image.path, max_bytes=ISO_HEADER_BYTES
+                )
+                kinds[image.id] = classify_windows_media(iso_volume_label(header))
+        assert kinds == {
+            "iso-corp-windows-2025": WindowsMediaKind.SERVER,
+            "iso-corp-windows-2022": WindowsMediaKind.SERVER,
+            "iso-corp-windows-11": WindowsMediaKind.CLIENT,
+            "iso-lab-windows-2022": WindowsMediaKind.SERVER,
+            "iso-lab-ubuntu-2404": WindowsMediaKind.UNKNOWN,
+        }
 
     async def test_duplicate_names_detected(self, target):
         service = MockVMwareService()
@@ -111,112 +145,77 @@ class TestDiscovery:
 
 @pytest.mark.asyncio
 class TestLifecycle:
-    async def make_spec(self, name="TEST-VM-001"):
-        return CloneSpec(
-            template_id="ova-corp-windows-2025", vm_name=name,
-            datacenter_id="datacenter-21", cluster_id="domain-c7",
-            host_id="host-11", cpu=4, memory_mb=16384,
-            disks=(DiskSpec(size_gb=100, provisioning=DiskProvisioning.THIN),),
-            network_id="dvportgroup-51", adapter_type=AdapterType.VMXNET3,
-        )
-
-    async def test_clone_registers_vm_and_consumes_capacity(self, target):
+    async def test_create_registers_vm_with_only_its_os_disk(self, target):
         service = MockVMwareService()
         before = {d.id: d.free_gb for d in await service.get_datastores(target, "domain-c7")}
-        ref = await service.clone_from_template(target, await self.make_spec())
+        ref = await service.create_vm(target, create_spec(os_disk_gb=100))
         after = {d.id: d.free_gb for d in await service.get_datastores(target, "domain-c7")}
         consumed = sum(b - a for b, a in zip(before.values(), after.values(), strict=False))
         assert consumed == 100
-        assert await service.vm_exists(target, ref.name)
+        vm = get_mock_inventory(target.id).find_vm_by_name(ref.name)
+        assert vm.disks_gb == [100]
+        assert vm.installation_media == [
+            "[PROD-SAN-01] ISO/Windows Server 2025.iso",
+            "[] /vmimages/tools-isoimages/windows.iso",
+        ]
+        info = await service.get_vm_info(target, ref.name)
+        assert info.power_state == "poweredOff" and info.tools_status is None
 
-    async def test_duplicate_clone_rejected(self, target):
-        service = MockVMwareService()
-        spec = await self.make_spec("APP-PROD-004")
+    async def test_duplicate_create_rejected(self, target):
         from app.core.errors import InfraOperationError
 
+        service = MockVMwareService()
         with pytest.raises(InfraOperationError) as excinfo:
-            await service.clone_from_template(target, spec)
+            await service.create_vm(target, create_spec("APP-PROD-004"))
         assert "already exists" in excinfo.value.human_message
 
-    async def test_create_blank_vm_without_template(self, target):
-        service = MockVMwareService()
-        spec = BlankVmSpec(
-            vm_name="BLANK-VM-001",
-            datacenter_id="datacenter-21",
-            cluster_id="domain-c7",
-            host_id="host-11",
-            cpu=2,
-            memory_mb=8192,
-            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
-        )
-        ref = await service.create_blank_vm(target, spec)
-        info = await service.get_vm_info(target, ref.name)
-        assert info is not None
-        assert info.power_state == "poweredOff"
-        assert info.tools_status is None
-
-    async def test_create_blank_vm_mounts_selected_datacenter_iso(self, target):
-        service = MockVMwareService()
-        spec = BlankVmSpec(
-            vm_name="BLANK-VM-ISO-001",
-            datacenter_id="datacenter-21",
-            cluster_id="domain-c7",
-            host_id="host-11",
-            cpu=2,
-            memory_mb=8192,
-            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
-            iso_id="iso-corp-windows-2025",
-        )
-        ref = await service.create_blank_vm(target, spec)
-        vm = get_mock_inventory(target.id).find_vm_by_name(ref.name)
-        assert vm is not None
-        assert vm.iso_id == "iso-corp-windows-2025"
-
-    async def test_create_blank_vm_rejects_iso_from_another_datacenter(self, target):
+    async def test_create_rejects_iso_from_another_datacenter(self, target):
         from app.core.errors import InfraOperationError
 
         service = MockVMwareService()
-        spec = BlankVmSpec(
-            vm_name="BLANK-VM-ISO-002",
-            datacenter_id="datacenter-21",
-            cluster_id="domain-c7",
-            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
-            iso_id="iso-lab-ubuntu-2404",
-        )
         with pytest.raises(InfraOperationError, match="selected ISO"):
-            await service.create_blank_vm(target, spec)
+            await service.create_vm(target, create_spec(iso_id="iso-lab-ubuntu-2404"))
 
     async def test_network_attachment_rejects_cross_datacenter_selection(self, target):
         from app.core.errors import InfraOperationError
 
         service = MockVMwareService()
-        spec = BlankVmSpec(
-            vm_name="BLANK-VM-NET-001",
-            datacenter_id="datacenter-21",
-            cluster_id="domain-c7",
-            disks=(DiskSpec(size_gb=40, provisioning=DiskProvisioning.THIN),),
-        )
-        ref = await service.create_blank_vm(target, spec)
+        ref = await service.create_vm(target, create_spec("NET-VM-001"))
         with pytest.raises(InfraOperationError, match="another datacenter"):
-            await service.attach_network(
-                target,
-                ref.id,
-                "network-54",
-                AdapterType.VMXNET3,
-                "datacenter-21",
-            )
+            await service.attach_network(target, ref.id, "network-54", AdapterType.VMXNET3, "datacenter-21")
 
-    async def test_tools_become_ready_after_power_on(self, target):
+    async def test_windows_installs_only_with_answer_media(self, target):
+        from app.core.errors import InfraOperationError
+
         service = MockVMwareService()
-        ref = await service.clone_from_template(target, await self.make_spec())
+        ref = await service.create_vm(target, create_spec())
         await service.power_on(target, ref.id)
-        await service.wait_for_tools(target, ref.id, timeout_seconds=15)
-        info = await service.get_vm_info(target, ref.name)
-        assert info.tools_status == "toolsOk"
+        with pytest.raises(InfraOperationError, match="did not become ready"):
+            await service.wait_for_tools(target, ref.id, timeout_seconds=0.5)
+
+        installed = await installed_vm(service, target, "TEST-VM-002")
+        info = await service.get_vm_info(target, installed.name)
+        assert info.tools_status == "toolsOk" and info.guest_family == "windowsGuest"
+
+    async def test_installation_media_is_released_and_data_disks_hot_added(self, target):
+        service = MockVMwareService()
+        ref = await installed_vm(service, target)
+        vm = get_mock_inventory(target.id).find_vm_by_name(ref.name)
+        (answer,) = vm.answer_media
+        await service.remove_answer_media(target, ref.id, datacenter_id="datacenter-21", datastore_path=answer)
+        assert vm.answer_media == set()
+        assert len(await service.detach_installation_media(target, ref.id)) == 2
+        assert vm.installation_media == []
+
+        disks = [DiskSpec(size_gb=200), DiskSpec(size_gb=50)]
+        assert await service.add_data_disks(target, ref.id, disks) == 2
+        assert await service.add_data_disks(target, ref.id, disks) == 0  # retry adds nothing
+        assert vm.disks_gb == [100, 200, 50]
+        assert (await service.capture_screenshot(target, ref.id)).endswith(".png")
 
     async def test_resolve_vm_id_roundtrip(self, target):
         service = MockVMwareService()
-        ref = await service.clone_from_template(target, await self.make_spec())
+        ref = await service.create_vm(target, create_spec())
         assert await service.resolve_vm_id(target, ref.name) == ref.id
         assert await service.resolve_vm_id(target, "GHOST-VM") is None
 
@@ -227,17 +226,7 @@ class TestGuestAutomation:
         from app.workers.stages import build_static_ip_script
 
         service = MockVMwareService()
-        ref = await service.clone_from_template(
-            target,
-            CloneSpec(
-                template_id="ova-corp-windows-2025",
-                vm_name="NET-VM-001",
-                datacenter_id="datacenter-21",
-                cluster_id="domain-c7",
-            ),
-        )
-        await service.power_on(target, ref.id)
-        await service.wait_for_tools(target, ref.id, timeout_seconds=15)
+        await installed_vm(service, target, "NET-VM-001")
 
         guest = MockGuestOperations()
         script = build_static_ip_script("10.20.30.45", 24, "10.20.30.1", ["10.20.1.10"])
@@ -304,6 +293,20 @@ class TestGuestAutomation:
         records = await deployer.deploy(target, "CERT-VM-002", credentials, [expired])
         assert records[0].action == "FAILED"
         assert "expired" in records[0].detail.lower()
+
+    async def test_data_disks_are_reported_as_formatted_volumes(self, target, credentials):
+        from app.workers.stages import build_initialize_data_disks_script, parse_data_volumes
+
+        service = MockVMwareService()
+        ref = await installed_vm(service, target, "DISK-VM-001")
+        await service.add_data_disks(target, ref.id, [DiskSpec(size_gb=200), DiskSpec(size_gb=50)])
+
+        result = await MockGuestOperations().run_powershell(
+            target, "DISK-VM-001", credentials, build_initialize_data_disks_script(2), 60
+        )
+
+        volumes = parse_data_volumes(result.stdout)
+        assert [(volume.size_gb, volume.file_system) for volume in volumes] == [(200, "NTFS"), (50, "NTFS")]
 
     async def test_failure_hook_produces_failed_result(self, target, credentials):
         guest = MockGuestOperations()

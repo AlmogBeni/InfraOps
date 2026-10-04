@@ -26,7 +26,6 @@ import type {
   RoleOut,
   SessionPolicy,
   SecretReferenceOut,
-  TemplateOut,
   TokenResponse,
   UserOut,
   VCenterConnectionAdminOut,
@@ -63,6 +62,8 @@ interface RequestOptions {
   body?: unknown
   retryOn401?: boolean
   headers?: Record<string, string>
+  /** 'blob' for binary responses such as images. */
+  responseType?: 'json' | 'blob'
 }
 
 async function parseError(response: Response): Promise<ApiError> {
@@ -118,6 +119,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   if (!response.ok) throw await parseError(response)
   if (response.status === 204) return undefined as T
+  if (options.responseType === 'blob') return (await response.blob()) as T
   return (await response.json()) as T
 }
 
@@ -205,11 +207,6 @@ export const api = {
       `/infrastructure/networks?vcenter_id=${encodeURIComponent(vcenterId)}` +
         `&datacenter_id=${encodeURIComponent(datacenterId)}`,
     ),
-  templates: (vcenterId: string, datacenterId: string) =>
-    request<TemplateOut[]>(
-      `/infrastructure/templates?vcenter_id=${encodeURIComponent(vcenterId)}` +
-        `&datacenter_id=${encodeURIComponent(datacenterId)}`,
-    ),
   isos: (vcenterId: string, datacenterId: string) =>
     request<IsoImageOut[]>(
       `/infrastructure/isos?vcenter_id=${encodeURIComponent(vcenterId)}` +
@@ -244,6 +241,12 @@ export const api = {
     return request<JobListResponse>(`/provisioning/jobs${suffix}`)
   },
   job: (id: string) => request<JobDetailOut>(`/provisioning/jobs/${id}`),
+  /** Administrators only: the VM console when an installation stage failed. */
+  consoleScreenshot: (jobId: string, stageKey: string) =>
+    request<Blob>(
+      `/provisioning/jobs/${encodeURIComponent(jobId)}/steps/${encodeURIComponent(stageKey)}/console-screenshot`,
+      { responseType: 'blob' },
+    ),
   retryJob: (id: string, stageKey?: string | null) =>
     request<JobOut>(`/provisioning/jobs/${id}/retry`, {
       method: 'POST',

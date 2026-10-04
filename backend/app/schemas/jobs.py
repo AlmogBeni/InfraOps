@@ -45,7 +45,6 @@ class JobOut(BaseModel):
     guest_os_status: str
     vmware_tools_status: str
     guest_provisioning_status: str
-    action_required: str | None = None
     error_summary: str | None = None
     cancel_requested: bool = False
     queued_at: dt.datetime | None = None
@@ -73,7 +72,6 @@ def job_out(
         guest_os_status=getattr(job, "guest_os_status", "UNKNOWN"),
         vmware_tools_status=getattr(job, "vmware_tools_status", "UNKNOWN"),
         guest_provisioning_status=getattr(job, "guest_provisioning_status", "PENDING"),
-        action_required=getattr(job, "action_required", None),
         error_summary=job.error_summary,
         cancel_requested=job.cancel_requested,
         queued_at=job.queued_at,
@@ -86,6 +84,9 @@ def job_out(
 class JobDetailOut(JobOut):
     steps: list[JobStepOut] = []
     request_payload: dict | None = None
+    # True when the job was created by a workflow that no longer exists: the
+    # stored request is returned as recorded and the job can only be viewed.
+    legacy_request: bool = False
 
 
 class JobListResponse(BaseModel):

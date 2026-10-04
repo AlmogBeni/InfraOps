@@ -22,7 +22,7 @@ class RecordingSecrets:
 async def test_domain_join_does_not_replace_local_guest_login() -> None:
     request = make_request(
         guest=GuestSpec(
-            template_id="template-1",
+            iso_id="iso-corp-windows-2025",
             domain_join=DomainJoinSpec(
                 domain="ad.example.test",
                 credential_secret_ref="domain-join",

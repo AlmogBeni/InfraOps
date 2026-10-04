@@ -59,15 +59,15 @@ Nothing is ever interpreted by `cmd.exe` (`app/services/guest/scripts.py`):
 
 | Stage | Mechanism |
 |---|---|
-| Windows installation | `Autounattend.xml` on a temporary virtual floppy configures image index, locale, keyboard, time zone, computer name and local administrator; the selected Windows ISO remains the only datastore-backed CD-ROM |
-| First boot of a package | An answer file (specialize + oobeSystem only: computer name, time zone, locale, keyboard, local administrator password, every OOBE page skipped) is uploaded to `C:\Windows\Temp` and passed to `sysprep /generalize /oobe /reboot /unattend:` started detached; InfraOps then waits until `HKLM\SYSTEM\Setup` reports Setup/OOBE finished with the requested name. Sealed packages also get it as first-boot floppy media (see [vm-deployment-lifecycle.md](vm-deployment-lifecycle.md#windows-first-boot)) |
+| Windows installation | `Autounattend.xml` on a temporary answer-media CD: EULA, disk 0 layout, edition index, optional product key, locale, keyboard, time zone, computer name, local administrator, every OOBE page hidden, one AutoLogon that installs VMware Tools (see [vm-deployment-lifecycle.md](vm-deployment-lifecycle.md#windows-setup-never-waits-for-input)). InfraOps waits until `HKLM\SYSTEM\Setup` reports Setup and OOBE finished |
+| Data disks | Hot-added after installation; one script clears the offline/read-only state Windows' SAN policy can leave, initializes each raw disk as GPT and creates one NTFS volume (`Data1`, `Data2`, …) with a drive letter. Already formatted disks are left untouched, so a retry never reformats; sizes are checked against the request |
 | Static IP / gateway / DNS | Right before applying: ICMP + vCenter-inventory re-check that the address is still free (the VM's own address is ignored on retry). Then an idempotent PowerShell script: DHCP disabled, existing IPv4 addresses and default route removed, `New-NetIPAddress`, `Set-DnsClientServerAddress` (adapter auto-detected, `ErrorActionPreference=Stop`) |
 | DHCP mode | `Set-NetIPInterface -Dhcp Enabled` + DNS reset |
 | Gateway/DNS validation | `Test-Connection` to gateway, `Resolve-DnsName` via first DNS server |
 | Hostname | `$env:COMPUTERNAME` probe then `Rename-Computer -Force` |
 | Domain join | `Add-Computer` with a PSCredential whose password is read from a self-deleting secret file (never in the script text); optional OU path (quoted literal, so values such as `OU=R&D` are safe); `-NewName` only when Windows does not already have the requested name (Add-Computer skips the join when it equals the current name) |
 | Reboot | `shutdown.exe /r /t 10`, followed by availability probes (`hostname.exe`) that tolerate Tools being unavailable while the guest restarts |
-| Answer-file cleanup | blank+ISO and Windows packages: after the floppy is removed, cached copies under `C:\Windows\Panther` / `Sysprep`, the uploaded `C:\Windows\Temp\infraops-unattend-*.xml` and AutoLogon residue are deleted |
+| Answer-file cleanup | After the answer CD is removed, cached copies under `C:\Windows\Panther` / `Sysprep` and the AutoLogon values (`DefaultPassword`, `AutoLogonCount`, `AutoAdminLogon`) are deleted; the stage fails rather than continue if this cannot run |
 | Certificates | see below |
 | Applications | detection probes + controlled installers |
 

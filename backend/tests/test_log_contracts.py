@@ -19,7 +19,7 @@ from app.repositories.logs import (
     message_for_step,
     severity_for_status,
 )
-from app.schemas.provisioning import VmSourceType
+from app.schemas.provisioning import IpMode
 from app.services.vmware.base import PowerStateInfo
 from app.workers.stages import stage_final_validation
 
@@ -28,8 +28,8 @@ def _step(status: StepStatus = StepStatus.FAILED) -> ProvisioningJobStep:
     return ProvisioningJobStep(
         id=uuid.uuid4(),
         job_id=uuid.uuid4(),
-        stage_key="clone_vm",
-        name="Deploy OVF/OVA package",
+        stage_key="create_vm",
+        name="Create virtual machine",
         sequence=4,
         status=status,
         attempt=1,
@@ -56,7 +56,6 @@ def test_log_severity_and_message_are_human_readable() -> None:
     assert message_for_step(step) == "Deployment was rejected."
     assert severity_for_status(StepStatus.CANCELLED) == "WARNING"
     assert severity_for_status(StepStatus.WARNING) == "WARNING"
-    assert severity_for_status(StepStatus.WAITING_FOR_PREREQUISITE) == "WARNING"
     assert severity_for_status(StepStatus.SKIPPED) == "DEBUG"
     assert severity_for_status(StepStatus.NOT_APPLICABLE) == "DEBUG"
 
@@ -72,7 +71,6 @@ def test_pending_future_stages_are_not_log_events() -> None:
     assert StepStatus.RUNNING in LOGGABLE_STEP_STATUSES
     assert StepStatus.SUCCEEDED in LOGGABLE_STEP_STATUSES
     assert StepStatus.WARNING in LOGGABLE_STEP_STATUSES
-    assert StepStatus.WAITING_FOR_PREREQUISITE in LOGGABLE_STEP_STATUSES
     assert StepStatus.NOT_APPLICABLE in LOGGABLE_STEP_STATUSES
 
 
@@ -86,7 +84,7 @@ def test_non_admin_log_details_exclude_internal_ids_and_artifacts() -> None:
     )
     public = details_for_step(step, job, include_technical=False)
     admin = details_for_step(step, job, include_technical=True)
-    assert public == {"stage": "clone_vm", "status": "FAILED", "attempt": 1}
+    assert public == {"stage": "create_vm", "status": "FAILED", "attempt": 1}
     assert admin["datacenter_id"] == "datacenter-21"
     assert admin["artifacts"] == {"safe": True}
     assert "technical_error" in admin
@@ -94,13 +92,13 @@ def test_non_admin_log_details_exclude_internal_ids_and_artifacts() -> None:
 
 def test_non_admin_audit_details_exclude_internal_ids_recursively() -> None:
     details = {
-        "source_type": "template",
+        "iso_name": "Windows Server 2025.iso",
         "vm_id": "vm-101",
         "artifacts": {"secret_id": "internal"},
         "nested": {"cluster_id": "domain-c7", "attempt": 2},
     }
     assert _public_details(details) == {
-        "source_type": "template",
+        "iso_name": "Windows Server 2025.iso",
         "nested": {"attempt": 2},
     }
 
@@ -110,14 +108,14 @@ def test_non_admin_audit_output_keeps_human_summary() -> None:
         id=uuid.uuid4(),
         timestamp=dt.datetime.now(dt.UTC),
         action="VM_CREATED",
-        details={"vm_id": "vm-101", "source_type": "blank"},
-        detail_text="Blank virtual machine created successfully.",
+        details={"vm_id": "vm-101", "iso_name": "Windows Server 2025.iso"},
+        detail_text="Virtual machine created successfully.",
     )
 
     output = _audit_out(event, "Production", include_technical=False)
 
-    assert output.detail_text == "Blank virtual machine created successfully."
-    assert output.details == {"source_type": "blank"}
+    assert output.detail_text == "Virtual machine created successfully."
+    assert output.details == {"iso_name": "Windows Server 2025.iso"}
 
 
 def test_audit_action_label_expands_backend_identifier() -> None:
@@ -130,28 +128,38 @@ def test_audit_search_normalizes_human_action_labels() -> None:
     assert normalized_action_term("IP conflict-check performed") == "IP_CONFLICT_CHECK_PERFORMED"
 
 
-async def test_blank_final_validation_uses_network_name_not_inventory_id() -> None:
+async def test_final_validation_reports_data_volumes_without_inventory_ids() -> None:
     ctx = SimpleNamespace(
         vmware=SimpleNamespace(
             get_vm_info=AsyncMock(
-                return_value=PowerStateInfo(power_state="poweredOff")
+                return_value=PowerStateInfo(
+                    power_state="poweredOn", tools_status="toolsOk", ip_addresses=["10.20.30.200"]
+                )
             )
         ),
         target=object(),
-        vm_name="BLANK-001",
+        vm_name="SERVER-001",
         request=SimpleNamespace(
-            source_type=VmSourceType.BLANK,
-            network=SimpleNamespace(network_id="dvportgroup-51"),
+            effective_computer_name="SERVER-001",
+            guest=SimpleNamespace(domain_join=None),
+            network=SimpleNamespace(network_id="dvportgroup-51", mode=IpMode.DHCP, ipv4=None),
         ),
         steps_by_key={
-            "validate_infrastructure": SimpleNamespace(
-                artifacts={"network_name": "VLAN100-PROD"}
+            "initialize_data_disks": SimpleNamespace(
+                artifacts={
+                    "volumes": [
+                        {"number": 1, "size_gb": 200, "drive_letter": "E", "label": "Data1",
+                         "file_system": "NTFS"},
+                    ]
+                }
             )
         },
     )
 
     outcome = await stage_final_validation(ctx)
     checklist = outcome.artifacts["checklist"]
-    network_check = next(item for item in checklist if item["group"] == "Network")
-    assert network_check["detail"] == "VLAN100-PROD"
+    storage = next(item for item in checklist if item["group"] == "Storage")
+    assert storage == {
+        "group": "Storage", "label": "200 GB data volume E: online", "status": "PASS", "detail": "Data1",
+    }
     assert "dvportgroup-51" not in str(outcome.artifacts)

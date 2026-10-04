@@ -8,7 +8,7 @@ import pytest
 
 from app.core.errors import NotFoundError
 from app.services.vmware import vsphere as vsphere_module
-from app.services.vmware.base import CloneSpec, VCenterTarget, VmRef
+from app.services.vmware.base import VCenterTarget
 from app.services.vmware.vsphere import VsphereVMwareService
 
 
@@ -229,70 +229,3 @@ async def test_cluster_discovery_rejects_a_non_datacenter_reference(
 
     with pytest.raises(NotFoundError, match="does not exist"):
         await service.get_clusters(target, "group-not-a-datacenter")
-
-
-@pytest.mark.asyncio
-async def test_ovf_placement_accepts_a_scoped_standalone_compute_resource(
-    target: VCenterTarget,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(vsphere_module.vim, "Datacenter", FakeDatacenter)
-    monkeypatch.setattr(vsphere_module.vim, "ComputeResource", FakeComputeResource)
-    monkeypatch.setattr(vsphere_module.vim, "ClusterComputeResource", FakeCluster)
-
-    standalone = FakeStandaloneComputeResource(
-        "domain-s404",
-        "edge-esx-01.example.test",
-        drs_enabled=None,
-        cpu_cores=24,
-        memory_gb=256,
-    )
-    host_folder = SimpleNamespace(childEntity=[standalone])
-    datacenter = FakeDatacenter("datacenter-404", host_folder)
-    view_manager = FakeViewManager({id(host_folder): [standalone]})
-    content = SimpleNamespace(viewManager=view_manager)
-    service_instance = SimpleNamespace(RetrieveContent=lambda: content)
-
-    class FakeContentLibrary:
-        @staticmethod
-        def is_library_item(value: str) -> bool:
-            return value.startswith("library-item:")
-
-        async def deploy_ovf_package(
-            self,
-            _target,
-            spec,
-            *,
-            resource_pool_id: str,
-        ) -> VmRef:
-            assert spec.cluster_id == standalone._moId
-            assert resource_pool_id == standalone.resourcePool._moId
-            return VmRef(id="vm-404", name=spec.vm_name)
-
-    references = {
-        datacenter._moId: datacenter,
-        standalone._moId: standalone,
-    }
-    service = object.__new__(VsphereVMwareService)
-    service._content_library = FakeContentLibrary()
-    service._find_by_moref = lambda _content, moref: references.get(moref)
-    service._find_vm_by_name = lambda _content, _name: None
-    service._find_vms_by_name = lambda _content, _name: []
-
-    async def with_session(_target, callback, **_kwargs):
-        return callback(service_instance)
-
-    service._with_session = with_session
-
-    result = await service.clone_from_template(
-        target,
-        CloneSpec(
-            template_id="library-item:edge-appliance",
-            vm_name="EDGE-VM-001",
-            datacenter_id=datacenter._moId,
-            cluster_id=standalone._moId,
-        ),
-    )
-
-    assert result == VmRef(id="vm-404", name="EDGE-VM-001")
-    assert all(view.destroyed for view in view_manager.views)

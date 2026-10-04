@@ -6,22 +6,22 @@ import { WizardProvider, useWizard } from '@/features/vm-provisioning/context'
 import { initialWizardData } from '@/features/vm-provisioning/schema'
 import { MediaStep } from '@/features/vm-provisioning/steps/MediaStep'
 import { api } from '@/lib/api'
-import type { IsoImageOut, TemplateOut } from '@/types/api'
+import type { CredentialOptionOut, IsoImageOut } from '@/types/api'
 
 const ISOS: IsoImageOut[] = [
   {
-    id: 'iso-ubuntu',
-    name: 'Ubuntu Server 24.04.iso',
+    id: 'iso-windows-2022',
+    name: 'Windows Server 2022.iso',
     datacenter_id: 'dc-production',
     datacenter_name: 'Production Datacenter',
     datastore_id: 'datastore-production',
     datastore_name: 'Production Media',
-    path: '[Production Media] iso/ubuntu-24.04.iso',
+    path: '[Production Media] iso/windows-server-2022.iso',
     size_bytes: 6_442_450_944,
     last_modified: '2026-08-30T08:00:00Z',
   },
   {
-    id: 'iso-windows',
+    id: 'iso-windows-2025',
     name: 'Windows Server 2025.iso',
     datacenter_id: 'dc-production',
     datacenter_name: 'Production Datacenter',
@@ -33,31 +33,8 @@ const ISOS: IsoImageOut[] = [
   },
 ]
 
-const PACKAGES: TemplateOut[] = [
-  {
-    id: 'pkg-firewall-ovf',
-    name: 'Branch Firewall',
-    type: 'OVF',
-    description: 'Hardened branch firewall package.',
-    datacenter_id: 'dc-production',
-    datacenter_name: 'Production Datacenter',
-    storage_name: 'Production Library',
-    location: 'Production Library / Network',
-    size_bytes: 1_073_741_824,
-    last_modified: '2026-08-30T08:00:00Z',
-  },
-  {
-    id: 'pkg-monitoring-ova',
-    name: 'Monitoring Collector',
-    type: 'OVA',
-    description: 'Monitoring and telemetry collector.',
-    datacenter_id: 'dc-production',
-    datacenter_name: 'Production Datacenter',
-    storage_name: 'Production Library',
-    location: 'Production Library / Operations',
-    size_bytes: 2_147_483_648,
-    last_modified: '2026-08-29T08:00:00Z',
-  },
+const PRODUCT_KEYS: CredentialOptionOut[] = [
+  { name: 'windows-server-2025-standard', purpose: 'windows_product_key', revision: 2, updated_at: null },
 ]
 
 function StateProbe() {
@@ -74,17 +51,13 @@ function createQueryClient() {
   })
 }
 
-function renderStep(
-  sourceType: 'blank' | 'template',
-  selected: { template_id?: string; iso_id?: string | null } = {},
-) {
+function renderStep(selected: { iso_id?: string; product_key_secret_ref?: string } = {}) {
   const draft = initialWizardData()
-  draft.source_type = sourceType
   draft.vcenter_id = 'vc-primary'
   draft.datacenter_id = 'dc-production'
-  draft.template_id = selected.template_id ?? ''
-  draft.iso_id = selected.iso_id ?? null
-  localStorage.setItem('infraops.provisioning-draft.v2', JSON.stringify(draft))
+  draft.iso_id = selected.iso_id ?? ''
+  draft.product_key_secret_ref = selected.product_key_secret_ref ?? ''
+  localStorage.setItem('infraops.provisioning-draft.v3', JSON.stringify(draft))
 
   return render(
     <QueryClientProvider client={createQueryClient()}>
@@ -98,8 +71,8 @@ function renderStep(
 
 function wizardState() {
   return JSON.parse(screen.getByTestId('wizard-state').textContent ?? '{}') as {
-    iso_id: string | null
-    template_id: string
+    iso_id: string
+    product_key_secret_ref: string
   }
 }
 
@@ -111,84 +84,66 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-describe('MediaStep datacenter-scoped resources', () => {
+describe('MediaStep Windows installation media', () => {
   beforeEach(() => {
     localStorage.clear()
-    window.history.replaceState({}, '', '/')
+    vi.spyOn(api, 'provisioningCredentials').mockResolvedValue(PRODUCT_KEYS)
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('offers hardware-only creation plus discovered datacenter ISOs', async () => {
+  it('lists only the datacenter ISOs and offers no way to skip installation media', async () => {
     const request = deferred<IsoImageOut[]>()
     const isos = vi.spyOn(api, 'isos').mockImplementation(() => request.promise)
-    const templates = vi.spyOn(api, 'templates').mockResolvedValue(PACKAGES)
 
-    renderStep('blank')
+    renderStep()
 
-    expect(screen.getByRole('radio', { name: /Create hardware without an ISO/i })).toHaveAttribute('aria-checked', 'true')
-
-    expect(screen.queryByRole('radio', { name: /No ISO/i })).not.toBeInTheDocument()
     expect(await screen.findByText('Loading ISO images')).toBeInTheDocument()
-    expect(templates).not.toHaveBeenCalled()
+    expect(screen.queryByRole('radio', { name: /without an ISO/i })).not.toBeInTheDocument()
 
     await act(async () => request.resolve(ISOS))
 
     const group = await screen.findByRole('radiogroup', { name: 'ISO images' })
-    const choices = within(group).getAllByRole('radio')
-    expect(choices).toHaveLength(ISOS.length)
-    expect(within(group).getByRole('radio', { name: /Ubuntu Server 24\.04\.iso/i })).toBeInTheDocument()
-    expect(within(group).getByRole('radio', { name: /Windows Server 2025\.iso/i })).toBeInTheDocument()
-    expect(screen.queryByText('Lab Datacenter Installer.iso')).not.toBeInTheDocument()
+    expect(within(group).getAllByRole('radio')).toHaveLength(ISOS.length)
     await waitFor(() => expect(isos).toHaveBeenCalledWith('vc-primary', 'dc-production'))
 
-    fireEvent.click(within(group).getByRole('radio', { name: /Ubuntu Server 24\.04\.iso/i }))
-    expect(wizardState().iso_id).toBe('iso-ubuntu')
+    fireEvent.click(within(group).getByRole('radio', { name: /Windows Server 2025\.iso/i }))
+    expect(wizardState().iso_id).toBe('iso-windows-2025')
   })
 
-  it('shows and selects OVF and OVA packages without querying ISO inventory', async () => {
-    const templates = vi.spyOn(api, 'templates').mockResolvedValue(PACKAGES)
-    const isos = vi.spyOn(api, 'isos').mockResolvedValue(ISOS)
+  it('offers stored product keys and defaults to none', async () => {
+    vi.spyOn(api, 'isos').mockResolvedValue(ISOS)
 
-    renderStep('template')
+    renderStep()
 
-    const group = await screen.findByRole('radiogroup', { name: 'OVF and OVA packages' })
-    expect(within(group).getAllByRole('radio')).toHaveLength(PACKAGES.length)
-    expect(within(group).getByRole('radio', { name: /Branch Firewall.*OVF/i })).toBeInTheDocument()
-    expect(within(group).getByRole('radio', { name: /Monitoring Collector.*OVA/i })).toBeInTheDocument()
-    expect(screen.queryByRole('radio', { name: /No ISO/i })).not.toBeInTheDocument()
-    expect(isos).not.toHaveBeenCalled()
-    await waitFor(() => expect(templates).toHaveBeenCalledWith('vc-primary', 'dc-production'))
+    const select = await screen.findByRole('combobox', { name: 'Windows product key' })
+    expect(select).toHaveValue('')
+    await screen.findByRole('option', { name: /windows-server-2025-standard · revision 2/ })
+    expect(api.provisioningCredentials).toHaveBeenCalledWith('windows_product_key')
 
-    fireEvent.click(within(group).getByRole('radio', { name: /Monitoring Collector.*OVA/i }))
-    expect(wizardState().template_id).toBe('pkg-monitoring-ova')
+    fireEvent.change(select, { target: { value: 'windows-server-2025-standard' } })
+    expect(wizardState().product_key_secret_ref).toBe('windows-server-2025-standard')
   })
 
   it('blocks media selection when datacenter ISO discovery fails', async () => {
     vi.spyOn(api, 'isos').mockRejectedValue(new Error('ISO inventory timed out.'))
-    vi.spyOn(api, 'templates').mockResolvedValue(PACKAGES)
 
-    renderStep('blank')
+    renderStep()
 
     expect(await screen.findByText('ISO images could not be loaded')).toBeInTheDocument()
     expect(screen.getByText('ISO inventory timed out.')).toBeInTheDocument()
-    expect(screen.queryByRole('radio', { name: /No ISO/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Try again/i })).toBeEnabled()
   })
 
-  it('clears saved source selections that are absent from the current datacenter inventory', async () => {
+  it('clears saved selections that are absent from the current inventory', async () => {
     vi.spyOn(api, 'isos').mockResolvedValue(ISOS)
-    vi.spyOn(api, 'templates').mockResolvedValue(PACKAGES)
 
-    const view = renderStep('blank', { iso_id: 'iso-from-another-datacenter' })
+    renderStep({ iso_id: 'iso-from-another-datacenter', product_key_secret_ref: 'deleted-key' })
+
     await screen.findByRole('radiogroup', { name: 'ISO images' })
-    await waitFor(() => expect(wizardState().iso_id).toBeNull())
-
-    view.unmount()
-    renderStep('template', { template_id: 'removed-package' })
-    await screen.findByRole('radiogroup', { name: 'OVF and OVA packages' })
-    await waitFor(() => expect(wizardState().template_id).toBe(''))
+    await waitFor(() => expect(wizardState().iso_id).toBe(''))
+    await waitFor(() => expect(wizardState().product_key_secret_ref).toBe(''))
   })
 })

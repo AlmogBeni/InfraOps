@@ -26,8 +26,8 @@ import {
   useHosts,
   useIsos,
   useNetworks,
+  useProvisioningCredentials,
   useResourcePools,
-  useTemplates,
   useVcenters,
 } from '@/features/vm-provisioning/hooks'
 import { guestIdentityReviewRows } from '@/features/vm-provisioning/identity'
@@ -95,18 +95,22 @@ export function ReviewStep() {
   const resourcePools = useResourcePools(data.vcenter_id, data.cluster_id)
   const datastores = useDatastores(data.vcenter_id, data.cluster_id)
   const networks = useNetworks(data.vcenter_id, data.datacenter_id)
-  const templates = useTemplates(data.vcenter_id, data.datacenter_id, data.source_type === 'template')
-  const isos = useIsos(data.vcenter_id, data.datacenter_id, data.source_type === 'blank')
-  const packages = useCertificatePackages(data.source_type === 'template' && data.certificate_package_ids.length > 0)
-  const applications = useApplications(data.source_type === 'template' && data.application_ids.length > 0)
+  const isos = useIsos(data.vcenter_id, data.datacenter_id)
+  const packages = useCertificatePackages(data.certificate_package_ids.length > 0)
+  const applications = useApplications(data.application_ids.length > 0)
   const [report, setReport] = useState<PreflightReport | null>(null)
+  const productKeys = useProvisioningCredentials('windows_product_key')
+
+  function productKeyName(reference: string): string {
+    if (!reference) return 'None (volume-license or evaluation media)'
+    return productKeys.data?.some((key) => key.name === reference) ? reference : 'No longer available'
+  }
 
   const dryRun = useMutation({
     mutationFn: () => api.validate(payload),
     onSuccess: setReport,
   })
 
-  const selectedTemplate = templates.data?.find((item) => item.id === data.template_id)
   const selectedIso = isos.data?.find((item) => item.id === data.iso_id)
   const diskTotal = data.disks.reduce((total, disk) => total + disk.size_gb, 0)
   const dns = [data.dns_primary, data.dns_secondary, ...data.dns_extra.split(/[\s,;]+/)].filter(Boolean)
@@ -140,16 +144,8 @@ export function ReviewStep() {
       wizard.update({ network_id: '' })
       return
     }
-    if (
-      templates.isSuccess
-      && data.template_id
-      && !templates.data.some((item) => item.id === data.template_id)
-    ) {
-      wizard.update({ template_id: '' })
-      return
-    }
     if (isos.isSuccess && data.iso_id && !isos.data.some((item) => item.id === data.iso_id)) {
-      wizard.update({ iso_id: null })
+      wizard.update({ iso_id: '' })
       return
     }
     if (datastores.isSuccess) {
@@ -202,8 +198,6 @@ export function ReviewStep() {
     packages.isSuccess,
     resourcePools.data,
     resourcePools.isSuccess,
-    templates.data,
-    templates.isSuccess,
     vcenters.data,
     vcenters.isSuccess,
     wizard.update,
@@ -217,7 +211,7 @@ export function ReviewStep() {
     resourcePools,
     datastores,
     networks,
-    ...(data.source_type === 'template' ? [templates] : [isos]),
+    isos,
     ...(data.certificate_package_ids.length > 0 ? [packages] : []),
     ...(data.application_ids.length > 0 ? [applications] : []),
   ]
@@ -232,9 +226,9 @@ export function ReviewStep() {
     <section aria-label="Review deployment" className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="console-kicker">Step 6 · Review</p>
+          <p className="console-kicker">Step 7 · Review</p>
           <h2>Review the deployment plan</h2>
-          <p>Confirm the human-readable selections below. InfraOps validates the live inventory again before it creates anything.</p>
+          <p>Check the plan below. Submitting runs every preflight check on the server; nothing is created unless they pass, and no step afterwards waits for anyone.</p>
         </div>
         <Button
           type="button"
@@ -300,19 +294,16 @@ export function ReviewStep() {
       <div className="grid gap-4 xl:grid-cols-2">
         <SummarySection
           icon={Boxes}
-          title="Deployment source"
-          rows={data.source_type === 'template'
-            ? [
-                ['Method', 'OVF / OVA deployment'],
-                ['Package', selectedTemplate?.name ?? nameOf(templates, data.template_id)],
-                ['Package type', selectedTemplate?.type ?? 'OVF / OVA'],
-                ['Storage', selectedTemplate?.storage_name ?? 'Storage details not available'],
-              ]
-            : [
-                ['Method', 'Blank virtual machine'],
-                ['Installation media', selectedIso?.name ?? (data.iso_id ? nameOf(isos, data.iso_id) : 'No ISO')],
-                ['Media storage', selectedIso?.datastore_name ?? (data.iso_id ? 'Storage details not available' : 'Not applicable')],
-              ]}
+          title="Windows installation"
+          rows={[
+            ['Method', 'Unattended Windows Server installation'],
+            ['Installation ISO', selectedIso?.name ?? nameOf(isos, data.iso_id)],
+            ['ISO storage', selectedIso?.datastore_name ?? 'Storage details not available'],
+            ['Edition index', String(data.windows_image_index)],
+            ['Product key', productKeyName(data.product_key_secret_ref)],
+            ['Language / keyboard', `${data.installation_locale} · ${data.input_locale}`],
+            ['Time zone', data.timezone || 'UTC'],
+          ]}
         />
 
         <SummarySection
@@ -334,7 +325,7 @@ export function ReviewStep() {
             ['VM name', displayValue(data.vm_name)],
             ['Description', displayValue(data.description)],
             ['Resources', `${data.cpu} vCPU · ${data.memory_gb} GB memory`],
-            ['Boot mode', data.source_type === 'template' ? 'Inherited from the package' : data.firmware === 'EFI' ? `UEFI${data.secure_boot ? ' with Secure Boot' : ''}` : 'Legacy BIOS'],
+            ['Boot mode', data.firmware === 'EFI' ? `UEFI${data.secure_boot ? ' with Secure Boot' : ''}` : 'Legacy BIOS'],
           ]}
         />
 
@@ -343,7 +334,10 @@ export function ReviewStep() {
           title="Storage"
           rows={[
             ['Placement', data.storage_mode === 'auto' ? 'Automatic capacity-aware placement' : nameOf(datastores, data.datastore_id)],
-            ...data.disks.map((disk, index) => [`Disk ${index + 1}`, `${disk.size_gb} GB · ${disk.provisioning === 'thin' ? 'Thin provisioned' : 'Thick provisioned'}`] as [string, ReactNode]),
+            ...data.disks.map((disk, index) => [
+              index === 0 ? 'OS disk' : `Data disk ${index}`,
+              `${disk.size_gb} GB · ${disk.provisioning === 'thin' ? 'Thin provisioned' : 'Thick provisioned'}${index === 0 ? '' : ' · NTFS volume'}`,
+            ] as [string, ReactNode]),
             ['Total requested', `${diskTotal} GB`],
           ]}
         />
@@ -354,8 +348,8 @@ export function ReviewStep() {
           rows={[
             ['Network', nameOf(networks, data.network_id)],
             ['Adapter', data.adapter_type === 'VMXNET3' ? 'VMXNET 3 (recommended)' : 'Intel E1000E'],
-            ['Addressing', data.source_type === 'blank' ? 'Configured during OS installation' : data.ip_mode === 'DHCP' ? 'DHCP' : 'Static IPv4'],
-            ...(data.source_type === 'template' && data.ip_mode === 'STATIC'
+            ['Addressing', data.ip_mode === 'DHCP' ? 'DHCP' : 'Static IPv4'],
+            ...(data.ip_mode === 'STATIC'
               ? [
                   ['IP address', `${data.ip_address}/${data.prefix_input}`],
                   ['Gateway', data.gateway],
@@ -368,19 +362,18 @@ export function ReviewStep() {
         <SummarySection
           icon={Disc3}
           title="Guest automation"
-          rows={data.source_type === 'blank'
-            ? [['Post-deployment state', data.iso_id ? 'Powered off with the selected ISO mounted' : 'Powered off with no ISO mounted']]
-            : [
-                ...identityRows.map(({ label, value }) => [label, value] as [string, ReactNode]),
-                ['Certificate packages', data.certificate_package_ids.length ? data.certificate_package_ids.map((id) => nameOf(packages, id)).join(', ') : 'None selected'],
-                ['Applications', data.application_ids.length ? data.application_ids.map((id) => nameOf(applications, id)).join(', ') : 'None selected'],
-              ]}
+          rows={[
+            ...identityRows.map(({ label, value }) => [label, value] as [string, ReactNode]),
+            ['Certificate packages', data.certificate_package_ids.length ? data.certificate_package_ids.map((id) => nameOf(packages, id)).join(', ') : 'None selected'],
+            ['Applications', data.application_ids.length ? data.application_ids.map((id) => nameOf(applications, id)).join(', ') : 'None selected'],
+            ['When finished', 'Installation media removed; VM boots from its OS disk; you are notified'],
+          ]}
         />
       </div>
 
       <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-950">
         <ClipboardCheck className="mt-0.5 h-4 w-4 shrink-0" />
-        <span>Creating this VM starts an audited deployment job. The request is validated once more against the current datacenter inventory before any infrastructure is changed.</span>
+        <span>Creating this VM starts an audited deployment job that runs to completion on its own: it either finishes and notifies you, or stops with an explanation of what to fix.</span>
       </div>
     </section>
   )

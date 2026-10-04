@@ -58,6 +58,31 @@ address to evade login rate limits or falsify audit records.
 8. The vCenter service account additionally needs *Virtual machine → Change
    Configuration → Advanced configuration* to write the `infraops.job_id` marker.
 
+## Upgrading to the ISO-only release (migration 0009)
+
+1. Back up PostgreSQL, stop the worker, then run `migrate` as usual.
+2. The migration renames the VM-creation stage to `create_vm` and its timeout setting to
+   `create_vm_minutes`, and removes the `ACTION_REQUIRED` job status, the
+   `WAITING_FOR_PREREQUISITE` step status and the `action_required` column.
+3. Jobs that were paused for an administrator become `PARTIALLY_COMPLETED` (or `FAILED` when
+   no VM exists yet) with the paused stage `FAILED`, so it can be retried unattended. Their
+   pause text moves to the job's technical detail.
+4. Queued, running, interrupted or paused jobs of removed workflows (package deployments and
+   blank VMs without an ISO) are closed as `FAILED`/`PARTIALLY_COMPLETED` with an explanation.
+   All such jobs stay viewable but cannot be retried; submit new requests. Audit events and
+   stored requests are not modified.
+5. vCenter privileges — add: *Virtual machine › Edit inventory › Create new*; *Change
+   configuration › Add new disk, Add or remove device, Modify device settings, Change
+   settings, Set annotation*; *Interaction › Configure CD media, Connect devices, Answer
+   question, Create screenshot, Inject USB HID scan codes, Reset*; *Datastore › Low level file
+   operations, Remove file*. Remove, if nothing else needs them: every *Virtual machine ›
+   Provisioning* privilege, *Interaction › Install VMware Tools*, *vApp › Import* and the
+   library privileges that package deployment used. See
+   [vmware-integration.md](vmware-integration.md#required-vcenter-privileges-least-privilege).
+6. Place a Windows Server ISO on a datastore of every datacenter you deploy to. Store retail
+   or MAK keys as credentials with purpose *Windows product key*.
+7. Browser drafts of the previous wizard are discarded once.
+
 ## Required operational data
 
 - A vCenter FQDN/port, TLS trust chain, least-privilege service account, and its managed
@@ -65,8 +90,11 @@ address to evade login rate limits or falsify audit records.
 - Access to the vSphere datacenters, clusters, and hosts that operators may target.
 - A managed Windows provisioning-administrator credential selected in every workflow.
 - Optional domain name, OU path, and a separate managed domain-join credential.
-- For blank VMs, a Windows ISO on an accessible datastore, its image index, language,
-  keyboard input locale, and time-zone identifier.
+- A Windows Server ISO on a datastore of each target datacenter (the only manual
+  prerequisite), its edition index, language, keyboard input locale and time-zone
+  identifier, and — for retail or MAK media — a product key stored as a credential with
+  purpose *Windows product key*. The ESXi hosts must provide the VMware Tools ISO
+  (`[] /vmimages/tools-isoimages/windows.iso`), which they do by default.
 - Approved software repository roots plus each application's installer, silent arguments,
   detection rule, timeout, reboot behavior, and dependencies.
 - Public root/intermediate CA certificates and their intended LocalMachine stores. Private
@@ -84,7 +112,7 @@ address to evade login rate limits or falsify audit records.
   Ubuntu host. Compose mounts `./certs` (or `VCENTER_CA_DIR`) read-only at
   `/etc/infraops/certs` in both; see *Trusting the vCenter certificate* below.
 - A UNC software repository must be reachable from the Windows guest under the account used
-  by VMware Tools guest operations. Validate share and NTFS permissions from the template.
+  by VMware Tools guest operations. Validate share and NTFS permissions from a test VM.
 - The stored-credential key root is `CREDENTIAL_ENCRYPTION_KEY` (or `SECRET_KEY` when
   unset). Back it up securely and restore the same value during disaster recovery; losing
   it makes existing ciphertext unreadable. Rotate with `python -m app.secrets.rotate`

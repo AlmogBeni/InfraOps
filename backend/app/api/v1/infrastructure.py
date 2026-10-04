@@ -21,7 +21,6 @@ from app.schemas.infrastructure import (
     IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
-    TemplateOut,
     VCenterSummary,
 )
 from app.services.vmware.base import VCenterTarget
@@ -106,23 +105,6 @@ async def list_networks(
 ) -> list[NetworkOut]:
     target = await _load_target(db, vcenter_id)
     return await get_vmware_service().get_networks(target, datacenter_id)
-
-
-@router.get("/templates", response_model=list[TemplateOut])
-async def list_templates(
-    vcenter_id: uuid.UUID,
-    db: DbSession,
-    datacenter_id: str | None = Query(default=None),
-) -> list[TemplateOut]:
-    target = await _load_target(db, vcenter_id)
-    templates = await get_vmware_service().get_templates(target, datacenter_id)
-    log.info(
-        "Template inventory API response vcenter_id=%s datacenter_id=%s count=%s",
-        vcenter_id,
-        datacenter_id or "all",
-        len(templates),
-    )
-    return templates
 
 
 @router.get("/isos", response_model=list[IsoImageOut])

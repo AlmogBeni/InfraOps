@@ -11,7 +11,9 @@ import {
   type WizardData,
 } from '@/features/vm-provisioning/schema'
 
-const STORAGE_KEY = 'infraops.provisioning-draft.v2'
+const STORAGE_KEY = 'infraops.provisioning-draft.v3'
+// Drafts of earlier wizard versions describe VM sources that no longer exist.
+const RETIRED_STORAGE_KEYS = ['infraops.provisioning-draft.v2']
 
 export interface WizardStepDefinition {
   key: string
@@ -19,9 +21,8 @@ export interface WizardStepDefinition {
 }
 
 export const WIZARD_STEPS: WizardStepDefinition[] = [
-  { key: 'deployment', title: 'Deployment type' },
   { key: 'location', title: 'Location' },
-  { key: 'media', title: 'Source' },
+  { key: 'media', title: 'Windows media' },
   { key: 'configuration', title: 'Configuration' },
   { key: 'credentials', title: 'Administrator' },
   { key: 'network', title: 'Network' },
@@ -49,45 +50,9 @@ const WizardContext = createContext<WizardContextValue | null>(null)
 function loadDraft(): WizardData {
   const fresh = initialWizardData()
   try {
+    for (const key of RETIRED_STORAGE_KEYS) localStorage.removeItem(key)
     const raw = localStorage.getItem(STORAGE_KEY)
-    const draft = raw ? { ...fresh, ...(JSON.parse(raw) as WizardData) } : fresh
-    const query = new URLSearchParams(window.location.search)
-    const templateId = query.get('template_id')
-    if (templateId) {
-      const vcenterId = query.get('vcenter_id') ?? draft.vcenter_id
-      const datacenterId = query.get('datacenter_id') ?? draft.datacenter_id
-      const targetChanged = vcenterId !== draft.vcenter_id || datacenterId !== draft.datacenter_id
-      const sourceChanged = draft.source_type !== 'template'
-      return {
-        ...draft,
-        source_type: 'template',
-        template_id: templateId,
-        iso_id: null,
-        vcenter_id: vcenterId,
-        datacenter_id: datacenterId,
-        ...(targetChanged
-          ? {
-              cluster_id: '',
-              host_mode: 'auto' as const,
-              host_id: null,
-              resource_pool_id: null,
-              datastore_id: null,
-              network_id: '',
-              disks: draft.disks.map((disk) => ({ ...disk, datastore_id: null })),
-            }
-          : {}),
-        ...(sourceChanged
-          ? {
-              hostname: '',
-              timezone: '',
-              domain_join: { ...draft.domain_join, enabled: false },
-              certificate_package_ids: [],
-              application_ids: [],
-            }
-          : {}),
-      }
-    }
-    return draft
+    return raw ? { ...fresh, ...(JSON.parse(raw) as Partial<WizardData>) } : fresh
   } catch {
     /* corrupted draft — start fresh */
   }
@@ -109,18 +74,6 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     setData((previous) => {
       let normalizedPatch = { ...patch }
 
-      if (patch.source_type !== undefined && patch.source_type !== previous.source_type) {
-        normalizedPatch = {
-          ...normalizedPatch,
-          template_id: '',
-          iso_id: null,
-          hostname: '',
-          timezone: '',
-          domain_join: { ...previous.domain_join, enabled: false },
-          certificate_package_ids: [],
-          application_ids: [],
-        }
-      }
       if (patch.vcenter_id !== undefined && patch.vcenter_id !== previous.vcenter_id) {
         normalizedPatch = {
           ...normalizedPatch,
@@ -131,8 +84,7 @@ export function WizardProvider({ children }: { children: ReactNode }) {
           resource_pool_id: null,
           datastore_id: null,
           network_id: '',
-          template_id: '',
-          iso_id: null,
+          iso_id: '',
         }
       }
       if (patch.datacenter_id !== undefined && patch.datacenter_id !== previous.datacenter_id) {
@@ -144,8 +96,7 @@ export function WizardProvider({ children }: { children: ReactNode }) {
           resource_pool_id: null,
           datastore_id: null,
           network_id: '',
-          template_id: '',
-          iso_id: null,
+          iso_id: '',
           disks: previous.disks.map((disk) => ({ ...disk, datastore_id: null })),
         }
       }
@@ -159,20 +110,7 @@ export function WizardProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const next: WizardData = {
-        ...previous,
-        ...normalizedPatch,
-        ...(normalizedPatch.source_type === 'blank'
-          ? {
-              template_id: '',
-              hostname: '',
-              timezone: '',
-              domain_join: { ...previous.domain_join, enabled: false },
-              certificate_package_ids: [],
-              application_ids: [],
-            }
-          : {}),
-      }
+      const next: WizardData = { ...previous, ...normalizedPatch }
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
       } catch {

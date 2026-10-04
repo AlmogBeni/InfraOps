@@ -17,7 +17,6 @@ LOGGABLE_STEP_STATUSES = (
     StepStatus.FAILED,
     StepStatus.SKIPPED,
     StepStatus.WARNING,
-    StepStatus.WAITING_FOR_PREREQUISITE,
     StepStatus.NOT_APPLICABLE,
     StepStatus.CANCELLED,
 )
@@ -30,7 +29,6 @@ def severity_for_status(status: StepStatus | str) -> LogSeverity:
     if value in (
         StepStatus.CANCELLED.value,
         StepStatus.WARNING.value,
-        StepStatus.WAITING_FOR_PREREQUISITE.value,
     ):
         return "WARNING"
     if value in (StepStatus.SKIPPED.value, StepStatus.NOT_APPLICABLE.value):
@@ -110,7 +108,6 @@ class LogRepository:
                     [
                         StepStatus.CANCELLED,
                         StepStatus.WARNING,
-                        StepStatus.WAITING_FOR_PREREQUISITE,
                     ]
                 )
             )

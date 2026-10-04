@@ -12,7 +12,6 @@ from app.schemas.infrastructure import (
     IsoImageOut,
     NetworkOut,
     ResourcePoolOut,
-    TemplateOut,
     VCenterSummary,
 )
 from app.schemas.jobs import JobDetailOut, JobListResponse, JobOut, JobStepOut, RetryRequest
@@ -71,7 +70,6 @@ __all__ = [
     "ReadinessReport",
     "ResourcePoolOut",
     "RetryRequest",
-    "TemplateOut",
     "TokenResponse",
     "UserOut",
     "VCenterSummary",

@@ -69,7 +69,7 @@ class SecretReferenceCreate(BaseModel):
     provider: str = Field(default="database", pattern=r"^(database)$")
     purpose: str = Field(
         default="generic",
-        pattern=r"^(generic|vcenter|guest_administrator|domain_join)$",
+        pattern=r"^(generic|vcenter|guest_administrator|domain_join|windows_product_key)$",
     )
     username: str = Field(min_length=1, max_length=320)
     password: str = Field(min_length=1, max_length=1024)
@@ -82,7 +82,7 @@ class SecretReferenceUpdate(BaseModel):
 
     purpose: str | None = Field(
         default=None,
-        pattern=r"^(generic|vcenter|guest_administrator|domain_join)$",
+        pattern=r"^(generic|vcenter|guest_administrator|domain_join|windows_product_key)$",
     )
     username: str | None = Field(default=None, min_length=1, max_length=320)
     password: str | None = Field(default=None, min_length=1, max_length=1024)
@@ -105,7 +105,9 @@ class SecretReferenceOut(BaseModel):
 
 
 class DefaultTimeouts(BaseModel):
-    clone_minutes: int = Field(default=30, ge=1, le=240)
+    create_vm_minutes: int = Field(default=30, ge=1, le=240)
+    # Windows Setup from the ISO through first logon and VMware Tools.
+    os_installation_minutes: int = Field(default=120, ge=30, le=480)
     vmware_tools_minutes: int = Field(default=15, ge=1, le=120)
     network_configuration_minutes: int = Field(default=5, ge=1, le=60)
     guest_operations_minutes: int = Field(default=10, ge=1, le=120)

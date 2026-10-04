@@ -42,8 +42,8 @@ class _MockGuestState:
         self.part_of_domain: bool = False
         self.ip_address: str | None = None
         self.reboot_pending: bool = False
-        # Computer name a simulated Sysprep run applies at its next Setup.
-        self.setup_pending_name: str | None = None
+        # Data volumes created by the simulated data-disk initialization.
+        self.data_volumes: list[dict] = []
         self.files: dict[str, bytes] = {}
         self.last_secret_names: list[str] = []
 
@@ -133,29 +133,33 @@ class MockGuestOperations(GuestOperations):
         self, lowered: str, arguments: str, state: _MockGuestState,
         target: VCenterTarget, vm_name: str,
     ) -> str:
-        # Windows Setup progress probe. After a simulated Sysprep the guest
-        # reports one in-progress observation, then finished Setup.
+        # Windows Setup progress probe: the simulated install has finished by
+        # the time VMware Tools reports, and specialize applied the name.
         if "systemsetupinprogress" in lowered:
-            in_setup = state.setup_pending_name is not None
-            if in_setup:
-                state.hostname = state.setup_pending_name
-                state.setup_pending_name = None
             return json.dumps(
                 {
-                    "ImageState": "IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE" if in_setup else "IMAGE_STATE_COMPLETE",
-                    "SystemSetupInProgress": int(in_setup),
-                    "OOBEInProgress": int(in_setup),
+                    "ImageState": "IMAGE_STATE_COMPLETE",
+                    "SystemSetupInProgress": 0,
+                    "OOBEInProgress": 0,
                     "ComputerName": state.hostname or vm_name.upper(),
-                    "SysprepRunning": False,
                 },
                 separators=(",", ":"),
             )
-        if "sysprep.exe" in lowered and "/generalize" in lowered:
-            answer = re.search(r"\$answer = '([^']+)'", arguments)
-            content = state.files.get(answer.group(1).lower(), b"") if answer else b""
-            name = re.search(rb"<ComputerName>([^<]+)</ComputerName>", content)
-            state.setup_pending_name = name.group(1).decode() if name else vm_name.upper()
-            return "SYSPREP-STARTED"
+
+        # Data-disk initialization: every hot-added disk becomes one NTFS volume.
+        if "update-hoststoragecache" in lowered:
+            if not state.data_volumes:
+                for index, size_gb in enumerate(self._data_disk_sizes(target, vm_name), start=1):
+                    state.data_volumes.append(
+                        {
+                            "Number": index,
+                            "SizeGB": size_gb,
+                            "DriveLetter": chr(ord("D") + index),
+                            "Label": f"Data{index}",
+                            "FileSystem": "NTFS",
+                        }
+                    )
+            return json.dumps(state.data_volumes, separators=(",", ":"))
 
         # Certificate presence probe (thumbprint embedded in script text).
         if "get-childitem" in lowered and "thumbprint" in lowered:
@@ -242,6 +246,13 @@ class MockGuestOperations(GuestOperations):
             return "MOCK: installer completed exit 0"
 
         return "MOCK-OK"
+
+    @staticmethod
+    def _data_disk_sizes(target: VCenterTarget, vm_name: str) -> list[int]:
+        from app.services.vmware.mock import get_mock_inventory
+
+        vm = get_mock_inventory(target.id).find_vm_by_name(vm_name)
+        return list(vm.disks_gb[1:]) if vm is not None else []
 
     @staticmethod
     def _sync_ip_to_inventory(target: VCenterTarget, vm_name: str, ip_address: str) -> None:

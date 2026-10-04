@@ -30,6 +30,7 @@ dist/
 # Databases / volumes
 postgres-data/
 data/
+*.rdb
 
 # IDE / OS
 .idea/

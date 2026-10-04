@@ -268,28 +268,14 @@ class JobRepository:
         """
         now = dt.datetime.now(dt.UTC)
         reset: list[str] = []
-        selected_sequences = {
-            step.sequence for step in job.steps
-            if stage_keys is not None and step.stage_key in stage_keys
-        }
-        first_selected = min(selected_sequences) if selected_sequences else None
         for step in job.steps:
             eligible_status = step.status in (
                 StepStatus.FAILED,
                 StepStatus.CANCELLED,
-                StepStatus.WAITING_FOR_PREREQUISITE,
                 # A stage interrupted by a dead worker is resumable.
                 StepStatus.RUNNING,
             ) and (step.status != StepStatus.RUNNING or job.status == JobStatus.INTERRUPTED)
-            selected = (
-                stage_keys is None
-                or step.stage_key in stage_keys
-                or (
-                    first_selected is not None
-                    and step.status == StepStatus.WAITING_FOR_PREREQUISITE
-                    and step.sequence > first_selected
-                )
-            )
+            selected = stage_keys is None or step.stage_key in stage_keys
             should_reset = eligible_status and selected
             if should_reset:
                 # ``attempt`` is incremented when the stage starts again.
@@ -304,7 +290,6 @@ class JobRepository:
             job.error_detail = None
             job.finished_at = None
             job.duration_seconds = None
-            job.action_required = None
             job.queued_at = now
             job.progress = self.compute_progress(job)
             await self.session.commit()
@@ -325,18 +310,13 @@ class JobRepository:
 
     async def request_cancel(self, job: ProvisioningJob) -> None:
         job.cancel_requested = True
-        # No worker executes QUEUED, INTERRUPTED or paused jobs, so nothing
-        # would ever read the flag: finalise them immediately.
-        if job.status in (JobStatus.QUEUED, JobStatus.INTERRUPTED, JobStatus.ACTION_REQUIRED):
+        # No worker executes QUEUED or INTERRUPTED jobs, so nothing would ever
+        # read the flag: finalise them immediately.
+        if job.status in (JobStatus.QUEUED, JobStatus.INTERRUPTED):
             job.status = JobStatus.CANCELLED
-            job.action_required = None
             job.finished_at = dt.datetime.now(dt.UTC)
             for step in job.steps:
-                if step.status in (
-                    StepStatus.PENDING,
-                    StepStatus.RUNNING,
-                    StepStatus.WAITING_FOR_PREREQUISITE,
-                ):
+                if step.status in (StepStatus.PENDING, StepStatus.RUNNING):
                     step.status = StepStatus.CANCELLED
         await self.session.commit()
 

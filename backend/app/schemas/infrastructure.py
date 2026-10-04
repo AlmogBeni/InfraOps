@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -74,19 +73,6 @@ class NetworkOut(BaseModel):
     id: str
     name: str
     type: str  # STANDARD_PORT_GROUP | DISTRIBUTED_PORT_GROUP
-
-
-class TemplateOut(BaseModel):
-    id: str
-    name: str
-    type: Literal["OVF", "OVA"]
-    description: str = ""
-    datacenter_id: str | None = None
-    datacenter_name: str | None = None
-    storage_name: str | None = None
-    location: str | None = None
-    size_bytes: int | None = None
-    last_modified: dt.datetime | None = None
 
 
 class IsoImageOut(BaseModel):

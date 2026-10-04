@@ -129,7 +129,7 @@ async def test_dashboard_recent_jobs_use_complete_job_contract(monkeypatch) -> N
     job = SimpleNamespace(
         id=uuid.uuid4(),
         job_type=JobType.VM_PROVISIONING,
-        status=JobStatus.ACTION_REQUIRED,
+        status=JobStatus.RUNNING,
         vm_name="APP-002",
         datacenter_id="datacenter-21",
         datacenter_name="DC01-Corporate",
@@ -137,10 +137,9 @@ async def test_dashboard_recent_jobs_use_complete_job_contract(monkeypatch) -> N
         current_stage="wait_for_guest_os",
         progress=40,
         infrastructure_status="READY",
-        guest_os_status="INSTALLATION_REQUIRED",
+        guest_os_status="INSTALLATION_IN_PROGRESS",
         vmware_tools_status="NOT_APPLICABLE_YET",
         guest_provisioning_status="WAITING_FOR_OS",
-        action_required="Install and boot an operating system.",
         error_summary=None,
         cancel_requested=False,
         queued_at=None,
@@ -169,6 +168,6 @@ async def test_dashboard_recent_jobs_use_complete_job_contract(monkeypatch) -> N
 
     response = await dashboard_module.dashboard(db, user=SimpleNamespace())
 
-    assert response.recent_jobs[0].status == JobStatus.ACTION_REQUIRED
+    assert response.recent_jobs[0].status == JobStatus.RUNNING
     assert response.recent_jobs[0].infrastructure_status == "READY"
-    assert response.recent_jobs[0].guest_os_status == "INSTALLATION_REQUIRED"
+    assert response.recent_jobs[0].guest_os_status == "INSTALLATION_IN_PROGRESS"

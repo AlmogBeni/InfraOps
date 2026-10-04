@@ -7,7 +7,7 @@ import { initialWizardData, validateStep, type WizardData } from '@/features/vm-
 import { StorageStep } from '@/features/vm-provisioning/steps/StorageStep'
 import { api } from '@/lib/api'
 
-const STORAGE_KEY = 'infraops.provisioning-draft.v2'
+const STORAGE_KEY = 'infraops.provisioning-draft.v3'
 
 function Harness() {
   const wizard = useWizard()
@@ -50,7 +50,6 @@ describe('StorageStep accessible inventory', () => {
 
     const draft = initialWizardData()
     Object.assign(draft, {
-      source_type: 'blank',
       vcenter_id: 'vcenter-1',
       datacenter_id: 'datacenter-1',
       cluster_id: 'cluster-1',

@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
+  Archive,
   ChevronDown,
   Clock3,
   Cpu,
   HardDrive,
+  ImageIcon,
   MonitorCog,
   Network,
   PackageCheck,
@@ -14,6 +16,7 @@ import {
   XCircle,
   type LucideIcon,
 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -68,7 +71,6 @@ const STEP_TONES: Record<StepStatus, Parameters<typeof Badge>[0]['tone']> = {
   FAILED: 'danger',
   SKIPPED: 'neutral',
   WARNING: 'warning',
-  WAITING_FOR_PREREQUISITE: 'warning',
   NOT_APPLICABLE: 'neutral',
   CANCELLED: 'warning',
 }
@@ -147,12 +149,6 @@ function useRequestLabels(request: ProvisioningRequest, persistedDatacenterName?
     enabled: Boolean(vcenterId && datacenterId),
     staleTime: 5 * 60_000,
   })
-  const templates = useQuery({
-    queryKey: ['templates', vcenterId, datacenterId],
-    queryFn: () => api.templates(vcenterId, datacenterId),
-    enabled: Boolean(vcenterId && datacenterId && request.guest.template_id),
-    staleTime: 5 * 60_000,
-  })
   const isos = useQuery({
     queryKey: ['isos', vcenterId, datacenterId],
     queryFn: () => api.isos(vcenterId, datacenterId),
@@ -180,7 +176,6 @@ function useRequestLabels(request: ProvisioningRequest, persistedDatacenterName?
     ...(request.compute.host_id ? [hosts] : []),
     ...(request.compute.resource_pool_id ? [resourcePools] : []),
     ...(hasDatastoreSelection ? [datastores] : []),
-    ...(request.guest.template_id ? [templates] : []),
     ...(request.guest.iso_id ? [isos] : []),
     ...(request.application_ids.length ? [applications] : []),
     ...(request.certificate_package_ids.length ? [certificatePackages] : []),
@@ -199,7 +194,6 @@ function useRequestLabels(request: ProvisioningRequest, persistedDatacenterName?
       'Default resource pool',
     ),
     network: resolveName(networks.data, request.network.network_id, networks.isLoading, 'No network selected'),
-    template: resolveName(templates.data, request.guest.template_id, templates.isLoading, 'No template selected'),
     iso: resolveName(isos.data, request.guest.iso_id, isos.isLoading, 'No installation media'),
     datastore: (id: string | null) => resolveName(datastores.data, id, datastores.isLoading, 'Automatic placement'),
     applicationNames: request.application_ids.map((id) =>
@@ -264,11 +258,6 @@ function RequestSnapshot({
   const memoryGb = request.hardware.memory_mb / 1024
   const memoryLabel = `${Number.isInteger(memoryGb) ? memoryGb : memoryGb.toFixed(1)} GB`
   const storageGb = request.hardware.disks.reduce((total, disk) => total + disk.size_gb, 0)
-  const sourceLabel = request.guest.template_id
-    ? labels.template
-    : request.guest.iso_id
-      ? labels.iso
-      : 'No ISO mounted'
   const identity = derivePersistedGuestIdentity(
     request.vm.name,
     request.guest.hostname,
@@ -303,15 +292,14 @@ function RequestSnapshot({
           <DetailLine label="Resource pool" value={labels.resourcePool} />
         </SnapshotSection>
 
-        <SnapshotSection icon={MonitorCog} title="Source and guest" summary={sourceLabel}>
-          <DetailLine label="Source" value={request.source_type === 'template' ? 'OVF / OVA deployment' : 'Blank virtual machine'} />
-          <DetailLine label={request.guest.template_id ? 'Template' : 'Installation media'} value={sourceLabel} />
-          <DetailLine
-            label="Windows computer name"
-            value={request.source_type === 'blank' ? 'Configured during OS installation' : identity.computerName}
-          />
+        <SnapshotSection icon={MonitorCog} title="Windows installation" summary={labels.iso}>
+          <DetailLine label="Installation ISO" value={labels.iso} />
+          <DetailLine label="Edition index" value={String(request.guest.windows_image_index)} mono />
+          <DetailLine label="Product key" value={request.guest.product_key_secret_ref ?? 'None (volume-license or evaluation media)'} />
+          <DetailLine label="Windows computer name" value={identity.computerName} />
           <DetailLine label="Fully qualified DNS name" value={identity.fqdn ?? 'Not domain joined'} />
-          <DetailLine label="Time zone" value={request.guest.timezone ?? (request.source_type === 'blank' ? 'Configured during OS installation' : 'Platform default')} />
+          <DetailLine label="Language / keyboard" value={`${request.guest.installation_locale} · ${request.guest.input_locale}`} />
+          <DetailLine label="Time zone" value={request.guest.timezone ?? 'UTC'} />
         </SnapshotSection>
 
         <SnapshotSection icon={Cpu} title="Compute and firmware" summary={`${request.hardware.cpu} vCPU · ${memoryLabel}`}>
@@ -325,7 +313,7 @@ function RequestSnapshot({
           {request.hardware.disks.map((disk, index) => (
             <DetailLine
               key={`${index}-${disk.size_gb}-${disk.datastore_id ?? 'automatic'}`}
-              label={`Disk ${index + 1}`}
+              label={index === 0 ? 'OS disk' : `Data disk ${index}`}
               value={`${disk.size_gb} GB · ${disk.provisioning === 'thin' ? 'Thin provisioned' : 'Thick provisioned'} · ${labels.datastore(disk.datastore_id)}`}
             />
           ))}
@@ -352,6 +340,64 @@ function RequestSnapshot({
         </SnapshotSection>
       </div>
     </ConsolePanel>
+  )
+}
+
+function LegacyRequestSnapshot({ payload }: { payload: unknown }) {
+  return (
+    <ConsolePanel>
+      <PanelHeader
+        title="Submitted configuration"
+        description="Stored exactly as submitted."
+        actions={<Badge tone="neutral"><Archive className="h-3 w-3" aria-hidden /> Read-only</Badge>}
+      />
+      <div className="space-y-3 p-4">
+        <Alert tone="info" title="Created by a provisioning workflow that no longer exists">
+          This deployment can be viewed but not retried. Every VM is now installed unattended from a Windows Server
+          ISO; submit a new request to create the VM that way.
+        </Alert>
+        <LogViewer text={JSON.stringify(payload, null, 2)} ariaLabel="Stored request" />
+      </div>
+    </ConsolePanel>
+  )
+}
+
+function ConsoleScreenshot({ jobId, step }: { jobId: string; step: JobStepOut }) {
+  const [requested, setRequested] = useState(false)
+  const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  const screenshot = useQuery({
+    queryKey: ['console-screenshot', jobId, step.stage_key, step.attempt],
+    queryFn: () => api.consoleScreenshot(jobId, step.stage_key),
+    enabled: requested,
+    staleTime: Infinity,
+  })
+
+  useEffect(() => {
+    if (!screenshot.data) return undefined
+    const url = URL.createObjectURL(screenshot.data)
+    setObjectUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [screenshot.data])
+
+  return (
+    <div>
+      <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[#68736d]">Console at failure</p>
+      {!requested ? (
+        <Button size="sm" variant="secondary" onClick={() => setRequested(true)}>
+          <ImageIcon className="h-3.5 w-3.5" aria-hidden /> Show console screenshot
+        </Button>
+      ) : screenshot.isError ? (
+        <Alert tone="warning" title="Screenshot unavailable">{mutationMessage(screenshot.error)}</Alert>
+      ) : objectUrl ? (
+        <img
+          src={objectUrl}
+          alt={`VM console when '${step.name}' failed`}
+          className="max-h-[480px] w-full rounded-lg border border-[#dfe4de] bg-black object-contain"
+        />
+      ) : (
+        <p className="text-xs text-[#68736d]">Loading the console screenshot from the datastore…</p>
+      )}
+    </div>
   )
 }
 
@@ -397,6 +443,7 @@ function FinalValidationPanel({ step }: { step: JobStepOut }) {
 }
 
 function StageRow({
+  jobId,
   step,
   isAdmin,
   canRetry,
@@ -404,6 +451,7 @@ function StageRow({
   retryPending,
   isLast,
 }: {
+  jobId: string
   step: JobStepOut
   isAdmin: boolean
   canRetry: boolean
@@ -411,7 +459,8 @@ function StageRow({
   retryPending: boolean
   isLast: boolean
 }) {
-  const hasTechnicalOutput = Boolean(step.output || (isAdmin && step.error_technical))
+  const hasScreenshot = isAdmin && typeof step.artifacts?.['console_screenshot'] === 'string'
+  const hasTechnicalOutput = Boolean(step.output || (isAdmin && step.error_technical) || hasScreenshot)
 
   return (
     <li className="relative grid grid-cols-[34px_minmax(0,1fr)] gap-3 pb-3 last:pb-0">
@@ -489,6 +538,7 @@ function StageRow({
                   <LogViewer text={step.error_technical} className="max-h-48" ariaLabel="Administrator technical error detail" />
                 </div>
               )}
+              {hasScreenshot && <ConsoleScreenshot jobId={jobId} step={step} />}
             </div>
           </details>
         )}
@@ -562,6 +612,8 @@ export function JobDetailPage() {
   const succeededSteps = orderedSteps.filter((step) => step.status === 'SUCCEEDED').length
   const failedCount = orderedSteps.filter((step) => step.status === 'FAILED').length
   const isActive = job.status === 'RUNNING' || job.status === 'QUEUED'
+  // Jobs of removed workflows stay readable but cannot run again.
+  const mayRetry = canRetry && !job.legacy_request
   const actionError = retryAll.error ?? retryStage.error ?? cancel.error
 
   return (
@@ -577,13 +629,13 @@ export function JobDetailPage() {
         actions={(
           <>
             {(job.status === 'FAILED' || job.status === 'PARTIALLY_COMPLETED' || job.status === 'INTERRUPTED') &&
-              canRetry &&
+              mayRetry &&
               failedSteps.length > 0 && (
               <Button size="sm" loading={retryAll.isPending} onClick={() => retryAll.mutate()}>
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden /> Retry failed stages
               </Button>
             )}
-            {(isActive || job.status === 'INTERRUPTED' || job.status === 'ACTION_REQUIRED') &&
+            {(isActive || job.status === 'INTERRUPTED') &&
               canCancel &&
               !job.cancel_requested && (
               <Button size="sm" variant="danger" loading={cancel.isPending} onClick={() => cancel.mutate()}>
@@ -619,19 +671,6 @@ export function JobDetailPage() {
             {job.error_summary ? ` (${job.error_summary})` : ''}. Completed stages are kept; retry to
             resume from the interrupted stage, or cancel the deployment.
           </p>
-        </Alert>
-      )}
-
-      {job.status === 'ACTION_REQUIRED' && job.action_required && (
-        <Alert tone="warning" title="Administrator action is required">
-          <p>{job.action_required}</p>
-          {canRetry && (
-            <div className="mt-2">
-              <Button size="sm" loading={retryAll.isPending} onClick={() => retryAll.mutate()}>
-                <RotateCcw className="h-3.5 w-3.5" aria-hidden /> Confirm prerequisite and resume
-              </Button>
-            </div>
-          )}
         </Alert>
       )}
 
@@ -676,10 +715,10 @@ export function JobDetailPage() {
             )}
             {job.error_summary && (
               <div className="mt-4">
-                <Alert tone="danger" title="Deployment needs attention">
+                <Alert tone="danger" title="Deployment stopped">
                   {job.error_summary}
-                  {job.status === 'PARTIALLY_COMPLETED' && (
-                    <p className="mt-1">The virtual machine exists. Retry only the recoverable failed stages below.</p>
+                  {job.status === 'PARTIALLY_COMPLETED' && !job.legacy_request && (
+                    <p className="mt-1">The virtual machine exists. Fix the cause described below, then retry the failed stage.</p>
                   )}
                 </Alert>
               </div>
@@ -689,13 +728,15 @@ export function JobDetailPage() {
             <DataPoint label="Started" value={job.started_at ? formatTime(job.started_at) : 'Not started'} detail={job.started_at ? formatDateTime(job.started_at) : 'Waiting in queue'} />
             <DataPoint label="Duration" value={formatDuration(job.duration_seconds)} detail={job.finished_at ? `Finished ${formatTime(job.finished_at)}` : 'Live execution time'} />
             <DataPoint label="Succeeded" value={succeededSteps} detail={`${orderedSteps.length} total stages`} />
-            <DataPoint label="Needs attention" value={failedCount} detail={`${failedSteps.length} retryable`} />
+            <DataPoint label="Failed" value={failedCount} detail={`${failedSteps.length} retryable`} />
           </div>
         </div>
       </ConsolePanel>
 
-      {job.request_payload ? (
-        <RequestSnapshot request={job.request_payload} datacenterName={job.datacenter_name} />
+      {job.request_payload && job.legacy_request ? (
+        <LegacyRequestSnapshot payload={job.request_payload} />
+      ) : job.request_payload ? (
+        <RequestSnapshot request={job.request_payload as ProvisioningRequest} datacenterName={job.datacenter_name} />
       ) : (
         <EmptyState
           title="Submitted configuration is unavailable"
@@ -725,9 +766,10 @@ export function JobDetailPage() {
             {orderedSteps.map((step, index) => (
               <StageRow
                 key={step.id}
+                jobId={job.id}
                 step={step}
                 isAdmin={isAdmin}
-                canRetry={canRetry}
+                canRetry={mayRetry}
                 onRetry={(stageKey) => retryStage.mutate(stageKey)}
                 retryPending={retryStage.isPending && retryStage.variables === step.stage_key}
                 isLast={index === orderedSteps.length - 1}

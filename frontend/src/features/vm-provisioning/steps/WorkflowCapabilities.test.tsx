@@ -25,13 +25,12 @@ vi.mock('@/features/vm-provisioning/steps/ApplicationsStep', () => ({
   ApplicationsStep: () => <div>Application controls</div>,
 }))
 
-function renderWithWizard(sourceType: 'blank' | 'template', content: ReactNode) {
+function renderWithWizard(content: ReactNode) {
   const draft = initialWizardData()
-  draft.source_type = sourceType
-  draft.iso_id = sourceType === 'blank' ? 'iso-windows' : null
+  draft.iso_id = 'iso-windows'
   draft.vcenter_id = 'vc-primary'
   draft.datacenter_id = 'dc-production'
-  localStorage.setItem('infraops.provisioning-draft.v2', JSON.stringify(draft))
+  localStorage.setItem('infraops.provisioning-draft.v3', JSON.stringify(draft))
 
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -46,17 +45,17 @@ describe('VM workflow capability visibility', () => {
     vi.restoreAllMocks()
   })
 
-  it('keeps domain join visible without a collapsed disclosure for package deployments', () => {
-    renderWithWizard('template', <ConfigurationStep />)
+  it('always shows guest automation, including domain join, without a collapsed disclosure', () => {
+    renderWithWizard(<ConfigurationStep />)
 
     expect(screen.getByText('Guest operating system and automation')).toBeVisible()
     expect(screen.getByText('Join an Active Directory domain')).toBeVisible()
     expect(document.querySelector('details')).not.toBeInTheDocument()
   })
 
-  it('enables post-installation DHCP and static addressing for blank Windows VMs', async () => {
+  it('enables post-installation DHCP and static addressing', async () => {
     vi.spyOn(api, 'networks').mockResolvedValue([])
-    renderWithWizard('blank', <NetworkStep />)
+    renderWithWizard(<NetworkStep />)
 
     expect(await screen.findByRole('radio', { name: /DHCP/i })).toBeEnabled()
     expect(screen.getByRole('radio', { name: /Static IPv4/i })).toBeEnabled()

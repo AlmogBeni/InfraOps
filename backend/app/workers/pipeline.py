@@ -22,20 +22,16 @@ from app.models.jobs import (
 )
 from app.models.notifications import NotificationKind
 from app.repositories.jobs import JobRepository
-from app.services.notifications import (
-    action_required_message,
-    completed_message,
-    failed_message,
-    notify_requester,
-)
+from app.services.notifications import completed_message, failed_message, notify_requester
 from app.workers.context import JobRunContext
 from app.workers.events import JobEventPublisher
 from app.workers.stages import STAGE_HANDLERS, effective_timeout_seconds, release_unattended_media
-from app.workers.state_machine import ORDERED_STAGES, StageDefinition
+from app.workers.state_machine import CONSOLE_STAGES, ORDERED_STAGES, StageDefinition
 
 log = get_logger(__name__)
 
 _MAX_OUTPUT_CHARS = 8000
+_SCREENSHOT_TIMEOUT_SECONDS = 60
 
 
 class _StageCancelled(Exception):
@@ -75,8 +71,8 @@ class ProvisioningPipeline:
                 return
 
             await self._run_stage(ctx, stage, step)
-            if step.status in (StepStatus.FAILED, StepStatus.WAITING_FOR_PREREQUISITE):
-                return  # failure/action-required path finalised or paused the job
+            if step.status == StepStatus.FAILED:
+                return  # the failure path finalised the job
 
         await self._finalize_success(ctx)
 
@@ -146,7 +142,6 @@ class ProvisioningPipeline:
             "SKIPPED": StepStatus.SKIPPED,
             "WARNING": StepStatus.WARNING,
             "NOT_APPLICABLE": StepStatus.NOT_APPLICABLE,
-            "WAITING_FOR_PREREQUISITE": StepStatus.WAITING_FOR_PREREQUISITE,
         }.get(outcome.status, StepStatus.SUCCEEDED)
         step.finished_at = finished_at
         step.output = outcome.output[:_MAX_OUTPUT_CHARS]
@@ -154,9 +149,6 @@ class ProvisioningPipeline:
             merged = dict(step.artifacts or {})
             merged.update(outcome.artifacts)
             step.artifacts = merged
-        if step.status == StepStatus.WAITING_FOR_PREREQUISITE:
-            await self._handle_action_required(ctx, stage, step, outcome.output, finished_at)
-            return
         ctx.job.progress = JobRepository.compute_progress(ctx.job)
         await ctx.db.commit()
 
@@ -213,16 +205,17 @@ class ProvisioningPipeline:
         )
         step.error_technical = failure.technical_detail
 
-        clone_step = ctx.steps_by_key.get("clone_vm")
-        vm_created = clone_step is not None and clone_step.status in (
+        create_step = ctx.steps_by_key.get("create_vm")
+        vm_created = create_step is not None and create_step.status in (
             StepStatus.SUCCEEDED,
             StepStatus.SKIPPED,
         )
+        if vm_created and stage.key in CONSOLE_STAGES:
+            await self._attach_console_screenshot(ctx, step)
         ctx.job.status = (
             JobStatus.PARTIALLY_COMPLETED if vm_created else JobStatus.FAILED
         )
-        ctx.job.action_required = None
-        if stage.key in {"clone_vm", "configure_hardware", "attach_network_adapter"}:
+        if stage.key in {"create_vm", "configure_hardware", "attach_network_adapter"}:
             ctx.job.infrastructure_status = InfrastructureStatus.FAILED.value
         elif stage.key == "wait_for_guest_os":
             ctx.job.guest_os_status = GuestOsStatus.ERROR.value
@@ -231,6 +224,7 @@ class ProvisioningPipeline:
             ctx.job.vmware_tools_status = VMwareToolsStatus.ERROR.value
             ctx.job.guest_provisioning_status = GuestProvisioningStatus.FAILED.value
         elif stage.key in {
+            "add_data_disks", "initialize_data_disks",
             "configure_guest_network", "validate_network", "configure_hostname",
             "join_domain", "reboot_guest", "wait_guest_ready",
         }:
@@ -239,7 +233,7 @@ class ProvisioningPipeline:
         ctx.job.error_detail = (
             f"{failure.human_message}\nReason: {failure.reason}\n"
             f"Recommended action: {failure.recommended_action}\n\n"
-            f"Technical detail:\n{failure.technical_detail}"
+            f"Technical detail:\n{step.error_technical or ''}"
         )[:6000]
         ctx.job.current_stage = stage.key
         ctx.job.finished_at = finished_at
@@ -282,7 +276,6 @@ class ProvisioningPipeline:
     async def _finalize_success(self, ctx: JobRunContext) -> None:
         finished_at = _utcnow()
         ctx.job.status = JobStatus.COMPLETED
-        ctx.job.action_required = None
         ctx.job.error_summary = None
         ctx.job.error_detail = None
         ctx.job.finished_at = finished_at
@@ -343,60 +336,32 @@ class ProvisioningPipeline:
         )
         log.info("Job %s completed for VM %s", ctx.job_id, ctx.vm_name)
 
-    async def _handle_action_required(
-        self,
-        ctx: JobRunContext,
-        stage: StageDefinition,
-        step,
-        message: str,
-        finished_at: dt.datetime,
-    ) -> None:
-        """Pause a resumable deployment without misreporting a failure."""
-        downstream = False
-        for candidate in sorted(ctx.job.steps, key=lambda item: item.sequence):
-            if candidate.stage_key == stage.key:
-                downstream = True
-                continue
-            if downstream and candidate.status == StepStatus.PENDING:
-                candidate.status = StepStatus.WAITING_FOR_PREREQUISITE
-                candidate.output = f"Waiting for prerequisite: {stage.name}."
-        ctx.job.status = JobStatus.ACTION_REQUIRED
-        ctx.job.action_required = message[:2000]
-        notify_requester(
-            ctx.db,
-            ctx.job,
-            NotificationKind.JOB_ACTION_REQUIRED,
-            *action_required_message(ctx.job, stage.name, message),
-        )
-        ctx.job.error_summary = None
-        ctx.job.error_detail = None
-        ctx.job.current_stage = stage.key
-        ctx.job.finished_at = finished_at
-        if ctx.job.started_at:
-            ctx.job.duration_seconds = (finished_at - ctx.job.started_at).total_seconds()
-        ctx.job.progress = JobRepository.compute_progress(ctx.job)
-        await ctx.db.commit()
-        await self._publisher.publish_stage(
-            str(ctx.job_id),
-            stage=stage.key,
-            status=JobStatus.ACTION_REQUIRED.value,
-            progress=ctx.job.progress,
-            message=message,
+    async def _attach_console_screenshot(self, ctx: JobRunContext, step) -> None:
+        """Keep what the console showed when an installation stage failed, so a
+        stuck Setup page can be diagnosed without anyone watching the console."""
+        from app.workers.stages import _require_vm_id
+
+        try:
+            path = await asyncio.wait_for(
+                ctx.vmware.capture_screenshot(ctx.target, _require_vm_id(ctx)),
+                timeout=_SCREENSHOT_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never mask the failure
+            log.warning("Console screenshot for job %s failed: %s", ctx.job_id, exc)
+            return
+        step.artifacts = {**(step.artifacts or {}), "console_screenshot": path}
+        step.error_technical = (
+            f"{step.error_technical or ''}\n\nConsole screenshot at failure: {path}".strip()
         )
 
     async def _apply_cancellation(self, ctx: JobRunContext) -> None:
         finished_at = _utcnow()
         await release_unattended_media(ctx, reason="job cancelled")
         for step in ctx.job.steps:
-            if step.status in (
-                StepStatus.PENDING,
-                StepStatus.RUNNING,
-                StepStatus.WAITING_FOR_PREREQUISITE,
-            ):
+            if step.status in (StepStatus.PENDING, StepStatus.RUNNING):
                 step.status = StepStatus.CANCELLED
                 step.finished_at = finished_at
         ctx.job.status = JobStatus.CANCELLED
-        ctx.job.action_required = None
         ctx.job.finished_at = finished_at
         if ctx.job.started_at:
             ctx.job.duration_seconds = (finished_at - ctx.job.started_at).total_seconds()

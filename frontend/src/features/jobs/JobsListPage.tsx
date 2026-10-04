@@ -26,7 +26,6 @@ const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'RUNNING', label: 'Running' },
   { value: 'COMPLETED', label: 'Completed' },
   { value: 'PARTIALLY_COMPLETED', label: 'Partially completed' },
-  { value: 'ACTION_REQUIRED', label: 'Action required' },
   { value: 'FAILED', label: 'Failed' },
   { value: 'CANCELLED', label: 'Cancelled' },
   { value: 'INTERRUPTED', label: 'Interrupted' },
@@ -38,8 +37,7 @@ function executionLabel(job: JobOut): string {
   if (job.current_stage) return humanizeStageKey(job.current_stage)
   if (job.status === 'COMPLETED') return 'All stages completed'
   if (job.status === 'FAILED') return 'Stopped after an error'
-  if (job.status === 'PARTIALLY_COMPLETED') return 'Completed with follow-up required'
-  if (job.status === 'ACTION_REQUIRED') return 'Waiting for an administrator prerequisite'
+  if (job.status === 'PARTIALLY_COMPLETED') return 'VM created — a later stage failed'
   if (job.status === 'CANCELLED') return 'Execution cancelled'
   if (job.status === 'INTERRUPTED') return 'Worker stopped — retry to resume'
   return job.status === 'QUEUED' ? 'Waiting for an execution slot' : 'Preparing next stage'
@@ -68,7 +66,6 @@ function ProgressCell({ job }: { job: JobOut }) {
             job.status === 'FAILED'
               ? 'bg-red-500'
               : job.status === 'PARTIALLY_COMPLETED' ||
-                  job.status === 'ACTION_REQUIRED' ||
                   job.status === 'INTERRUPTED'
                 ? 'bg-amber-500'
                 : 'bg-brand-600',
@@ -116,7 +113,6 @@ export function JobsListPage() {
     (job) =>
       job.status === 'FAILED' ||
       job.status === 'PARTIALLY_COMPLETED' ||
-      job.status === 'ACTION_REQUIRED' ||
       job.status === 'INTERRUPTED',
   ).length ?? 0
 

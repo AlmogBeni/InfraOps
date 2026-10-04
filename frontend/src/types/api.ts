@@ -5,7 +5,6 @@ export type JobStatus =
   | 'RUNNING'
   | 'COMPLETED'
   | 'PARTIALLY_COMPLETED'
-  | 'ACTION_REQUIRED'
   | 'FAILED'
   | 'CANCELLED'
   | 'INTERRUPTED'
@@ -17,7 +16,6 @@ export type StepStatus =
   | 'FAILED'
   | 'SKIPPED'
   | 'WARNING'
-  | 'WAITING_FOR_PREREQUISITE'
   | 'NOT_APPLICABLE'
   | 'CANCELLED'
 
@@ -37,7 +35,7 @@ export interface SessionPolicy {
   idle_warning_seconds: number
 }
 
-export type NotificationKind = 'JOB_COMPLETED' | 'JOB_FAILED' | 'JOB_ACTION_REQUIRED'
+export type NotificationKind = 'JOB_COMPLETED' | 'JOB_FAILED'
 
 export interface NotificationOut {
   id: string
@@ -129,25 +127,6 @@ export interface NetworkOut {
   datacenter_name?: string | null
 }
 
-export interface TemplateOut {
-  id: string
-  name: string
-  type: 'OVF' | 'OVA'
-  description: string
-  datacenter_id: string | null
-  datacenter_name: string | null
-  storage_name: string | null
-  location: string | null
-  size_bytes: number | null
-  last_modified: string | null
-  /** Legacy fields remain optional while old jobs are still readable. */
-  os_family?: string | null
-  os_version?: string | null
-  cpu?: number | null
-  memory_mb?: number | null
-  disk_size_gb?: number | null
-}
-
 export interface IsoImageOut {
   id: string
   name: string
@@ -193,8 +172,9 @@ export interface CredentialOptionOut {
   updated_at: string | null
 }
 
+/** Every VM is created empty and Windows Server is installed unattended from an ISO. */
 export interface ProvisioningRequest {
-  source_type: 'blank' | 'template'
+  source_type: 'blank'
   identity_policy_version: 'v1' | 'v2'
   vm: { name: string; description: string }
   compute: {
@@ -212,8 +192,9 @@ export interface ProvisioningRequest {
     disks: DiskSpec[]
   }
   guest: {
-    template_id: string | null
-    iso_id: string | null
+    iso_id: string
+    /** Credential reference (purpose windows_product_key); null for volume-license media. */
+    product_key_secret_ref: string | null
     hostname: string | null
     timezone: string | null
     installation_locale: string
@@ -302,7 +283,6 @@ export interface JobOut {
   guest_os_status: string
   vmware_tools_status: string
   guest_provisioning_status: string
-  action_required: string | null
   error_summary: string | null
   cancel_requested: boolean
   queued_at: string | null
@@ -313,7 +293,13 @@ export interface JobOut {
 
 export interface JobDetailOut extends JobOut {
   steps: JobStepOut[]
-  request_payload: ProvisioningRequest | null
+  /**
+   * The stored request. When ``legacy_request`` is true the job was created by
+   * a workflow that no longer exists: the payload is raw stored JSON, shown
+   * read-only, and the job cannot be retried.
+   */
+  request_payload: ProvisioningRequest | Record<string, unknown> | null
+  legacy_request: boolean
 }
 
 export interface JobListResponse {
@@ -395,7 +381,7 @@ export interface SecretReferenceOut {
   id: string
   name: string
   provider: string
-  purpose: 'generic' | 'vcenter' | 'guest_administrator' | 'domain_join'
+  purpose: SecretPurpose
   description: string
   meta: Record<string, unknown>
   configured: boolean
@@ -404,8 +390,17 @@ export interface SecretReferenceOut {
   updated_at: string | null
 }
 
+export type SecretPurpose =
+  | 'generic'
+  | 'vcenter'
+  | 'guest_administrator'
+  | 'domain_join'
+  | 'windows_product_key'
+
 export interface DefaultTimeouts {
-  clone_minutes: number
+  create_vm_minutes: number
+  /** Windows Setup from the ISO through first logon and VMware Tools. */
+  os_installation_minutes: number
   vmware_tools_minutes: number
   network_configuration_minutes: number
   guest_operations_minutes: number

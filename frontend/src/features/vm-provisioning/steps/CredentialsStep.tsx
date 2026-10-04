@@ -11,9 +11,6 @@ export function CredentialsStep() {
   const wizard = useWizard()
   const credentials = useProvisioningCredentials('guest_administrator')
   const items = credentials.data ?? []
-  const guestAutomationDeferred = (
-    wizard.data.source_type === 'blank' && !wizard.data.iso_id
-  )
 
   useEffect(() => {
     if (
@@ -24,21 +21,6 @@ export function CredentialsStep() {
       wizard.update({ guest_credential_secret_ref: '' })
     }
   }, [credentials.isSuccess, items, wizard.data.guest_credential_secret_ref, wizard.update])
-
-  if (guestAutomationDeferred) {
-    return (
-      <section aria-label="Provisioning credentials" className="space-y-5">
-        <header>
-          <p className="console-kicker">Guest prerequisite</p>
-          <h2>No guest credential is required yet</h2>
-          <p>The deployment creates VM hardware only and stops before guest operations.</p>
-        </header>
-        <Alert tone="warning" title="Waiting for guest operating system">
-          Install and boot an operating system before supplying credentials or enabling VMware Tools, guest networking, hostname, domain, certificate, or application operations.
-        </Alert>
-      </section>
-    )
-  }
 
   return (
     <section aria-label="Provisioning credentials" className="space-y-5">
@@ -86,10 +68,8 @@ export function CredentialsStep() {
                 ))}
               </Select>
             </FormRow>
-            <Alert tone="info" title={wizard.data.source_type === 'blank' ? 'Used by unattended Windows Setup' : 'Used during first-boot provisioning'}>
-              {wizard.data.source_type === 'blank'
-                ? 'InfraOps uses this password in the generated unattended setup media, then authenticates through VMware Tools after Windows installation.'
-                : 'The package’s local Administrator must use this password. InfraOps signs in through VMware Tools, generalizes the new VM with Sysprep (its own computer name and SID), then configures networking, identity, certificates and applications.'}
+            <Alert tone="info" title="Used by unattended Windows Setup">
+              Windows Setup creates this local administrator from the temporary answer media, which InfraOps deletes once Windows is installed. InfraOps then signs in through VMware Tools to configure networking, identity, certificates and applications.
             </Alert>
           </div>
         </div>

@@ -4,24 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.schemas.infrastructure import IsoImageOut, TemplateOut
+from app.schemas.infrastructure import IsoImageOut
 from app.schemas.logs import LogEventOut, LogListResponse
 from app.services.vmware.inventory_refs import decode_iso_id, encode_iso_id
 
 
 def test_frontend_facing_inventory_and_log_shapes_are_stable() -> None:
-    assert set(TemplateOut.model_fields) == {
-        "id",
-        "name",
-        "type",
-        "description",
-        "datacenter_id",
-        "datacenter_name",
-        "storage_name",
-        "location",
-        "size_bytes",
-        "last_modified",
-    }
     assert set(IsoImageOut.model_fields) == {
         "id",
         "name",

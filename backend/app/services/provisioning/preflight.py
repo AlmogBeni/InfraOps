@@ -1,8 +1,8 @@
-"""Dry-run preflight validation.
+"""Preflight validation.
 
-Performs every check that can be executed WITHOUT modifying infrastructure
-and produces the report rendered on the wizard's review screen. Provisioning
-is blocked whenever any blocking check fails.
+Performs every check that can be executed WITHOUT modifying infrastructure.
+It runs on every submission (and on demand from the wizard's review screen);
+provisioning is blocked whenever any blocking check fails.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from app.schemas.provisioning import (
     PreflightCheck,
     PreflightReport,
     ProvisioningRequest,
-    VmSourceType,
 )
 from app.secrets.base import SecretNotFoundError
 from app.secrets.service import SecretsService, get_secrets_service
@@ -43,6 +42,13 @@ from app.services.settings_store import (
     load_effective,
 )
 from app.services.vmware.base import VCenterTarget, VMwareService
+from app.services.windows_media import (
+    ISO_HEADER_BYTES,
+    PRODUCT_KEY,
+    WindowsMediaKind,
+    classify_windows_media,
+    iso_volume_label,
+)
 
 log = get_logger(__name__)
 
@@ -116,26 +122,6 @@ class PreflightValidator:
         # ── Infrastructure discovery ─────────────────────────────────────────
         if target is not None:
             await self._check_infrastructure(request, target, add)
-
-        if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
-            add(
-                "guest_lifecycle",
-                "Guest OS installation required",
-                CheckStatus.WARN,
-                "Only VM infrastructure will be created. The job will pause for an administrator "
-                "to install and boot an operating system; VMware Tools and guest actions are deferred.",
-                blocking=False,
-            )
-        elif request.source_type == VmSourceType.TEMPLATE:
-            add(
-                "guest_lifecycle",
-                "OVF/OVA guest prerequisites verified after deployment",
-                CheckStatus.WARN,
-                "Content Library package inventory does not prove that an OS is bootable or that "
-                "VMware Tools/open-vm-tools is healthy. InfraOps verifies those states after power-on "
-                "and pauses instead of running guest customization when they are unavailable.",
-                blocking=False,
-            )
 
         # ── VM name policy & uniqueness ──────────────────────────────────────
         policy = str(settings_rows.get(SETTING_VM_NAME_POLICY) or "")
@@ -316,36 +302,18 @@ class PreflightValidator:
                 add("network", "Network exists", CheckStatus.PASS,
                     f"{network.name} ({network.type})")
 
-            if request.source_type == VmSourceType.TEMPLATE:
-                templates = {t.id: t for t in await self._vmware.get_templates(target, dc.id)}
-                template = templates.get(request.guest.template_id)
-                if template is None:
-                    add("template", "Template accessible", CheckStatus.FAIL,
-                        f"Template '{request.guest.template_id}' was not found.")
-                else:
-                    add("template", "OVF/OVA package accessible", CheckStatus.PASS,
-                        f"{template.name} ({template.type})")
+            isos = {image.id: image for image in await self._vmware.get_isos(target, dc.id)}
+            image = isos.get(request.guest.iso_id)
+            if image is None:
+                add("iso", "ISO available", CheckStatus.FAIL,
+                    "The selected ISO was not found in this datacenter.")
+            elif image.datastore_id not in datastores or not datastores[image.datastore_id].accessible:
+                add("iso", "ISO accessible to cluster", CheckStatus.FAIL,
+                    f"{image.name} is stored on a datastore unavailable to this cluster.")
             else:
-                if request.guest.iso_id:
-                    isos = {
-                        image.id: image
-                        for image in await self._vmware.get_isos(target, dc.id)
-                    }
-                    image = isos.get(request.guest.iso_id)
-                    if image is None:
-                        add("iso", "ISO available", CheckStatus.FAIL,
-                            "The selected ISO was not found in this datacenter.")
-                    elif image.datastore_id not in datastores or not datastores[
-                        image.datastore_id
-                    ].accessible:
-                        add("iso", "ISO accessible to cluster", CheckStatus.FAIL,
-                            f"{image.name} is stored on a datastore unavailable to this cluster.")
-                    else:
-                        add("iso", "ISO available", CheckStatus.PASS,
-                            f"{image.name} on {image.datastore_name}")
-                else:
-                    add("iso", "Installation media", CheckStatus.PASS,
-                        "No ISO will be mounted.")
+                add("iso", "ISO available", CheckStatus.PASS,
+                    f"{image.name} on {image.datastore_name}")
+                await self._check_windows_server_media(target, dc.id, image, add)
         except Exception as exc:  # noqa: BLE001
             add(
                 "infrastructure",
@@ -356,6 +324,31 @@ class PreflightValidator:
                     "Infrastructure inventory could not be loaded. Try again.",
                 ),
             )
+
+    async def _check_windows_server_media(self, target: VCenterTarget, datacenter_id: str, image, add) -> None:
+        """Only Windows Server media installs without any page needing input."""
+        try:
+            header = await self._vmware.read_datastore_file(
+                target, datacenter_id, image.path, max_bytes=ISO_HEADER_BYTES
+            )
+        except Exception as exc:  # noqa: BLE001
+            add("windows_media", "Windows Server installation media", CheckStatus.FAIL,
+                _safe_infrastructure_failure(exc, "The ISO could not be read from its datastore."))
+            return
+        label = iso_volume_label(header)
+        kind = classify_windows_media(label)
+        if kind == WindowsMediaKind.SERVER:
+            add("windows_media", "Windows Server installation media", CheckStatus.PASS,
+                f"Volume label {label}.")
+        elif kind == WindowsMediaKind.CLIENT:
+            add("windows_media", "Windows Server installation media", CheckStatus.FAIL,
+                f"{image.name} is Windows client media (volume label {label}). Only Windows "
+                "Server installs without anyone answering Setup or OOBE pages.")
+        else:
+            add("windows_media", "Windows Server installation media", CheckStatus.FAIL,
+                f"{image.name} is not recognised as Windows Server installation media "
+                f"(volume label {label or 'missing'}). Microsoft Server ISOs carry an 'SSS_' "
+                "volume label; use unmodified Microsoft media or keep that label when rebuilding it.")
 
     async def _selected_applications(self, request: ProvisioningRequest) -> list[Application]:
         if not request.application_ids:
@@ -425,10 +418,7 @@ class PreflightValidator:
                 "Install order: " + " → ".join(node.name for node in ordered))
 
     async def _check_credentials(self, request: ProvisioningRequest, add) -> None:
-        if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
-            add("credentials", "Guest credentials", CheckStatus.PASS,
-                "Not required for a powered-off blank VM.")
-            return
+        await self._check_product_key(request, add)
         bases = [request.guest.credential_secret_ref]
         if request.guest.domain_join:
             bases.append(request.guest.domain_join.credential_secret_ref)
@@ -458,3 +448,26 @@ class PreflightValidator:
                 " ".join(problems))
         else:
             add("credentials", "Credential references resolvable", CheckStatus.PASS)
+
+    async def _check_product_key(self, request: ProvisioningRequest, add) -> None:
+        reference = request.guest.product_key_secret_ref
+        if not reference:
+            add("product_key", "Windows product key", CheckStatus.PASS,
+                "None selected; volume-license and evaluation media need none.")
+            return
+        try:
+            key = (await self._secrets.get_secret(f"{reference}/password")).strip().upper()
+        except SecretNotFoundError:
+            add("product_key", "Windows product key", CheckStatus.FAIL,
+                f"Product key '{reference}' is not resolvable.")
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("Product key preflight check failed")
+            add("product_key", "Windows product key", CheckStatus.FAIL,
+                f"Product key '{reference}' could not be checked. Contact an administrator.")
+            return
+        if PRODUCT_KEY.fullmatch(key):
+            add("product_key", "Windows product key", CheckStatus.PASS, reference)
+        else:
+            add("product_key", "Windows product key", CheckStatus.FAIL,
+                f"Product key '{reference}' is not a 25-character key (XXXXX-XXXXX-XXXXX-XXXXX-XXXXX).")

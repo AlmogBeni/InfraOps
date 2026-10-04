@@ -5,7 +5,7 @@ import { safeAuditDetails } from './AuditLogPage'
 describe('safeAuditDetails', () => {
   it('keeps readable facts while omitting identifiers and protected context', () => {
     expect(safeAuditDetails({
-      stage: 'clone_vm',
+      stage: 'create_vm',
       network_mode: 'STATIC',
       attempt: 2,
       duration_seconds: 1,
@@ -15,7 +15,7 @@ describe('safeAuditDetails', () => {
       technical_error: 'provider exception',
       payload: { token: 'do-not-render' },
     })).toEqual([
-      { key: 'stage', label: 'Stage', value: 'Clone Vm' },
+      { key: 'stage', label: 'Stage', value: 'Create Vm' },
       { key: 'network_mode', label: 'Network Mode', value: 'Static' },
       { key: 'attempt', label: 'Attempt', value: '2' },
       { key: 'duration_seconds', label: 'Duration Seconds', value: '1 second' },

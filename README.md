@@ -1,11 +1,12 @@
 # InfraOps — Internal IT Infrastructure Automation Platform
 
 An internal web platform for IT infrastructure teams. **Phase 1** delivers a complete,
-auditable **VM Provisioning** workflow against VMware vSphere: OVF/OVA package deployment or
-blank-VM creation with unattended Windows installation, hardware
-customisation, Windows guest networking, corporate certificate deployment and approved
-application installation — with a dry-run validator, live job progress, safe retries and a
-tamper-resistant audit trail.
+auditable **VM Provisioning** workflow against VMware vSphere: every VM is created empty and
+Windows Server is installed from an ISO with no one at the console, followed by data disks,
+Windows guest networking, domain join, corporate certificate deployment and approved
+application installation — with server-side preflight, live job progress, safe retries and a
+tamper-resistant audit trail. The only manual prerequisite is placing the Windows Server ISO
+on a datastore.
 
 > ⚠️ This is a **privileged infrastructure management tool**. It is designed for
 > internal networks only and assumes the operator follows least-privilege practices.
@@ -144,9 +145,11 @@ ruff check app tests migrations
 pytest                                   # unit tests
 INFRAOPS_TEST_DATABASE_URL=postgresql+asyncpg://... pytest tests/integration
                                          # PostgreSQL guarantees (migrated database)
+INFRAOPS_MIGRATION_TEST_URL=postgresql+asyncpg://owner:...@host/postgres pytest tests/integration
+                                         # also runs the migration data test (needs CREATEDB)
 
 # Frontend
-cd frontend && npm ci && npm run typecheck && npm test
+cd frontend && npm ci && npm run typecheck && npm test && npm run bundle
 ```
 
 GitHub Actions (`.github/workflows/ci.yml`) runs all of the above against PostgreSQL 16 and
@@ -156,10 +159,12 @@ configuration and the compose file.
 Covered areas include IP/subnet validation, provisioning request schemas, dependency
 resolution (cycles, missing/disabled deps), the RBAC matrix, certificate store logic,
 shell-free guest command construction and secret handling, installer path policy, trusted
-client-IP resolution, VM ownership and vCenter task cancellation, unattended-media cleanup,
-pipeline stage registry integrity, adapter contract flows against test doubles, and — with a
-database — unique-reservation races, worker slot claiming/heartbeats, refresh-token reuse
-detection and the append-only audit trail.
+client-IP resolution, VM ownership and vCenter task cancellation, golden EFI/BIOS answer
+files and answer-media cleanup, Windows Server media detection, data-disk hot-add and
+formatting, the stage registry and the absence of any human gate, adapter contract flows
+against test doubles, and — with a database — unique-reservation races, worker slot
+claiming/heartbeats, refresh-token reuse detection, the append-only audit trail and
+migration 0009 against data written by the previous release.
 
 ## Production data
 

@@ -70,15 +70,6 @@ export function useNetworks(vcenterId: string, datacenterId: string | null) {
   })
 }
 
-export function useTemplates(vcenterId: string, datacenterId: string | null, enabled = true) {
-  return useQuery({
-    queryKey: ['templates', vcenterId, datacenterId],
-    queryFn: () => api.templates(vcenterId, datacenterId ?? ''),
-    enabled: Boolean(enabled && vcenterId && datacenterId),
-    ...MEDIA_INVENTORY_OPTIONS,
-  })
-}
-
 export function useIsos(vcenterId: string, datacenterId: string | null, enabled = true) {
   return useQuery({
     queryKey: ['isos', vcenterId, datacenterId],
@@ -100,7 +91,9 @@ export function useApplications(enabled = true) {
   return useQuery({ queryKey: ['applications'], queryFn: () => api.applications(true), enabled })
 }
 
-export function useProvisioningCredentials(purpose: 'guest_administrator' | 'domain_join') {
+export function useProvisioningCredentials(
+  purpose: 'guest_administrator' | 'domain_join' | 'windows_product_key',
+) {
   return useQuery({
     queryKey: ['provisioning-credentials', purpose],
     queryFn: () => api.provisioningCredentials(purpose),

@@ -10,12 +10,12 @@ import {
 
 function validData(): WizardData {
   const data = initialWizardData()
-  data.source_type = 'template'
   data.vcenter_id = '11111111-1111-4111-8111-111111111111'
   data.datacenter_id = 'datacenter-21'
   data.cluster_id = 'domain-c7'
   data.vm_name = 'SERVER-PROD-042'
-  data.template_id = 'vm-62'
+  data.iso_id = 'iso-corp-windows-2025'
+  data.guest_credential_secret_ref = 'guest-admin'
   data.hostname = 'SERVER-PROD-042'
   data.network_id = 'dvportgroup-51'
   data.ip_address = '10.20.30.45'
@@ -27,28 +27,25 @@ function validData(): WizardData {
 
 describe('validateStep', () => {
   it('passes for a fully valid draft', () => {
-    expect(validateStep('deployment', validData())).toEqual({})
     expect(validateStep('location', validData())).toEqual({})
     expect(validateStep('media', validData())).toEqual({})
     expect(validateStep('configuration', validData())).toEqual({})
-    expect(validateStep('source', validData())).toEqual({})
-    expect(validateStep('infrastructure', validData())).toEqual({})
-    expect(validateStep('compute', validData())).toEqual({})
-    expect(validateStep('os', validData())).toEqual({})
+    expect(validateStep('credentials', validData())).toEqual({})
     expect(validateStep('network', validData())).toEqual({})
+    expect(validateStep('directory', validData())).toEqual({})
   })
 
-  it('blocks infrastructure when vCenter missing', () => {
+  it('blocks the location when vCenter is missing', () => {
     const data = validData()
     data.vcenter_id = ''
-    const errors = validateStep('infrastructure', data)
+    const errors = validateStep('location', data)
     expect(errors['vcenter_id']).toBeTruthy()
   })
 
   it('rejects invalid VM names', () => {
     const data = validData()
     data.vm_name = '-bad name-'
-    expect(validateStep('compute', data)['vm_name']).toBeTruthy()
+    expect(validateStep('configuration', data)['vm_name']).toBeTruthy()
   })
 
   it('rejects bad IP addresses on the network step', () => {
@@ -135,39 +132,35 @@ describe('validateStep', () => {
     expect(validateStep('directory', data)['domain_join.domain']).toContain('63 characters')
   })
 
-  it('requires a template only for template mode', () => {
-    const template = validData()
-    template.template_id = ''
-    expect(validateStep('infrastructure', template).template_id).toBe('Select a VM template.')
-
-    template.source_type = 'blank'
-    expect(validateStep('infrastructure', template).template_id).toBeUndefined()
+  it('requires a Windows installation ISO', () => {
+    const data = validData()
+    data.iso_id = ''
+    expect(validateStep('media', data).iso_id).toBe('Select the Windows Server installation ISO.')
   })
 
-  it('requires a package for template mode and allows hardware-only blank VMs', () => {
+  it('always requires the provisioning administrator', () => {
     const data = validData()
-    data.template_id = ''
-    expect(validateStep('media', data).template_id).toBe('Select an OVF or OVA package.')
-
-    data.source_type = 'blank'
-    expect(validateStep('media', data).iso_id).toBeUndefined()
+    data.guest_credential_secret_ref = ''
+    expect(validateStep('credentials', data).guest_credential_secret_ref).toBe(
+      'Select a Windows provisioning administrator credential.',
+    )
   })
 
   it('requires a host for manual placement', () => {
     const data = validData()
     data.host_mode = 'manual'
     data.host_id = null
-    expect(validateStep('infrastructure', data).host_id).toBe('Select a host.')
+    expect(validateStep('location', data).host_id).toBe('Select a host.')
   })
 
   it('requires a datastore for manual storage placement', () => {
     const data = validData()
     data.storage_mode = 'manual'
     data.datastore_id = null
-    expect(validateStep('storage', data).datastore_id).toBe('Select a datastore.')
+    expect(validateStep('configuration', data).datastore_id).toBe('Select a datastore.')
 
     data.storage_mode = 'auto'
-    expect(validateStep('storage', data)).toEqual({})
+    expect(validateStep('configuration', data)).toEqual({})
   })
 })
 
@@ -227,30 +220,41 @@ describe('buildRequest', () => {
     expect(buildRequest(data).compute.host_id).toBeNull()
   })
 
-  it('provisions the complete guest workflow from a blank Windows ISO', () => {
+  it('installs Windows from the ISO and runs the complete guest workflow', () => {
     const data = validData()
-    data.source_type = 'blank'
-    data.template_id = 'vm-stale'
-    data.iso_id = 'iso-ubuntu-2404'
     data.certificate_package_ids = ['11111111-1111-4111-8111-111111111111']
     data.application_ids = ['22222222-2222-4222-8222-222222222222']
+    data.disks = [
+      { size_gb: 100, provisioning: 'thin', datastore_id: null },
+      { size_gb: 200, provisioning: 'thick', datastore_id: null },
+    ]
     data.domain_join.enabled = true
+    data.domain_join.domain = 'corp.example.com'
 
     const payload = buildRequest(data)
     expect(payload.source_type).toBe('blank')
-    expect(payload.guest.template_id).toBeNull()
-    expect(payload.guest.iso_id).toBe('iso-ubuntu-2404')
+    expect(payload.guest.iso_id).toBe('iso-corp-windows-2025')
+    expect(payload.guest.credential_secret_ref).toBe('guest-admin')
     expect(payload.guest.domain_join).not.toBeNull()
+    expect(payload.hardware.disks.map((disk) => disk.size_gb)).toEqual([100, 200])
+    expect(payload.network.mode).toBe('STATIC')
     expect(payload.certificate_package_ids).toEqual(data.certificate_package_ids)
     expect(payload.application_ids).toEqual(data.application_ids)
   })
 
-  it('sends an OVF or OVA package without an ISO', () => {
+  it('sends the product key reference only when one is selected', () => {
     const data = validData()
-    data.iso_id = 'iso-stale'
+    expect(buildRequest(data).guest.product_key_secret_ref).toBeNull()
 
+    data.product_key_secret_ref = 'windows-server-2025-standard'
+    expect(buildRequest(data).guest.product_key_secret_ref).toBe('windows-server-2025-standard')
+  })
+
+  it('sends DHCP without IPv4 settings', () => {
+    const data = validData()
+    data.ip_mode = 'DHCP'
     const payload = buildRequest(data)
-    expect(payload.guest.template_id).toBe(data.template_id)
-    expect(payload.guest.iso_id).toBeNull()
+    expect(payload.network.mode).toBe('DHCP')
+    expect(payload.network.ipv4).toBeNull()
   })
 })

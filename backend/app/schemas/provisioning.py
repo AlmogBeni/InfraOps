@@ -41,11 +41,6 @@ class AdapterType(str, enum.Enum):
     E1000E = "E1000E"
 
 
-class VmSourceType(enum.StrEnum):
-    BLANK = "blank"
-    TEMPLATE = "template"
-
-
 class IdentityPolicyVersion(enum.StrEnum):
     """Controls how a request derives the Windows/AD computer identity."""
 
@@ -145,14 +140,19 @@ class DomainJoinSpec(BaseModel):
 class GuestSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    template_id: str | None = Field(default=None, min_length=1, max_length=120)
-    iso_id: str | None = Field(default=None, min_length=1, max_length=2048)
+    # Windows Server installation ISO on a datastore (see inventory_refs).
+    iso_id: str = Field(min_length=1, max_length=2048)
     hostname: str | None = Field(default=None, max_length=64, pattern=VM_NAME_PATTERN.pattern)
     timezone: str | None = Field(default=None, max_length=100)
     installation_locale: str = Field(default="en-US", min_length=2, max_length=35)
     input_locale: str = Field(default="0409:00000409", min_length=2, max_length=100)
     windows_image_index: int = Field(default=1, ge=1, le=99)
     credential_secret_ref: str = Field(default="guest-local-admin", min_length=2, max_length=150)
+    # Optional credential (purpose windows_product_key) whose password is the
+    # Windows product key, for media that asks for one (retail / MAK).
+    product_key_secret_ref: str | None = Field(
+        default=None, min_length=2, max_length=150, pattern=SECRET_REFERENCE_PATTERN.pattern
+    )
     domain_join: DomainJoinSpec | None = None
 
     @property
@@ -224,9 +224,9 @@ class ProvisioningRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # Defaults to template for compatibility with requests created before
-    # source selection became an explicit part of the contract.
-    source_type: VmSourceType = VmSourceType.TEMPLATE
+    # Every VM is a blank VM installed from a Windows ISO; the field is kept so
+    # a client naming any other source gets an explicit error.
+    source_type: Literal["blank"] = "blank"
     # New submissions use the VM name as the single Windows/AD identity.
     # Stored payload readers explicitly mark pre-policy jobs as v1 so their
     # historical guest.hostname value remains authoritative.
@@ -239,103 +239,87 @@ class ProvisioningRequest(BaseModel):
     certificate_package_ids: list[UUID4] = Field(default_factory=list, max_length=20)
     application_ids: list[UUID4] = Field(default_factory=list, max_length=50)
 
-    @model_validator(mode="after")
-    def _validate_source(self) -> ProvisioningRequest:
-        if self.source_type == VmSourceType.TEMPLATE and not self.guest.template_id:
-            raise ValueError("guest.template_id is required when source_type is 'template'.")
-        if self.source_type == VmSourceType.TEMPLATE and self.guest.iso_id is not None:
-            raise ValueError("guest.iso_id must be null when source_type is 'template'.")
-        if self.source_type == VmSourceType.BLANK and self.guest.template_id is not None:
-            raise ValueError("guest.template_id must be null when source_type is 'blank'.")
-        if self.source_type == VmSourceType.BLANK and self.guest.iso_id is None:
-            if (
-                self.identity_policy_version == IdentityPolicyVersion.V2
-                and (self.network.mode != IpMode.DHCP or self.network.ipv4 is not None)
-            ):
-                raise ValueError(
-                    "Guest IP configuration is unavailable for a blank VM without an operating system."
-                )
-            if self.guest.hostname or self.guest.timezone or self.guest.domain_join:
-                raise ValueError(
-                    "Guest customization is unavailable for a blank VM until an operating system is installed."
-                )
-            if self.certificate_package_ids or self.application_ids:
-                raise ValueError(
-                    "Certificates and applications cannot be installed on a blank VM without an operating system."
-                )
-        else:
-            if (
-                self.identity_policy_version == IdentityPolicyVersion.V2
-                and not SECRET_REFERENCE_PATTERN.fullmatch(self.guest.credential_secret_ref)
-            ):
-                raise ValueError(
-                    "guest.credential_secret_ref must be a safe lowercase, slash-separated secret reference."
-                )
-            short_name = (
-                (
-                    self.guest.hostname or self.vm.name
-                    if self.identity_policy_version == IdentityPolicyVersion.V1
-                    else self.vm.name
-                )
-                if self.guest.domain_join is not None
-                else (self.guest.hostname or self.vm.name)
+    @field_validator("source_type", mode="before")
+    @classmethod
+    def _only_blank_vms(cls, value: object) -> object:
+        if value not in (None, "blank"):
+            raise ValueError(
+                "source_type must be 'blank': every VM is installed from a Windows ISO."
             )
-            if self.identity_policy_version == IdentityPolicyVersion.V2 and (
-                not WINDOWS_COMPUTER_NAME_PATTERN.fullmatch(short_name)
-                or short_name.isdigit()
-            ):
-                field = (
-                    "guest.hostname"
-                    if (
-                        self.guest.domain_join is None
-                        or self.identity_policy_version == IdentityPolicyVersion.V1
-                    )
-                    else "vm.name"
+        return "blank" if value is None else value
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> ProvisioningRequest:
+        if (
+            self.identity_policy_version == IdentityPolicyVersion.V2
+            and not SECRET_REFERENCE_PATTERN.fullmatch(self.guest.credential_secret_ref)
+        ):
+            raise ValueError(
+                "guest.credential_secret_ref must be a safe lowercase, slash-separated secret reference."
+            )
+        short_name = (
+            (
+                self.guest.hostname or self.vm.name
+                if self.identity_policy_version == IdentityPolicyVersion.V1
+                else self.vm.name
+            )
+            if self.guest.domain_join is not None
+            else (self.guest.hostname or self.vm.name)
+        )
+        if self.identity_policy_version == IdentityPolicyVersion.V2 and (
+            not WINDOWS_COMPUTER_NAME_PATTERN.fullmatch(short_name)
+            or short_name.isdigit()
+        ):
+            field = (
+                "guest.hostname"
+                if (
+                    self.guest.domain_join is None
+                    or self.identity_policy_version == IdentityPolicyVersion.V1
                 )
-                raise ValueError(
-                    f"{field} must be a valid Windows computer name "
-                    "(letters, numbers and hyphens only; not all-numeric; maximum 63 characters)."
-                )
-            if self.guest.domain_join is not None:
-                if (
-                    self.identity_policy_version == IdentityPolicyVersion.V2
-                    and not SECRET_REFERENCE_PATTERN.fullmatch(
-                        self.guest.domain_join.credential_secret_ref
-                    )
-                ):
-                    raise ValueError(
-                        "guest.domain_join.credential_secret_ref must be a safe lowercase, "
-                        "slash-separated secret reference."
-                    )
-                if (
-                    self.identity_policy_version == IdentityPolicyVersion.V2
-                    and any(
-                        len(label) > 63
-                        for label in self.guest.domain_join.domain.split(".")
-                    )
-                ):
-                    raise ValueError(
-                        "Each DNS domain label must not exceed 63 characters."
-                    )
-                if (
-                    self.identity_policy_version == IdentityPolicyVersion.V2
-                    and len(f"{short_name}.{self.guest.domain_join.domain}") > 253
-                ):
-                    raise ValueError("The resulting domain-joined FQDN must not exceed 253 characters.")
-            # v1 payloads retain their historical hostname verbatim. v2 and
-            # non-domain requests persist the normalized name supplied to Windows.
+                else "vm.name"
+            )
+            raise ValueError(
+                f"{field} must be a valid Windows computer name "
+                "(letters, numbers and hyphens only; not all-numeric; maximum 63 characters)."
+            )
+        if self.guest.domain_join is not None:
             if (
-                self.guest.domain_join is None
-                or self.identity_policy_version == IdentityPolicyVersion.V2
+                self.identity_policy_version == IdentityPolicyVersion.V2
+                and not SECRET_REFERENCE_PATTERN.fullmatch(
+                    self.guest.domain_join.credential_secret_ref
+                )
             ):
-                self.guest.hostname = short_name.upper()
+                raise ValueError(
+                    "guest.domain_join.credential_secret_ref must be a safe lowercase, "
+                    "slash-separated secret reference."
+                )
+            if (
+                self.identity_policy_version == IdentityPolicyVersion.V2
+                and any(
+                    len(label) > 63
+                    for label in self.guest.domain_join.domain.split(".")
+                )
+            ):
+                raise ValueError(
+                    "Each DNS domain label must not exceed 63 characters."
+                )
+            if (
+                self.identity_policy_version == IdentityPolicyVersion.V2
+                and len(f"{short_name}.{self.guest.domain_join.domain}") > 253
+            ):
+                raise ValueError("The resulting domain-joined FQDN must not exceed 253 characters.")
+        # v1 payloads retain their historical hostname verbatim. v2 and
+        # non-domain requests persist the normalized name supplied to Windows.
+        if (
+            self.guest.domain_join is None
+            or self.identity_policy_version == IdentityPolicyVersion.V2
+        ):
+            self.guest.hostname = short_name.upper()
         return self
 
     @property
     def effective_computer_name(self) -> str:
         """Short Windows name passed to Rename-Computer, never an FQDN."""
-        if self.source_type == VmSourceType.BLANK and self.guest.iso_id is None:
-            return ""
         if self.guest.domain_join is not None:
             if self.identity_policy_version == IdentityPolicyVersion.V1:
                 return (self.guest.hostname or self.vm.name).upper()
@@ -345,16 +329,40 @@ class ProvisioningRequest(BaseModel):
     @property
     def effective_fqdn(self) -> str | None:
         """Canonical DNS identity created by joining the short VM name to AD."""
-        if (
-            self.source_type == VmSourceType.BLANK
-            and self.guest.iso_id is None
-        ) or self.guest.domain_join is None:
+        if self.guest.domain_join is None:
             return None
         return f"{self.effective_computer_name}.{self.guest.domain_join.domain}".lower()
 
     @property
     def total_disk_gb(self) -> int:
         return sum(disk.size_gb for disk in self.hardware.disks)
+
+
+def parse_stored_request(payload: object) -> ProvisioningRequest | None:
+    """Read a stored request with the current contract; None for legacy shapes.
+
+    Jobs written by workflows that no longer exist (another VM source, or a
+    blank VM without installation media) stay readable as raw data but can
+    no longer be executed.
+    """
+    if not isinstance(payload, dict):
+        return None
+    candidate = dict(payload)
+    # Jobs written before identity policy versioning used guest.hostname as
+    # their Windows/AD identity. Never reinterpret those rows with v2 rules.
+    candidate.setdefault("identity_policy_version", "v1")
+    # Earlier releases serialized since-removed guest fields as null; a
+    # non-null value means the job used a removed workflow.
+    guest = candidate.get("guest")
+    if isinstance(guest, dict):
+        candidate["guest"] = {
+            key: value for key, value in guest.items()
+            if value is not None or key in GuestSpec.model_fields
+        }
+    try:
+        return ProvisioningRequest.model_validate(candidate)
+    except ValueError:
+        return None
 
 
 class ProvisioningSubmissionRequest(ProvisioningRequest):

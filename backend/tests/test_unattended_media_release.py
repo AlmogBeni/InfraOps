@@ -9,25 +9,25 @@ import pytest
 
 from app.models.jobs import StepStatus
 from app.workers.stages import release_unattended_media
-from tests.test_vm_deployment_lifecycle import request_for
+from tests.conftest import make_request
 
 
 def media_context(power_on_status: StepStatus, *, cleanup_status=StepStatus.PENDING, removed=False):
     prepare = SimpleNamespace(
         stage_key="prepare_unattended_install",
         status=StepStatus.SUCCEEDED,
-        artifacts={"datastore_path": "[ds] infraops-unattend/x.flp", **({"media_removed": True} if removed else {})},
+        artifacts={"datastore_path": "[ds] infraops-unattend/x.iso", **({"media_removed": True} if removed else {})},
         output="",
     )
     steps = {
         "prepare_unattended_install": prepare,
         "cleanup_unattended_media": SimpleNamespace(status=cleanup_status, artifacts={}),
         "power_on": SimpleNamespace(status=power_on_status, artifacts={}),
-        "clone_vm": SimpleNamespace(status=StepStatus.SUCCEEDED, artifacts={"vm_id": "vm-9"}),
+        "create_vm": SimpleNamespace(status=StepStatus.SUCCEEDED, artifacts={"vm_id": "vm-9"}),
     }
     return SimpleNamespace(
-        request=request_for("blank", iso="iso-corp-windows-2025"),
-        vmware=SimpleNamespace(remove_temporary_floppy=AsyncMock()),
+        request=make_request(),
+        vmware=SimpleNamespace(remove_answer_media=AsyncMock()),
         target=object(),
         vm_ref=None,
         vm_name="SERVER-PROD-042",
@@ -52,7 +52,7 @@ async def test_failure_before_boot_removes_media_and_regenerates_it_on_retry() -
 
     assert await release_unattended_media(ctx, reason="stage 'power_on' failed") is True
 
-    ctx.vmware.remove_temporary_floppy.assert_awaited_once()
+    ctx.vmware.remove_answer_media.assert_awaited_once()
     prepare = ctx.steps_by_key["prepare_unattended_install"]
     assert prepare.artifacts["media_removed"] is True
     assert prepare.status == StepStatus.PENDING
@@ -72,7 +72,7 @@ async def test_already_cleaned_media_is_left_alone(kwargs) -> None:
     ctx = media_context(StepStatus.SUCCEEDED, **kwargs)
 
     assert await release_unattended_media(ctx, reason="job cancelled") is False
-    ctx.vmware.remove_temporary_floppy.assert_not_awaited()
+    ctx.vmware.remove_answer_media.assert_not_awaited()
 
 
 def test_cancel_routing_detects_media_that_may_still_be_attached() -> None:
@@ -86,9 +86,9 @@ def test_cancel_routing_detects_media_that_may_still_be_attached() -> None:
             ]
         )
 
-    assert JobRepository.may_hold_unattended_media(job({"datastore_path": "[ds] x.flp"}))
+    assert JobRepository.may_hold_unattended_media(job({"datastore_path": "[ds] x.iso"}))
     assert not JobRepository.may_hold_unattended_media(job({}))
-    assert not JobRepository.may_hold_unattended_media(job({"datastore_path": "[ds] x.flp", "media_removed": True}))
+    assert not JobRepository.may_hold_unattended_media(job({"datastore_path": "[ds] x.iso", "media_removed": True}))
     assert not JobRepository.may_hold_unattended_media(
-        job({"datastore_path": "[ds] x.flp"}, cleanup_status=StepStatus.SUCCEEDED)
+        job({"datastore_path": "[ds] x.iso"}, cleanup_status=StepStatus.SUCCEEDED)
     )

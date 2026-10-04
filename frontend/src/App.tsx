@@ -7,7 +7,6 @@ import { JobsListPage } from '@/features/jobs/JobsListPage'
 import { JobDetailPage } from '@/features/jobs/JobDetailPage'
 import { AuditLogPage } from '@/features/audit/AuditLogPage'
 import { LogsPage } from '@/features/logs/LogsPage'
-import { TemplatesPage } from '@/features/templates/TemplatesPage'
 import { VmProvisioningPage } from '@/features/vm-provisioning/VmProvisioningPage'
 import { VCenterConnectionsPage } from '@/features/admin/VCenterConnectionsPage'
 import { CertificatePackagesPage } from '@/features/admin/CertificatePackagesPage'
@@ -23,7 +22,6 @@ export const router = createBrowserRouter([
     children: [
       { path: '/', element: <DashboardPage /> },
       { path: '/provisioning/new', element: <RequirePermission permission="provisioning.submit"><VmProvisioningPage /></RequirePermission> },
-      { path: '/templates', element: <RequirePermission permission="infrastructure.read"><TemplatesPage /></RequirePermission> },
       { path: '/jobs', element: <RequirePermission permission="jobs.read"><JobsListPage /></RequirePermission> },
       { path: '/jobs/:jobId', element: <RequirePermission permission="jobs.read"><JobDetailPage /></RequirePermission> },
       { path: '/logs', element: <RequirePermission permission="jobs.read"><LogsPage /></RequirePermission> },

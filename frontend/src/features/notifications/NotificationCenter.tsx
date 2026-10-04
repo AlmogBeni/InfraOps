@@ -1,7 +1,7 @@
 /** Header bell: the signed-in engineer's deployment notifications. */
 
 import { formatDistanceToNowStrict } from 'date-fns'
-import { AlertTriangle, Bell, CheckCircle2, XCircle } from 'lucide-react'
+import { Bell, CheckCircle2, XCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -14,7 +14,6 @@ import type { NotificationKind, NotificationOut } from '@/types/api'
 export const KIND_META: Record<NotificationKind, { icon: typeof Bell; classes: string; label: string }> = {
   JOB_COMPLETED: { icon: CheckCircle2, classes: 'text-emerald-600', label: 'Completed' },
   JOB_FAILED: { icon: XCircle, classes: 'text-red-600', label: 'Failed' },
-  JOB_ACTION_REQUIRED: { icon: AlertTriangle, classes: 'text-amber-600', label: 'Needs attention' },
 }
 
 export function relativeTime(iso: string): string {

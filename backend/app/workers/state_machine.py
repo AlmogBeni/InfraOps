@@ -3,6 +3,8 @@
 The ordered stage list *is* the state machine driving execution, progress
 computation, resume-after-retry behaviour and timeout defaults. Future
 automation modules define their own registries against the same machinery.
+No stage waits for a person: every stage either finishes or fails with an
+actionable error.
 """
 
 from __future__ import annotations
@@ -22,14 +24,16 @@ ORDERED_STAGES: tuple[StageDefinition, ...] = (
     StageDefinition("validate_request", "Validate request"),
     StageDefinition("connect_vcenter", "Connect to vCenter"),
     StageDefinition("validate_infrastructure", "Validate infrastructure configuration"),
-    StageDefinition("clone_vm", "Create virtual machine", destructive=True),
+    StageDefinition("create_vm", "Create virtual machine", destructive=True),
     StageDefinition("configure_hardware", "Configure hardware"),
     StageDefinition("attach_network_adapter", "Attach network adapter"),
     StageDefinition("prepare_unattended_install", "Prepare unattended Windows installation"),
-    StageDefinition("power_on", "Power on VM"),
-    StageDefinition("wait_for_guest_os", "Wait for guest operating system"),
+    StageDefinition("power_on", "Power on and start Windows Setup"),
+    StageDefinition("wait_for_guest_os", "Install Windows"),
     StageDefinition("wait_for_tools", "Verify VMware Tools"),
-    StageDefinition("cleanup_unattended_media", "Remove temporary unattended media"),
+    StageDefinition("cleanup_unattended_media", "Remove installation media"),
+    StageDefinition("add_data_disks", "Add data disks", destructive=True),
+    StageDefinition("initialize_data_disks", "Initialize data disks"),
     StageDefinition("configure_guest_network", "Configure guest network"),
     StageDefinition("validate_network", "Validate network connectivity"),
     StageDefinition("configure_hostname", "Configure hostname"),
@@ -47,12 +51,16 @@ ORDERED_STAGES: tuple[StageDefinition, ...] = (
 
 STAGES_BY_KEY: dict[str, StageDefinition] = {stage.key: stage for stage in ORDERED_STAGES}
 
+# Stages that run while Windows Setup owns the console; a failure captures a
+# console screenshot for administrators.
+CONSOLE_STAGES = frozenset({"power_on", "wait_for_guest_os", "wait_for_tools"})
+
 # Default timeouts (seconds) — overridable through platform settings.
 DEFAULT_STAGE_TIMEOUTS: dict[str, int] = {
     "validate_request": 60,
     "connect_vcenter": 120,
     "validate_infrastructure": 300,
-    "clone_vm": 1800,
+    "create_vm": 1800,
     "configure_hardware": 600,
     "attach_network_adapter": 600,
     "prepare_unattended_install": 600,
@@ -60,6 +68,8 @@ DEFAULT_STAGE_TIMEOUTS: dict[str, int] = {
     "wait_for_guest_os": 7200,
     "wait_for_tools": 900,
     "cleanup_unattended_media": 600,
+    "add_data_disks": 600,
+    "initialize_data_disks": 600,
     "configure_guest_network": 300,
     "validate_network": 300,
     "configure_hostname": 300,
