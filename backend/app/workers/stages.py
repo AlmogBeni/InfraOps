@@ -43,7 +43,7 @@ from app.services.applications.paths import path_within_roots
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
 from app.services.guest.base import GuestCredentialsRejected
-from app.services.guest.scripts import HOSTNAME_PATH
+from app.services.guest.scripts import HOSTNAME_PATH, new_temp_path, new_token
 from app.services.guest.scripts import ps_quote as ps_single_quote
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
@@ -282,6 +282,7 @@ class WindowsSetupState:
     system_setup_in_progress: bool
     oobe_in_progress: bool
     computer_name: str
+    sysprep_running: bool = False
 
     @property
     def complete(self) -> bool:
@@ -310,10 +311,41 @@ def build_windows_setup_state_script() -> str:
         "$image = (Get-ItemProperty -LiteralPath "
         "'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State' "
         "-ErrorAction SilentlyContinue).ImageState; "
+        "$sysprep = [bool](Get-Process -Name sysprep -ErrorAction SilentlyContinue); "
         "[pscustomobject]@{ImageState=[string]$image;"
         "SystemSetupInProgress=[int]$setup.SystemSetupInProgress;"
         "OOBEInProgress=[int]$setup.OOBEInProgress;"
-        "ComputerName=[string]$env:COMPUTERNAME} | ConvertTo-Json -Compress"
+        "ComputerName=[string]$env:COMPUTERNAME;SysprepRunning=$sysprep} | ConvertTo-Json -Compress"
+    )
+
+
+SYSPREP_PATH = r"C:\Windows\System32\Sysprep\sysprep.exe"
+SYSPREP_ERROR_LOG = r"C:\Windows\System32\Sysprep\Panther\setuperr.log"
+
+
+def build_start_sysprep_script(answer_path: str) -> str:
+    """Generalize this copy with an explicit answer file.
+
+    Windows does not reliably discover answer media on the first boot of a
+    generalized image, so InfraOps passes its answer file to Sysprep itself.
+    Sysprep reboots the guest, so it is started detached and never awaited.
+    """
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$answer = {ps_single_quote(answer_path)}\n"
+        "if (-not (Test-Path -LiteralPath $answer)) { throw 'The InfraOps answer file is missing.' }\n"
+        "if (Get-Process -Name sysprep -ErrorAction SilentlyContinue) { 'SYSPREP-ALREADY-RUNNING'; exit 0 }\n"
+        f"Start-Process -FilePath {ps_single_quote(SYSPREP_PATH)} -ArgumentList @("
+        "'/generalize', '/oobe', '/reboot', '/quiet', ('/unattend:' + $answer)) | Out-Null\n"
+        "'SYSPREP-STARTED'"
+    )
+
+
+def build_sysprep_error_script() -> str:
+    return (
+        f"$log = {ps_single_quote(SYSPREP_ERROR_LOG)}\n"
+        "if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 40 } "
+        "else { 'Sysprep wrote no error log.' }"
     )
 
 
@@ -330,6 +362,7 @@ def parse_windows_setup_state(stdout: str) -> WindowsSetupState:
                     system_setup_in_progress=int(payload.get("SystemSetupInProgress") or 0) != 0,
                     oobe_in_progress=int(payload.get("OOBEInProgress") or 0) != 0,
                     computer_name=str(payload.get("ComputerName") or "").strip(),
+                    sysprep_running=payload.get("SysprepRunning") in (True, "True", "true"),
                 )
             except (TypeError, ValueError) as exc:
                 raise ValueError("The Windows Setup probe returned non-numeric flags.") from exc
@@ -856,6 +889,36 @@ async def stage_attach_network_adapter(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(output=f"{net.adapter_type.value} network adapter connected.")
 
 
+def _unusable_setup_credential(exc: ValueError) -> InfraOperationError:
+    return InfraOperationError(
+        "The provisioning credential cannot be used by Windows Setup.",
+        reason=str(exc),
+        recommended_action=(
+            "Select a credential whose username is a local account such as 'Administrator' "
+            "(no domain prefix), then submit a new request."
+        ),
+        retryable=False,
+    )
+
+
+def first_boot_answer_xml(ctx: JobRunContext, credentials) -> bytes:
+    """Answer file for specialize + OOBE of a deployed Windows package."""
+    guest = ctx.request.guest
+    try:
+        return build_first_boot_unattend_xml(
+            WindowsFirstBootSpec(
+                computer_name=ctx.request.effective_computer_name,
+                administrator_username=credentials.username,
+                administrator_password=credentials.password,
+                locale=guest.installation_locale,
+                input_locale=guest.input_locale,
+                timezone=guest.timezone or "UTC",
+            )
+        )
+    except ValueError as exc:
+        raise _unusable_setup_credential(exc) from exc
+
+
 async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
     request = ctx.request
     if request.source_type == VmSourceType.BLANK and request.guest.iso_id is None:
@@ -883,25 +946,16 @@ async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
             )
 
     credentials = await ctx.resolve_guest_credentials()
-    try:
-        if request.source_type == VmSourceType.TEMPLATE:
-            xml = build_first_boot_unattend_xml(
-                WindowsFirstBootSpec(
-                    computer_name=request.effective_computer_name,
-                    administrator_username=credentials.username,
-                    administrator_password=credentials.password,
-                    locale=guest.installation_locale,
-                    input_locale=guest.input_locale,
-                    timezone=guest.timezone or "UTC",
-                )
-            )
-            summary = (
-                "Temporary first-boot answer media attached. If the package is generalized "
-                "(sysprepped), Windows Setup applies the computer name, time zone, locale, "
-                "keyboard layout and administrator password and skips every OOBE page. A package "
-                "that is not generalized ignores it."
-            )
-        else:
+    if request.source_type == VmSourceType.TEMPLATE:
+        xml = first_boot_answer_xml(ctx, credentials)
+        summary = (
+            "Temporary first-boot answer media attached (computer name, time zone, locale, "
+            "keyboard layout, administrator password, every OOBE page skipped). After the first "
+            "boot InfraOps also runs Sysprep with the same answer file inside the guest, so the "
+            "deployment does not depend on Windows discovering this media."
+        )
+    else:
+        try:
             xml = build_autounattend_xml(
                 WindowsUnattendSpec(
                     computer_name=request.effective_computer_name,
@@ -914,20 +968,12 @@ async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
                     firmware=request.hardware.firmware.value,
                 )
             )
-            summary = (
-                "Temporary answer media attached. Windows Setup will configure the selected "
-                "administrator, locale, keyboard layout and computer name without OOBE prompts."
-            )
-    except ValueError as exc:
-        raise InfraOperationError(
-            "The provisioning credential cannot be used by Windows Setup.",
-            reason=str(exc),
-            recommended_action=(
-                "Select a credential whose username is a local account such as 'Administrator' "
-                "(no domain prefix), then submit a new request."
-            ),
-            retryable=False,
-        ) from exc
+        except ValueError as exc:
+            raise _unusable_setup_credential(exc) from exc
+        summary = (
+            "Temporary answer media attached. Windows Setup will configure the selected "
+            "administrator, locale, keyboard layout and computer name without OOBE prompts."
+        )
     # The media contains a plaintext Windows Setup password by necessity. It is
     # held only in memory here, uploaded directly, and removed once Windows
     # Setup has finished (or when the job stops earlier).
@@ -1050,46 +1096,104 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
     # A VMware Tools heartbeat also appears during specialize and OOBE of a
     # generalized package, so it does not prove the OS is ready.
     ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
-    state, probes = await wait_for_windows_setup(ctx, deadline)
+    first_boot = await wait_for_windows_setup(ctx, deadline)
+    state = first_boot.state
     ctx.job.guest_os_status = GuestOsStatus.READY.value
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
-    desired = ctx.request.effective_computer_name
-    if state.computer_name.casefold() == desired.casefold():
-        naming = f"Computer name '{state.computer_name}' is already applied."
-    else:
-        naming = (
-            f"Windows reports computer name '{state.computer_name}'; '{desired}' is applied by the "
-            "hostname/domain stages (the package was not generalized, so it kept its own name)."
-        )
+    how = (
+        "InfraOps generalized this copy with Sysprep and its answer file"
+        if first_boot.generalized_by_infraops
+        else "Windows already reports the requested computer name"
+    )
     return StageOutcome(
         output=(
-            "Windows Setup has finished and the provisioning account can sign in through VMware "
-            f"Tools ({probes} probe(s)).\n{naming}\n{state.detail}"
+            f"{how}; Setup has finished as '{state.computer_name}' and the provisioning account "
+            f"signs in through VMware Tools ({first_boot.probes} probe(s)).\n{state.detail}"
         ),
         artifacts={
             "windows_setup": {
                 "image_state": state.image_state,
                 "computer_name": state.computer_name,
+                "generalized_by_infraops": first_boot.generalized_by_infraops,
             }
         },
     )
 
 
 _SETUP_POLL_SECONDS = 10.0
-# Signing in is attempted sparingly while Windows Setup may not have applied
-# the provisioning password yet, so failed logons stay far below lockout
-# thresholds. Once Tools reports the requested computer name (specialize
-# done) OOBE is only moments from applying the password.
+# Sign-ins are spaced out while Windows Setup may not have applied the
+# provisioning password yet: after a rejection the next attempt waits long
+# enough that failures stay below the default lockout threshold (10 bad
+# sign-ins within 10 minutes on current Windows releases).
 _SETUP_PROBE_SECONDS_NAME_APPLIED = 15.0
 _SETUP_PROBE_SECONDS_OTHERWISE = 60.0
+_SETUP_PROBE_SECONDS_AFTER_REJECTION = 75.0
 _SETUP_MAX_REJECTED_LOGINS = 12
+# A sealed package still parked at OOBE without the requested name after this
+# long did not pick up the answer media; Sysprep restarts it explicitly.
+_OOBE_STALL_SECONDS = 120.0
+# Sysprep reboots the guest within minutes; exiting without doing so means
+# it failed.
+_SYSPREP_GRACE_SECONDS = 90.0
 
 
-async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[WindowsSetupState, int]:
-    """Wait until Windows reports Setup (specialize + OOBE) complete.
+@dataclass(frozen=True)
+class WindowsFirstBoot:
+    state: WindowsSetupState
+    probes: int
+    generalized_by_infraops: bool
+
+
+async def _start_sysprep(ctx: JobRunContext, credentials) -> None:
+    """Upload the answer file and start ``sysprep /generalize /oobe /reboot``."""
+    answer_path = new_temp_path(f"unattend-{new_token()}", "xml")
+    # Holds the administrator password until the cleanup stage deletes it;
+    # files an administrator creates in C:\Windows\Temp are not readable by users.
+    await ctx.guest_ops.upload_file(
+        ctx.target, ctx.vm_name, credentials, first_boot_answer_xml(ctx, credentials), answer_path
+    )
+    result = await ctx.guest_ops.run_powershell(
+        ctx.target, ctx.vm_name, credentials, build_start_sysprep_script(answer_path), 120
+    )
+    if not result.succeeded:
+        raise InfraOperationError(
+            "Sysprep could not be started in the deployed VM.",
+            reason=f"The start command exited with code {result.exit_code}.",
+            recommended_action="Check that the provisioning account is a local administrator, then retry.",
+            technical_detail=(result.stdout + "\n" + result.stderr)[-1500:],
+            retryable=True,
+        )
+
+
+async def _sysprep_failure(ctx: JobRunContext, credentials) -> InfraOperationError:
+    try:
+        result = await ctx.guest_ops.run_powershell(
+            ctx.target, ctx.vm_name, credentials, build_sysprep_error_script(), 60
+        )
+        log_tail = result.stdout.strip() or "Sysprep wrote no error log."
+    except InfraOperationError as exc:
+        log_tail = f"The Sysprep error log could not be read: {exc.human_message}"
+    return InfraOperationError(
+        "Sysprep could not generalize the deployed copy of the package.",
+        reason="Sysprep exited without restarting Windows; its error log is in the technical output.",
+        recommended_action=(
+            "Fix the reported problem in the template, republish it and redeploy. Common causes are "
+            "pending updates or a pending restart, apps installed for a single user, a domain-joined "
+            "template, or the Sysprep generalize limit."
+        ),
+        technical_detail=f"{SYSPREP_ERROR_LOG}:\n{log_tail}"[-4000:],
+        retryable=True,
+    )
+
+
+async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> WindowsFirstBoot:
+    """Bring a deployed Windows package to a finished, personalized Setup.
 
     Readiness is proven inside the guest: the provisioning account signs in
-    through VMware Tools and the registry shows no Setup or OOBE in progress.
+    through VMware Tools, the registry shows no Setup or OOBE in progress and
+    Windows reports the requested computer name. A package that has not been
+    generalized with the InfraOps answer file is generalized here, with the
+    answer file passed to Sysprep explicitly.
     """
     loop = asyncio.get_running_loop()
     desired = ctx.request.effective_computer_name.casefold()
@@ -1097,7 +1201,25 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[W
     next_probe = loop.time()
     probes = 0
     rejected = 0
+    sysprep_started_at: float | None = None
+    # Set once Windows has left its finished state after Sysprep started
+    # (restart, specialize or OOBE observed).
+    setup_seen_since_sysprep = False
+    oobe_stalled_since: float | None = None
     last = "VMware Tools has not reported yet."
+
+    def has_requested_name(state: WindowsSetupState) -> bool:
+        return bool(desired) and state.computer_name.casefold() == desired
+
+    async def start_sysprep(reason: str) -> None:
+        nonlocal sysprep_started_at, setup_seen_since_sysprep, rejected, next_probe, last
+        await _start_sysprep(ctx, credentials)
+        sysprep_started_at = loop.time()
+        setup_seen_since_sysprep = False
+        rejected = 0
+        next_probe = loop.time() + _SETUP_PROBE_SECONDS_NAME_APPLIED
+        last = reason
+
     while loop.time() < deadline:
         info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
         tools_running = info is not None and info.guest_operations_ready and (
@@ -1105,7 +1227,9 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[W
             or info.tools_status in ("toolsOk", "toolsOld")
         )
         if not tools_running:
-            last = "VMware Tools is not running (Windows Setup restarts the guest during setup)."
+            if sysprep_started_at is not None:
+                setup_seen_since_sysprep = True
+            last = "VMware Tools is not running (Windows restarts during Sysprep and Setup)."
         elif loop.time() >= next_probe:
             reported = (info.guest_host_name or "").split(".", 1)[0].casefold()
             name_applied = bool(desired) and reported == desired
@@ -1119,6 +1243,7 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[W
                 )
             except GuestCredentialsRejected as exc:
                 rejected += 1
+                next_probe = loop.time() + _SETUP_PROBE_SECONDS_AFTER_REJECTION
                 last = (
                     "Windows rejected the provisioning account (expected until OOBE applies its "
                     f"password; {rejected} rejection(s))."
@@ -1128,14 +1253,15 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[W
                         "Windows keeps rejecting the provisioning account.",
                         reason=(
                             f"{rejected} sign-in attempts through VMware Tools were rejected while "
-                            "waiting for Windows Setup to finish."
+                            "waiting for Windows Setup."
                         ),
                         recommended_action=(
-                            "For a generalized (sysprepped) package, check that it has no pending "
-                            "answer file of its own in C:\\Windows\\Panther, which overrides the "
-                            "InfraOps media. For a package that is not generalized, the selected "
-                            "credential must match its local administrator password. Correct it, "
-                            "then retry this stage."
+                            "If the VM console shows the Windows 'Hi there' (OOBE) page, the package "
+                            "was sealed with Sysprep and its administrator password no longer works, "
+                            "so InfraOps cannot finish Setup. Publish the template without running "
+                            "Sysprep (InfraOps generalizes every deployment itself) with its local "
+                            "Administrator password set to the selected provisioning credential. "
+                            "Otherwise, correct the credential and retry this stage."
                         ),
                         technical_detail=exc.technical_detail,
                         retryable=True,
@@ -1143,17 +1269,60 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[W
             except InfraOperationError as exc:
                 last = exc.human_message
             else:
-                if result.succeeded:
+                if not result.succeeded:
+                    last = f"The Windows Setup probe exited with code {result.exit_code}."
+                else:
                     try:
                         state = parse_windows_setup_state(result.stdout)
                     except ValueError as exc:
                         last = str(exc)
                     else:
-                        if state.complete:
-                            return state, probes
-                        last = f"Windows Setup is still running ({state.detail})."
-                else:
-                    last = f"The Windows Setup probe exited with code {result.exit_code}."
+                        now = loop.time()
+                        if sysprep_started_at is not None and not state.complete:
+                            setup_seen_since_sysprep = True
+                        if (
+                            state.complete
+                            and has_requested_name(state)
+                            and (sysprep_started_at is None or setup_seen_since_sysprep)
+                        ):
+                            return WindowsFirstBoot(state, probes, sysprep_started_at is not None)
+                        if sysprep_started_at is not None:
+                            if state.complete and setup_seen_since_sysprep:
+                                raise InfraOperationError(
+                                    "Windows Setup finished without applying the InfraOps answer file.",
+                                    reason=f"Windows reports {state.detail}.",
+                                    recommended_action=(
+                                        "Check C:\\Windows\\Panther\\setuperr.log in the VM, fix the "
+                                        "template and redeploy."
+                                    ),
+                                    retryable=True,
+                                )
+                            if (
+                                state.complete
+                                and not state.sysprep_running
+                                and now - sysprep_started_at >= _SYSPREP_GRACE_SECONDS
+                            ):
+                                raise await _sysprep_failure(ctx, credentials)
+                            last = (
+                                "Sysprep is generalizing Windows."
+                                if state.complete
+                                else f"Windows Setup is running with the InfraOps answer file ({state.detail})."
+                            )
+                        elif state.complete:
+                            # Not generalized with our answer file (a template that
+                            # was never sealed): give this copy its own identity.
+                            await start_sysprep("Sysprep started with the InfraOps answer file.")
+                        elif state.oobe_in_progress and not has_requested_name(state):
+                            oobe_stalled_since = oobe_stalled_since if oobe_stalled_since is not None else now
+                            last = f"Windows is waiting at OOBE without the answer media ({state.detail})."
+                            if now - oobe_stalled_since >= _OOBE_STALL_SECONDS:
+                                await start_sysprep(
+                                    "Windows stopped at OOBE without the answer media; Sysprep "
+                                    "restarted Setup with the InfraOps answer file."
+                                )
+                        else:
+                            oobe_stalled_since = None
+                            last = f"Windows Setup is still running ({state.detail})."
         remaining = deadline - loop.time()
         if remaining <= 0:
             break
@@ -1162,11 +1331,14 @@ async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[W
         "Windows did not finish its first-boot setup in time.",
         reason=f"Last observation: {last}",
         recommended_action=(
-            "Open the VM console in vCenter. If Windows shows an OOBE page, the package's own "
-            "answer file or an unanswered page (such as a product key prompt) stopped Setup; "
-            "fix the package and redeploy. If Setup is still progressing, retry this stage."
+            "Open the VM console in vCenter. If Windows shows an OOBE page, an unanswered page "
+            "(such as a product key prompt) stopped Setup; fix the template and redeploy. If Setup "
+            "is still progressing, retry this stage."
         ),
-        technical_detail=f"probes={probes} rejected_logins={rejected}",
+        technical_detail=(
+            f"probes={probes} rejected_logins={rejected} "
+            f"sysprep_started={sysprep_started_at is not None}"
+        ),
         retryable=True,
     )
 
@@ -1283,6 +1455,11 @@ ANSWER_FILE_SCRUB_SCRIPT = (
     "    }\n"
     "}\n"
     "$winlogon = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'\n"
+    "Get-ChildItem -LiteralPath 'C:\\Windows\\Temp' -Filter 'infraops-unattend-*.xml' "
+    "-ErrorAction SilentlyContinue | ForEach-Object {\n"
+    "    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop\n"
+    "    \"REMOVED $($_.FullName)\"\n"
+    "}\n"
     "Remove-ItemProperty -Path $winlogon -Name DefaultPassword -ErrorAction SilentlyContinue\n"
     "Set-ItemProperty -Path $winlogon -Name AutoAdminLogon -Value '0' -ErrorAction SilentlyContinue\n"
     "'ANSWER-FILE-SCRUBBED'"

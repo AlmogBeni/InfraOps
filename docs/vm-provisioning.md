@@ -54,16 +54,20 @@ inventory VM templates and Content Library VM templates are not returned or acce
 InfraOps validates the package and destination, calls the OVF filter/deploy REST operations,
 then reconciles hardware and vNIC placement.
 
-The package keeps its own firmware and Secure Boot setting. When the deployed VM is
-configured for a Windows guest, a temporary first-boot answer floppy (specialize and
-oobeSystem passes only, never a disk layout) is attached before the first power-on, so a
-sysprepped package completes Windows Setup and OOBE with no console interaction; a package
-that is not generalized ignores it.
+The package keeps its own firmware and Secure Boot setting. Templates should be published
+without running Sysprep, with VMware Tools installed and the local Administrator password
+set to the provisioning credential: after the first boot InfraOps signs in through VMware
+Tools and runs Sysprep itself with an explicit answer file (computer name, time zone,
+locale, keyboard, administrator password, every OOBE page skipped), so each deployment gets
+its own identity with no console interaction. For a sealed (already sysprepped) package
+InfraOps also attaches the answer file as first-boot media and, when the provisioning
+account still signs in at OOBE, restarts Setup with it; see
+[vm-deployment-lifecycle.md](vm-deployment-lifecycle.md#windows-first-boot).
 
 The successful deploy result proves only that a vCenter resource was created. InfraOps
 powers it on, waits for an existing Tools/open-vm-tools heartbeat and Guest Operations
-readiness, then waits until Windows itself reports Setup and OOBE finished before any guest
-configuration. It does not reinstall Tools or silently upgrade an outdated installation.
+readiness, then waits until Windows itself reports Setup and OOBE finished with the
+requested computer name before any guest configuration. It does not reinstall Tools or silently upgrade an outdated installation.
 Missing/not-running Tools pauses for operator action; outdated but running Tools continues
 with a warning. A reported non-Windows guest is stopped before any Windows PowerShell guest
 action.

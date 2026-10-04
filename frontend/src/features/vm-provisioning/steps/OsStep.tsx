@@ -25,7 +25,7 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
           <h2>Windows identity</h2>
           <p>{data.source_type === 'blank'
             ? 'Windows is installed unattended from the selected ISO.'
-            : 'Windows is inherited from the selected OVF/OVA package. A sysprepped package completes Windows Setup unattended on first boot.'}</p>
+            : 'Windows is inherited from the selected OVF/OVA package. InfraOps generalizes each copy with Sysprep and completes Windows Setup unattended.'}</p>
         </header>
       )}
 

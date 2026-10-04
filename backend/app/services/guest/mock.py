@@ -42,6 +42,8 @@ class _MockGuestState:
         self.part_of_domain: bool = False
         self.ip_address: str | None = None
         self.reboot_pending: bool = False
+        # Computer name a simulated Sysprep run applies at its next Setup.
+        self.setup_pending_name: str | None = None
         self.files: dict[str, bytes] = {}
         self.last_secret_names: list[str] = []
 
@@ -131,17 +133,29 @@ class MockGuestOperations(GuestOperations):
         self, lowered: str, arguments: str, state: _MockGuestState,
         target: VCenterTarget, vm_name: str,
     ) -> str:
-        # Windows Setup progress probe: the simulated guest has finished Setup.
+        # Windows Setup progress probe. After a simulated Sysprep the guest
+        # reports one in-progress observation, then finished Setup.
         if "systemsetupinprogress" in lowered:
+            in_setup = state.setup_pending_name is not None
+            if in_setup:
+                state.hostname = state.setup_pending_name
+                state.setup_pending_name = None
             return json.dumps(
                 {
-                    "ImageState": "IMAGE_STATE_COMPLETE",
-                    "SystemSetupInProgress": 0,
-                    "OOBEInProgress": 0,
+                    "ImageState": "IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE" if in_setup else "IMAGE_STATE_COMPLETE",
+                    "SystemSetupInProgress": int(in_setup),
+                    "OOBEInProgress": int(in_setup),
                     "ComputerName": state.hostname or vm_name.upper(),
+                    "SysprepRunning": False,
                 },
                 separators=(",", ":"),
             )
+        if "sysprep.exe" in lowered and "/generalize" in lowered:
+            answer = re.search(r"\$answer = '([^']+)'", arguments)
+            content = state.files.get(answer.group(1).lower(), b"") if answer else b""
+            name = re.search(rb"<ComputerName>([^<]+)</ComputerName>", content)
+            state.setup_pending_name = name.group(1).decode() if name else vm_name.upper()
+            return "SYSPREP-STARTED"
 
         # Certificate presence probe (thumbprint embedded in script text).
         if "get-childitem" in lowered and "thumbprint" in lowered:

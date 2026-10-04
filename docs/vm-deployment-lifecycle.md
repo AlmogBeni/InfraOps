@@ -112,21 +112,22 @@ validate package and destination
   -> observe an existing Tools/open-vm-tools heartbeat and Guest Operations readiness
      -> missing/not running: ACTION_REQUIRED; never blind reinstall
   -> reject Windows guest commands for a reported non-Windows guest
-  -> wait for Windows Setup: the provisioning account signs in through VMware Tools and
-     HKLM\SYSTEM\Setup shows no Setup/OOBE in progress and ImageState is IMAGE_STATE_COMPLETE
+  -> sign in through VMware Tools and read Windows Setup state
+     -> Setup finished with the requested computer name: ready
+     -> Setup finished with another name (template not sealed): upload the answer file and
+        run sysprep /generalize /oobe /reboot /unattend:<file>
+     -> parked at OOBE without the requested name (sealed template, media not used):
+        run the same Sysprep command from OOBE
+     -> wait until Setup finishes again with the requested computer name
   -> Tools lifecycle: current continues; outdated continues with a warning
-  -> remove the floppy, delete cached answer-file copies in the guest
+  -> remove the floppy, delete cached and uploaded answer files in the guest
   -> Windows guest networking/identity/domain/certificates/apps
   -> final verification -> COMPLETED -> in-app notification to the requesting engineer
 ```
 
-### Generalized (sysprepped) packages
+### Windows first boot
 
-A package exported after `sysprep /generalize /oobe` boots into Windows Setup: specialize,
-a restart, then OOBE (the "Hi there" region/keyboard page, license terms and the
-administrator password). Windows Setup looks for `Autounattend.xml` at the root of
-removable media at the start of each configuration pass, so the floppy InfraOps attaches
-before the first power-on answers every page:
+Every Windows deployment gets its own identity from Sysprep and one answer file:
 
 | Pass | Settings |
 |---|---|
@@ -134,16 +135,33 @@ before the first power-on answers every page:
 | oobeSystem | `International-Core` input/system/UI/user locale, OOBE pages hidden (EULA, OEM registration, online/local account, wireless), `ProtectYourPC=3`, `TimeZone`, the provisioning credential as `AdministratorPassword` (or a new local Administrators member) |
 
 The file never contains a windowsPE pass, a disk layout, AutoLogon or logon commands.
-A package that is not generalized ignores the floppy; its local administrator password
-must then match the provisioning credential. A Tools heartbeat already appears during
-specialize/OOBE, so readiness is proven inside the guest: sign-in attempts are spaced out
-(every 60 s, every 15 s once Tools reports the requested computer name) so failed logons
-while OOBE has not set the password stay well below lockout thresholds, and the wait
-stops after 12 rejected sign-ins. Windows caches the answer file when specialize starts,
-so removing the floppy early (failure/cancel) does not affect a Setup already in progress.
 
-A package whose own `C:\Windows\Panther\unattend.xml` still has unprocessed specialize or
-oobeSystem settings takes precedence over the floppy; rebuild such a package without it.
+**Recommended template: not sealed.** Publish the template without running Sysprep, with
+VMware Tools installed and its local `Administrator` password set to the provisioning
+credential. After the first boot InfraOps signs in through VMware Tools, uploads the answer
+file and runs `sysprep /generalize /oobe /reboot /quiet /unattend:<file>` detached (it
+reboots the guest). The answer file is passed explicitly, so nothing depends on Windows
+discovering media. This is the same model as vSphere guest customization, without depending
+on the vCenter version's support for the guest OS.
+
+**Sealed templates** (exported after `sysprep /generalize /oobe`) boot straight into
+specialize and OOBE. Windows Setup is documented to look for `Autounattend.xml` on removable
+media at the start of each pass, and InfraOps attaches the floppy for that, but Windows
+Server 2025 was observed ignoring it: the floppy was readable at OOBE while specialize and
+OOBE never referenced it. If the provisioning account can still sign in at OOBE, InfraOps
+waits two minutes and then runs the same Sysprep command from OOBE. If it cannot (sealing
+usually leaves no usable administrator password), the stage fails after 12 rejected
+sign-ins with instructions to republish the template unsealed.
+
+Readiness is proven inside the guest, because a Tools heartbeat also appears during
+specialize/OOBE: the provisioning account signs in, `HKLM\SYSTEM\Setup` shows no Setup or
+OOBE in progress, ImageState is `IMAGE_STATE_COMPLETE` and Windows reports the requested
+computer name. Sign-ins are spaced out (every 60 s, every 15 s once Tools reports the
+requested name, 75 s after a rejection) so failed logons stay below the default lockout
+threshold. A Sysprep run that exits without restarting Windows fails the stage with the tail
+of `C:\Windows\System32\Sysprep\Panther\setuperr.log` (pending updates, per-user apps, domain
+membership or the generalize limit are common causes).
+
 Retail/MAK images that prompt for a product key during OOBE are not answered; use
 volume-license (KMS/GVLK) or evaluation media for templates.
 

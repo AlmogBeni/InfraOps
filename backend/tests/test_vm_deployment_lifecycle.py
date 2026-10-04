@@ -234,13 +234,19 @@ def _tools_running(host_name: str | None = None) -> PowerStateInfo:
 
 
 def _setup_state(
-    *, setup: int = 0, oobe: int = 0, image: str = "IMAGE_STATE_COMPLETE", name: str = "SERVER-PROD-042"
+    *,
+    setup: int = 0,
+    oobe: int = 0,
+    image: str = "IMAGE_STATE_COMPLETE",
+    name: str = "SERVER-PROD-042",
+    sysprep: bool = False,
 ) -> CommandResult:
     payload = {
         "ImageState": image,
         "SystemSetupInProgress": setup,
         "OOBEInProgress": oobe,
         "ComputerName": name,
+        "SysprepRunning": sysprep,
     }
     return CommandResult(exit_code=0, stdout=json.dumps(payload), stderr="", duration_seconds=0.1)
 
@@ -261,6 +267,9 @@ def fast_setup_polling(monkeypatch: pytest.MonkeyPatch) -> None:
         "_SETUP_POLL_SECONDS",
         "_SETUP_PROBE_SECONDS_NAME_APPLIED",
         "_SETUP_PROBE_SECONDS_OTHERWISE",
+        "_SETUP_PROBE_SECONDS_AFTER_REJECTION",
+        "_OOBE_STALL_SECONDS",
+        "_SYSPREP_GRACE_SECONDS",
     ):
         monkeypatch.setattr(stages, name, 0.0)
 
@@ -270,7 +279,9 @@ def template_setup_context(vmware, probes: list) -> SimpleNamespace:
     ctx.resolve_guest_credentials = AsyncMock(
         return_value=SimpleNamespace(username="Administrator", password="secret")
     )
-    ctx.guest_ops = SimpleNamespace(run_powershell=AsyncMock(side_effect=probes))
+    ctx.guest_ops = SimpleNamespace(
+        run_powershell=AsyncMock(side_effect=probes), upload_file=AsyncMock()
+    )
     return ctx
 
 
@@ -287,7 +298,7 @@ async def test_template_wait_observes_existing_tools_without_mounting(fast_setup
     assert outcome.status == "SUCCEEDED"
     assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
     assert ctx.job.guest_os_status == GuestOsStatus.READY.value
-    assert "already applied" in outcome.output
+    assert "Setup has finished as 'SERVER-PROD-042'" in outcome.output
 
 
 @pytest.mark.asyncio
@@ -589,3 +600,122 @@ def test_vm_info_reports_tools_host_name_and_configured_guest_os() -> None:
     assert info.configured_guest_id == "windows2019srv_64Guest"
     assert info.configured_for_windows
     assert not PowerStateInfo(power_state="poweredOff", configured_guest_id="rhel9_64Guest").configured_for_windows
+
+
+def _started() -> CommandResult:
+    return CommandResult(exit_code=0, stdout="SYSPREP-STARTED", stderr="", duration_seconds=0.1)
+
+
+@pytest.mark.asyncio
+async def test_package_that_was_never_sealed_is_generalized_with_the_answer_file(
+    fast_setup_polling,
+) -> None:
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(),
+        get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-01")),
+    )
+    probes = [
+        _setup_state(name="TEMPLATE-01"),  # finished Setup, template identity
+        _started(),
+        _setup_state(setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE"),
+        _setup_state(),  # finished again, now with the requested name
+    ]
+    ctx = template_setup_context(vmware, probes)
+
+    outcome = await stage_wait_for_guest_os(ctx)
+
+    assert outcome.status == "SUCCEEDED"
+    assert outcome.artifacts["windows_setup"]["generalized_by_infraops"] is True
+    upload = ctx.guest_ops.upload_file.await_args
+    answer_path, answer = upload.args[4], upload.args[3].decode("utf-8")
+    assert answer_path.startswith("C:\Windows\Temp\infraops-unattend-") and answer_path.endswith(".xml")
+    assert "<ComputerName>SERVER-PROD-042</ComputerName>" in answer
+    start_script = ctx.guest_ops.run_powershell.await_args_list[1].args[3]
+    # Sysprep gets the answer file explicitly; Windows need not discover any media.
+    for flag in ("'/generalize'", "'/oobe'", "'/reboot'", "'/unattend:'"):
+        assert flag in start_script
+    assert f"$answer = '{answer_path}'" in start_script
+
+
+@pytest.mark.asyncio
+async def test_sysprep_that_exits_without_restarting_reports_its_error_log(fast_setup_polling) -> None:
+    import asyncio
+
+    from app.workers.stages import wait_for_windows_setup
+
+    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-01")))
+    error_log = CommandResult(
+        exit_code=0,
+        stdout="Error SYSPRP Package Contoso.App was installed for a user, but not provisioned.",
+        stderr="",
+        duration_seconds=0.1,
+    )
+    probes = [_setup_state(name="TEMPLATE-01"), _started(), _setup_state(name="TEMPLATE-01"), error_log]
+    ctx = template_setup_context(vmware, probes)
+
+    with pytest.raises(InfraOperationError, match="Sysprep could not generalize") as caught:
+        await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 60)
+
+    assert "installed for a user, but not provisioned" in caught.value.technical_detail
+
+
+@pytest.mark.asyncio
+async def test_sealed_package_stuck_at_oobe_is_restarted_with_the_answer_file(fast_setup_polling) -> None:
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(),
+        get_vm_info=AsyncMock(return_value=_tools_running("WIN-P80372UTDOL")),
+    )
+    at_oobe = _setup_state(
+        setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE", name="WIN-P80372UTDOL"
+    )
+    probes = [
+        at_oobe,
+        _started(),
+        _setup_state(setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE"),
+        _setup_state(),
+    ]
+    ctx = template_setup_context(vmware, probes)
+
+    outcome = await stage_wait_for_guest_os(ctx)
+
+    assert outcome.status == "SUCCEEDED"
+    assert outcome.artifacts["windows_setup"]["generalized_by_infraops"] is True
+    ctx.guest_ops.upload_file.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_package_already_personalized_is_not_generalized_again(fast_setup_polling) -> None:
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(),
+        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
+    )
+    ctx = template_setup_context(vmware, [_setup_state()])
+
+    outcome = await stage_wait_for_guest_os(ctx)
+
+    assert outcome.artifacts["windows_setup"]["generalized_by_infraops"] is False
+    ctx.guest_ops.upload_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mock_guest_completes_an_infraops_sysprep(fast_setup_polling) -> None:
+    from app.services.guest.mock import MockGuestOperations, mock_guest_state, reset_mock_guests
+
+    reset_mock_guests()
+    mock_guest_state("SERVER-PROD-042").hostname = "TEMPLATE-01"
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(),
+        get_vm_info=AsyncMock(return_value=_tools_running("TEMPLATE-01")),
+    )
+    ctx = template_setup_context(vmware, [])
+    ctx.target = SimpleNamespace(id="mock-vcenter")
+    ctx.guest_ops = MockGuestOperations()
+
+    outcome = await stage_wait_for_guest_os(ctx)
+
+    assert outcome.artifacts["windows_setup"] == {
+        "image_state": "IMAGE_STATE_COMPLETE",
+        "computer_name": "SERVER-PROD-042",
+        "generalized_by_infraops": True,
+    }
+    reset_mock_guests()
