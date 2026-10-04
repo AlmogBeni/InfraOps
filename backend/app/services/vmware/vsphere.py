@@ -67,6 +67,9 @@ except ImportError:  # pragma: no cover - exercised only without pyvmomi install
 
 _CONNECTION_TTL_SECONDS = 1800.0
 _TOOLS_POLL_INTERVAL = 5.0
+# VMware Tools ISO every ESXi host provides (the path VMware's own Packer
+# examples for vSphere use).
+HOST_TOOLS_ISO_PATH = "[] /vmimages/tools-isoimages/windows.iso"
 _TASK_POLL_INTERVAL = 0.5
 
 # Set by ``_with_session`` for the duration of one blocking call. ``asyncio``
@@ -1077,6 +1080,26 @@ class VsphereVMwareService(VMwareService):
                 cdrom_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
                 cdrom_spec.device = cdrom
                 device_changes.append(cdrom_spec)
+
+                # The host's VMware Tools ISO on a second drive from the start:
+                # the answer file's first-logon command installs Tools from it,
+                # so readiness is observable without anyone swapping media.
+                tools_cdrom = vim.vm.device.VirtualCdrom()
+                tools_cdrom.key = -202
+                tools_cdrom.controllerKey = sata.key
+                tools_cdrom.unitNumber = 1
+                tools_cdrom.backing = vim.vm.device.VirtualCdrom.IsoBackingInfo(
+                    fileName=HOST_TOOLS_ISO_PATH
+                )
+                tools_cdrom.connectable = vim.vm.device.VirtualDevice.ConnectInfo(
+                    startConnected=True,
+                    allowGuestControl=True,
+                    connected=True,
+                )
+                tools_spec = vim.vm.device.VirtualDeviceSpec()
+                tools_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                tools_spec.device = tools_cdrom
+                device_changes.append(tools_spec)
             config.deviceChange = device_changes
 
             try:
@@ -1317,6 +1340,39 @@ class VsphereVMwareService(VMwareService):
                 raise _wrap("power_on", exc) from exc
 
         await self._with_session(target, op)
+
+    async def reset(self, target: VCenterTarget, vm_id: str) -> None:
+        def op(si):
+            vm = self._find_by_moref(self._content(si), vm_id)
+            if vm is None:
+                raise InfraOperationError(
+                    f"VM '{vm_id}' was not found while resetting it.",
+                    reason="VM removed after creation.",
+                    recommended_action="Inspect the job timeline; the VM may need manual cleanup.",
+                    retryable=False,
+                )
+            try:
+                self._wait_for_task(vm.ResetVM_Task())
+            except Exception as exc:  # noqa: BLE001
+                raise _wrap("reset", exc) from exc
+
+        await self._with_session(target, op, operation="reset")
+
+    async def send_keystrokes(self, target: VCenterTarget, vm_id: str, usb_hid_usages: list[int]) -> int:
+        def op(si):
+            vm = self._find_by_moref(self._content(si), vm_id)
+            if vm is None:
+                raise InfraOperationError(
+                    f"VM '{vm_id}' was not found while sending keystrokes.",
+                    reason="VM removed after creation.",
+                    recommended_action="Inspect the job timeline; the VM may need manual cleanup.",
+                    retryable=False,
+                )
+            # Keyboard usage page (0x07) in the low 16 bits, as govc/Packer send it.
+            events = [vim.UsbScanCodeSpec.KeyEvent(usbHidCode=(usage << 16) | 0x07) for usage in usb_hid_usages]
+            return int(vm.PutUsbScanCodes(vim.UsbScanCodeSpec(keyEvents=events)) or 0)
+
+        return await self._with_session(target, op, operation="send-keystrokes")
 
     async def attach_temporary_floppy(
         self,

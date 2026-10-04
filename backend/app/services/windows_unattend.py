@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import struct
 from dataclasses import dataclass
@@ -126,6 +127,35 @@ def _add_user_accounts(shell: ET.Element, local_username: str, password: str) ->
     _text(account_password, "PlainText", "true")
 
 
+# Installs VMware Tools at first logon from the host's Tools ISO, which
+# InfraOps attaches as a second CD drive. Only that ISO has setup64.exe at its
+# root (Windows media has setup.exe only). The installer is retried for up to
+# two hours in case the drive is still being enumerated.
+# Compact so the encoded command stays within the length limit below.
+_TOOLS_INSTALL_STATEMENTS = (
+    "$d=(Get-Date).AddHours(2)",
+    "do{$i=Get-PSDrive -PSProvider FileSystem|%{Join-Path $_.Root setup64.exe}|?{Test-Path $_}|select -f 1",
+    "if($i){exit (Start-Process $i '/s /v\"/qn REBOOT=R\"' -Wait -PassThru).ExitCode}",
+    "sleep 15}while((Get-Date)-lt $d)",
+    "exit 1",
+)
+# Windows Setup limits a FirstLogonCommands command line to 1024 characters.
+MAX_COMMAND_LINE = 1024
+
+
+def tools_install_command() -> str:
+    """First-logon command line; -EncodedCommand avoids any nested quoting."""
+    script = "; ".join(_TOOLS_INSTALL_STATEMENTS)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    command = (
+        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        f"-EncodedCommand {encoded}"
+    )
+    if len(command) > MAX_COMMAND_LINE:  # pragma: no cover - guarded by a unit test
+        raise ValueError("The VMware Tools first-logon command exceeds Windows Setup's limit.")
+    return command
+
+
 def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
     """Return an amd64 Windows answer file. ElementTree performs XML escaping."""
     local_username = _local_account_name(spec.administrator_username)
@@ -190,18 +220,7 @@ def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
     command.set(f"{{{WCM_NS}}}action", "add")
     _text(command, "Order", "1")
     _text(command, "Description", "Install VMware Tools")
-    tools_script = (
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \""
-        "$limit=(Get-Date).AddHours(2); do { "
-        "$installer=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=5' | "
-        "ForEach-Object { $root=$_.DeviceID; if (-not (Test-Path "
-        "(Join-Path $root 'sources\\boot.wim'))) { @((Join-Path $root 'setup.exe'),"
-        "(Join-Path $root 'setup64.exe')) } } | "
-        "Where-Object { Test-Path $_ } | Select-Object -First 1; "
-        "if ($installer) { Start-Process $installer -ArgumentList '/s /v /qn REBOOT=R' -Wait; exit 0 }; "
-        "Start-Sleep -Seconds 15 } while ((Get-Date) -lt $limit); exit 1\""
-    )
-    _text(command, "CommandLine", tools_script)
+    _text(command, "CommandLine", tools_install_command())
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 

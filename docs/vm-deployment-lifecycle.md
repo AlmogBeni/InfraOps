@@ -83,20 +83,26 @@ validate request and live inventory
   -> ReconfigVM_Task (idempotent hardware reconciliation)
   -> ReconfigVM_Task (vNIC to port group)
   -> no ISO: powered off -> OS INSTALLATION_REQUIRED -> ACTION_REQUIRED
-  -> ISO: attach temporary answer-file floppy -> set CD-first boot -> PowerOnVM_Task
+  -> ISO: installation ISO on CD 1, the host's VMware Tools ISO on CD 2
+          ([] /vmimages/tools-isoimages/windows.iso), temporary answer-file floppy,
+          CD-first boot -> PowerOnVM_Task
           (the floppy is removed on any failure/cancel/interrupt from here on)
+          -> space bar pressed for 20 s (PutUsbScanCodes) to answer the media's
+             "Press any key to boot from CD or DVD" prompt
           -> OS INSTALLATION_IN_PROGRESS
-          -> Windows Setup/OOBE
-          -> administrator confirms first logon
-          -> supply Tools media -> first-logon in-guest Tools installation
+          -> Windows Setup/OOBE (answer file) -> AutoLogon once
+          -> first-logon command installs Tools from CD 2 (setup64.exe /s /v"/qn REBOOT=R")
+          -> Tools heartbeat, then sign-in + HKLM\SYSTEM\Setup prove Setup finished
           -> OS READY + Tools RUNNING
           -> remove answer floppy + scrub cached answer files in the guest
           -> guest IP/hostname/domain/certificates/apps
           -> final verification -> COMPLETED
 ```
 
-No-ISO resume is explicit administrator confirmation. The OS-readiness stage is retried;
-the already successful VM creation step is not. Tools and all guest stages wait behind it.
+With an ISO no step waits for a person: if Tools never reports within the stage timeout the
+stage fails with console guidance. Only the no-ISO branch resumes on explicit administrator
+confirmation, because nobody installs an OS for it. The OS-readiness stage is retried; the
+already successful VM creation step is not. Tools and all guest stages wait behind it.
 
 ## OVF/OVA package flow
 

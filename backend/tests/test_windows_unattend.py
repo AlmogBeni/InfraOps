@@ -10,6 +10,7 @@ from app.services.windows_unattend import (
     WindowsUnattendSpec,
     build_autounattend_xml,
     build_unattend_floppy,
+    tools_install_command,
 )
 
 
@@ -33,8 +34,23 @@ def test_answer_file_contains_requested_setup_values_and_escapes_secrets() -> No
     assert "Israel Standard Time" in values
     assert password in values
     assert b'A&amp;&lt;"strong&gt;password' in xml
-    assert b"sources\\boot.wim" in xml
+    assert b"-EncodedCommand" in xml
     assert root.tag == f"{{{UNATTEND_NS}}}unattend"
+
+
+def test_first_logon_installs_tools_from_the_tools_iso_within_setup_limits() -> None:
+    import base64
+
+    command = tools_install_command()
+    script = base64.b64decode(command.rsplit(" ", 1)[1]).decode("utf-16-le")
+
+    assert len(command) <= 1024  # Windows Setup's FirstLogonCommands limit
+    assert command.startswith("powershell.exe ")
+    # Only the Tools ISO has setup64.exe at its root; Windows media has setup.exe.
+    assert "setup64.exe" in script
+    assert "setup.exe" not in script.replace("setup64.exe", "")
+    # InstallShield passes everything after /v to msiexec as one argument.
+    assert "'/s /v\"/qn REBOOT=R\"'" in script
 
 
 def test_generated_floppy_exposes_autounattend_at_the_fat_root() -> None:

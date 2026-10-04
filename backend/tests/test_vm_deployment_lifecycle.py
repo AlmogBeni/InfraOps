@@ -76,33 +76,122 @@ async def test_blank_without_iso_waits_for_os_and_never_attempts_tools() -> None
     vmware.wait_for_tools.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_blank_iso_waits_for_confirmation_without_mounting_tools() -> None:
-    vmware = SimpleNamespace(wait_for_tools=AsyncMock())
+def iso_setup_context(vmware, probes: list) -> SimpleNamespace:
     ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
+    ctx.resolve_guest_credentials = AsyncMock(
+        return_value=SimpleNamespace(username="Administrator", password="secret")
+    )
+    ctx.guest_ops = SimpleNamespace(
+        run_powershell=AsyncMock(side_effect=probes), upload_file=AsyncMock()
+    )
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_iso_installation_is_detected_without_any_confirmation(fast_setup_polling) -> None:
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(),
+        get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")),
+        mount_tools_installer=AsyncMock(),
+    )
+    ctx = iso_setup_context(vmware, [_setup_state()])
 
     outcome = await stage_wait_for_guest_os(ctx)
 
-    assert outcome.status == "WAITING_FOR_PREREQUISITE"
-    assert outcome.artifacts["required_action"] == "CONFIRM_UNATTENDED_OS_INSTALLATION"
-    vmware.wait_for_tools.assert_not_awaited()
-    assert ctx.job.guest_os_status == GuestOsStatus.INSTALLATION_IN_PROGRESS.value
-    assert ctx.job.vmware_tools_status == VMwareToolsStatus.NOT_APPLICABLE_YET.value
+    assert outcome.status == "SUCCEEDED"
+    assert "installed unattended from the ISO" in outcome.output
+    assert ctx.job.guest_os_status == GuestOsStatus.READY.value
+    # Tools comes from the second CD drive at first logon; nothing is swapped.
+    assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
+    vmware.mount_tools_installer.assert_not_awaited()
+    ctx.guest_ops.upload_file.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_blank_iso_mounts_tools_only_after_os_confirmation() -> None:
-    vmware = SimpleNamespace(wait_for_tools=AsyncMock())
+async def test_iso_installation_without_tools_fails_with_console_guidance() -> None:
+    from app.core.errors import InfraOperationError as Error
+
+    vmware = SimpleNamespace(
+        wait_for_tools=AsyncMock(
+            side_effect=Error("Tools never ready", reason="timeout", recommended_action="n/a")
+        )
+    )
+    ctx = iso_setup_context(vmware, [])
+
+    with pytest.raises(InfraOperationError, match="did not finish installing from the ISO") as caught:
+        await stage_wait_for_guest_os(ctx)
+
+    assert "Press any key to boot from CD or DVD" in caught.value.recommended_action
+
+
+@pytest.mark.asyncio
+async def test_iso_boot_prompt_is_answered_with_keystrokes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import stages
+    from app.workers.stages import stage_power_on
+
+    monkeypatch.setattr(stages, "_BOOT_KEY_SECONDS", 0.0)
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
+        power_on=AsyncMock(),
+        reset=AsyncMock(),
+        send_keystrokes=AsyncMock(return_value=1),
+    )
     ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
-    ctx.steps_by_key["wait_for_guest_os"].artifacts = {"administrator_confirmed": True}
 
-    os_outcome = await stage_wait_for_guest_os(ctx)
+    outcome = await stage_power_on(ctx)
 
-    assert os_outcome.status == "SUCCEEDED"
-    assert ctx.job.guest_os_status == GuestOsStatus.READY.value
-    vmware.wait_for_tools.assert_not_awaited()
+    vmware.power_on.assert_awaited_once()
+    vmware.reset.assert_not_awaited()
+    assert vmware.send_keystrokes.await_args.args[2] == [0x2C]  # space bar
+    assert outcome.artifacts == {"boot_keys_sent": 1}
 
-    ctx.vmware = SimpleNamespace(
+    # A rerun (after this stage failed) restarts the firmware to get the prompt back.
+    vmware.get_vm_info.return_value = PowerStateInfo(power_state="poweredOn")
+    await stage_power_on(ctx)
+    vmware.reset.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refused_keystrokes_explain_the_missing_privilege(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import stages
+    from app.workers.stages import stage_power_on
+
+    monkeypatch.setattr(stages, "_BOOT_KEY_SECONDS", 0.0)
+    refused = InfraOperationError("vCenter denied it", reason="NoPermission", recommended_action="n/a")
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
+        power_on=AsyncMock(),
+        send_keystrokes=AsyncMock(side_effect=refused),
+    )
+    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
+
+    with pytest.raises(InfraOperationError, match="could not be started from the ISO") as caught:
+        await stage_power_on(ctx)
+
+    assert "Inject USB HID scan codes" in caught.value.recommended_action
+    assert caught.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_template_power_on_sends_no_keystrokes() -> None:
+    from app.workers.stages import stage_power_on
+
+    vmware = SimpleNamespace(
+        get_vm_info=AsyncMock(return_value=PowerStateInfo(power_state="poweredOff")),
+        power_on=AsyncMock(),
+        send_keystrokes=AsyncMock(),
+    )
+    ctx = context(request_for("template"), vmware)
+
+    outcome = await stage_power_on(ctx)
+
+    assert outcome.output == "Power-on task completed."
+    vmware.send_keystrokes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tools_media_is_mounted_only_when_tools_is_missing_after_installation() -> None:
+    vmware = SimpleNamespace(
         get_vm_info=AsyncMock(
             return_value=PowerStateInfo(
                 power_state="poweredOn",
@@ -113,11 +202,14 @@ async def test_blank_iso_mounts_tools_only_after_os_confirmation() -> None:
         mount_tools_installer=AsyncMock(return_value=True),
         wait_for_tools=AsyncMock(),
     )
+    ctx = context(request_for("blank", iso="iso-corp-windows-2025"), vmware)
+    ctx.job.guest_os_status = GuestOsStatus.READY.value
+
     tools_outcome = await stage_wait_for_tools(ctx)
 
     assert tools_outcome.status == "SUCCEEDED"
-    ctx.vmware.mount_tools_installer.assert_awaited_once()
-    assert ctx.vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
+    vmware.mount_tools_installer.assert_awaited_once()
+    assert vmware.wait_for_tools.await_args.kwargs["mount_if_missing"] is False
     assert ctx.job.vmware_tools_status == VMwareToolsStatus.RUNNING.value
 
 

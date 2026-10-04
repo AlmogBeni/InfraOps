@@ -96,11 +96,15 @@ Implementation notes:
 * Guest readiness reads `guest.toolsRunningStatus`, `guest.toolsVersionStatus2`,
   `guest.guestOperationsReady`, and the legacy `guest.toolsStatus` compatibility value.
   Configured `guestId` is never used as proof that an OS is installed.
-* `MountToolsInstaller` is used only after an administrator confirms that the blank-Windows
-  unattended installation reached first logon. The `FirstLogonCommands` installer runs inside
-  Windows, excludes the Windows installation disc, checks both `setup.exe` and legacy
-  `setup64.exe`, and a later heartbeat proves installation. OVF/OVA deployments never mount
-  or upgrade Tools automatically.
+* Blank VMs installed from an ISO get the host's VMware Tools ISO
+  (`[] /vmimages/tools-isoimages/windows.iso`) on a second CD drive at creation. The
+  `FirstLogonCommands` installer runs `setup64.exe` from it (only that ISO has it at its
+  root) and a later heartbeat proves installation. `MountToolsInstaller` remains a fallback
+  only if Tools is still missing after Windows reported ready. OVF/OVA deployments never
+  mount or upgrade Tools automatically.
+* The installation media's "Press any key to boot from CD or DVD" prompt is answered with
+  `PutUsbScanCodes` (space bar) for 20 seconds after power-on; a rerun of that stage resets
+  the VM first.
 * Tools states are normalized to `NOT_APPLICABLE_YET`, `NOT_INSTALLED`, `INSTALLING`,
   `RUNNING`, `NOT_RUNNING`, `OUTDATED`, `ERROR`, or `UNKNOWN`. `toolsOld` is a warning;
   `toolsNotRunning` is not treated as uninstalled.
@@ -123,6 +127,10 @@ Grant the service account (read-only role plus):
 * `Datastore.Allocate space`, `Browse datastore`, and low-level file operations needed to
   create/delete temporary answer media
 * `Resource.Assign virtual machine to resource pool`
+* `VirtualMachine.Interact.PowerOn`, `Reset` and `PutUsbScanCodes` (Inject USB HID scan
+  codes, to start Windows Setup from an ISO)
+* `VirtualMachine.Interact.GuestControl` and `VirtualMachine.GuestOperations.*` (Query,
+  Modify, Execute) for guest configuration through VMware Tools
 * Content Library read and OVF deployment access for each library exposed to
   InfraOps
 

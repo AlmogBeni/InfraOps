@@ -329,6 +329,14 @@ class VMwareService(ABC):
     async def power_on(self, target: VCenterTarget, vm_id: str) -> None: ...
 
     @abstractmethod
+    async def reset(self, target: VCenterTarget, vm_id: str) -> None:
+        """Hard-reset a powered-on VM (restarts its firmware boot)."""
+
+    @abstractmethod
+    async def send_keystrokes(self, target: VCenterTarget, vm_id: str, usb_hid_usages: list[int]) -> int:
+        """Type keys on the VM's virtual keyboard (USB HID usage IDs); returns keys sent."""
+
+    @abstractmethod
     async def wait_for_tools(
         self,
         target: VCenterTarget,

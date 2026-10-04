@@ -124,6 +124,7 @@ class _MockVM:
         self.temporary_media: set[str] = set()
         self.tools_installer_requested = False
         self.owner_job_id: str | None = None
+        self.keystrokes: list[int] = []
 
 
 class _MockInventory:
@@ -785,6 +786,15 @@ class MockVMwareService(VMwareService):
         if vm.has_guest_os:
             vm.guest_state = "running"
         log.info("MOCK powered on: %s", vm.name)
+
+    async def reset(self, target: VCenterTarget, vm_id: str) -> None:
+        vm = self._require_vm(target, vm_id)
+        vm.powered_on_at = dt.datetime.now(dt.UTC)
+
+    async def send_keystrokes(self, target: VCenterTarget, vm_id: str, usb_hid_usages: list[int]) -> int:
+        vm = self._require_vm(target, vm_id)
+        vm.keystrokes.extend(usb_hid_usages)
+        return len(usb_hid_usages)
 
     async def wait_for_tools(
         self,

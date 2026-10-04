@@ -35,14 +35,15 @@ After an administrator installs and boots an OS, the waiting OS stage can be exp
 confirmed and resumed. Successful VM creation remains complete, so retry cannot create a
 second VM.
 
-With a Windows ISO, InfraOps mounts the selected installer as the only datastore-backed
-CD-ROM, places `Autounattend.xml` on a temporary virtual floppy, sets CD-first boot order,
-and powers on the VM. Windows Setup performs the OS installation. InfraOps pauses for an
-administrator to confirm that first logon was reached; power state is not accepted as proof.
-Only after that confirmation does InfraOps supply vSphere Tools media. The first-logon
-bootstrap runs the installer inside Windows, and a later Tools heartbeat plus Guest Operations
-readiness proves that the in-guest service is ready.
-Only then does guest provisioning continue. The temporary answer media is deleted after
+With a Windows ISO, InfraOps mounts the selected installer on the first CD drive and the
+ESXi host's VMware Tools ISO on a second one, places `Autounattend.xml` on a temporary
+virtual floppy, sets CD-first boot order and powers on the VM. For about 20 seconds it
+presses the space bar through vSphere (`PutUsbScanCodes`) to answer the installation
+media's "Press any key to boot from CD or DVD" prompt. Windows Setup installs the OS,
+logs on once automatically and installs VMware Tools from the second drive. The Tools
+heartbeat, a sign-in through VMware Tools and the Setup state in the registry prove the OS
+is ready, with no confirmation; power state is never accepted as proof. Only then does
+guest provisioning continue. The temporary answer media is deleted after
 readiness — or as soon as the job fails, is cancelled or is interrupted — and cached copies
 of the answer file are removed from the guest. Its plaintext Setup password is never
 persisted in InfraOps.

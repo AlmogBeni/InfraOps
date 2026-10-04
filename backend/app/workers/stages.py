@@ -993,16 +993,119 @@ async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(output=summary, artifacts={"datastore_path": ref.datastore_path})
 
 
+# USB HID usage ID of the space bar.
+_HID_SPACEBAR = 0x2C
+# Windows installation media boots only after "Press any key to boot from CD or
+# DVD", shown for about five seconds right after the firmware starts.
+_BOOT_KEY_SECONDS = 20.0
+_BOOT_KEY_INTERVAL_SECONDS = 1.0
+
+
+async def press_key_to_boot_from_iso(ctx: JobRunContext, vm_id: str) -> int:
+    loop = asyncio.get_running_loop()
+    stop_at = loop.time() + _BOOT_KEY_SECONDS
+    sent = 0
+    while True:
+        try:
+            sent += await ctx.vmware.send_keystrokes(ctx.target, vm_id, [_HID_SPACEBAR])
+        except InfraOperationError as exc:
+            raise InfraOperationError(
+                "Windows Setup could not be started from the ISO.",
+                reason=(
+                    "The installation media waits for a key press, and vCenter refused the "
+                    f"keystroke: {exc.human_message}"
+                ),
+                recommended_action=(
+                    "Grant the vCenter service account 'Virtual machine > Interaction > Inject USB "
+                    "HID scan codes', then retry this stage (the VM is reset and the key is sent again)."
+                ),
+                technical_detail=exc.technical_detail,
+                retryable=True,
+            ) from exc
+        if loop.time() >= stop_at:
+            return sent
+        await asyncio.sleep(_BOOT_KEY_INTERVAL_SECONDS)
+
+
 async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
     skipped = _blank_guest_skip(ctx, "Power-on")
     if skipped:
         return skipped
     vm_id = _require_vm_id(ctx)
+    from_iso = ctx.request.source_type == VmSourceType.BLANK and ctx.request.guest.iso_id is not None
     info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
-    if info is not None and info.power_state == "poweredOn":
+    already_on = info is not None and info.power_state == "poweredOn"
+    if already_on and not from_iso:
         return StageOutcome(status="SKIPPED", output="VM is already powered on.")
-    await ctx.vmware.power_on(ctx.target, vm_id)
-    return StageOutcome(output="Power-on task completed.")
+    if not from_iso:
+        await ctx.vmware.power_on(ctx.target, vm_id)
+        return StageOutcome(output="Power-on task completed.")
+
+    # This stage reruns only after it failed, so Setup cannot have started:
+    # restart the firmware to get the boot prompt back.
+    if already_on:
+        await ctx.vmware.reset(ctx.target, vm_id)
+    else:
+        await ctx.vmware.power_on(ctx.target, vm_id)
+    sent = await press_key_to_boot_from_iso(ctx, vm_id)
+    return StageOutcome(
+        output=(
+            f"{'Reset' if already_on else 'Power-on'} task completed. The space bar was pressed "
+            f"{sent} time(s) during the first {int(_BOOT_KEY_SECONDS)} seconds to answer the "
+            "installation media's 'Press any key to boot from CD or DVD' prompt."
+        ),
+        artifacts={"boot_keys_sent": sent},
+    )
+
+
+async def _wait_for_installation_from_iso(ctx: JobRunContext, vm_id: str) -> StageOutcome:
+    """Windows installs from the ISO, then installs VMware Tools at first logon
+    from the host's Tools ISO; its heartbeat is the first sign of the new OS."""
+    ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
+    ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
+    ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
+    loop = asyncio.get_running_loop()
+    timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
+    deadline = loop.time() + max(60.0, timeout - 30.0)
+    try:
+        await ctx.vmware.wait_for_tools(
+            ctx.target, vm_id, max(1.0, deadline - loop.time() - 120.0), mount_if_missing=False
+        )
+    except InfraOperationError as exc:
+        raise InfraOperationError(
+            "Windows did not finish installing from the ISO in time.",
+            reason=(
+                "VMware Tools never reported from the new installation, so Windows Setup or the "
+                "first-logon VMware Tools installation did not complete."
+            ),
+            recommended_action=(
+                "Open the VM console. An EFI boot list or 'Press any key to boot from CD or DVD' "
+                "means Setup never started; a Windows Setup error usually points at the image index "
+                "or the ISO; a Windows desktop without VMware Tools means the host's Tools ISO "
+                "([] /vmimages/tools-isoimages/windows.iso) was not available on the second CD "
+                "drive. Fix the cause and redeploy."
+            ),
+            technical_detail=exc.technical_detail,
+            retryable=True,
+        ) from exc
+    first_boot = await wait_for_windows_setup(ctx, deadline)
+    state = first_boot.state
+    ctx.job.guest_os_status = GuestOsStatus.READY.value
+    ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
+    return StageOutcome(
+        output=(
+            f"Windows was installed unattended from the ISO; Setup has finished as "
+            f"'{state.computer_name}' and the provisioning account signs in through VMware Tools "
+            f"({first_boot.probes} probe(s)).\n{state.detail}"
+        ),
+        artifacts={
+            "windows_setup": {
+                "image_state": state.image_state,
+                "computer_name": state.computer_name,
+                "generalized_by_infraops": first_boot.generalized_by_infraops,
+            }
+        },
+    )
 
 
 async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
@@ -1033,27 +1136,7 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
         )
 
     if request.source_type == VmSourceType.BLANK:
-        step = ctx.steps_by_key.get("wait_for_guest_os")
-        confirmed = bool((step.artifacts or {}).get("administrator_confirmed")) if step else False
-        ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
-        ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
-        if not confirmed:
-            return StageOutcome(
-                status="WAITING_FOR_PREREQUISITE",
-                output=(
-                    "The VM was started from the selected Windows ISO and unattended Setup is in "
-                    "progress. Verify in the console that Windows has reached first logon, then "
-                    "confirm and resume. Power state alone is not accepted as OS readiness, and "
-                    "VMware Tools media has not been mounted yet."
-                ),
-                artifacts={"required_action": "CONFIRM_UNATTENDED_OS_INSTALLATION"},
-            )
-        ctx.job.guest_os_status = GuestOsStatus.READY.value
-        ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_TOOLS.value
-        return StageOutcome(
-            output="An administrator confirmed that unattended Windows Setup reached first logon."
-        )
+        return await _wait_for_installation_from_iso(ctx, vm_id)
 
     timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
     # Finish with a clear error before the pipeline's own stage timeout fires.
