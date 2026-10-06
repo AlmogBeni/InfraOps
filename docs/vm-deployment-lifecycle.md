@@ -63,8 +63,8 @@ validate request and live inventory (ISO, placement, capacity, network)
   -> attach_network_adapter: VMXNET3/E1000E on the selected port group
   -> prepare_unattended_install: answer ISO (Autounattend.xml) uploaded and attached as a
        third CD (removed on any failure/cancel/interrupt from here on)
-  -> power_on: PowerOnVM_Task, space bar pressed for 60 s (PutUsbScanCodes) to answer
-       "Press any key to boot from CD or DVD"
+  -> power_on: PowerOnVM_Task, space bar pressed every 3 s for 45 s (PutUsbScanCodes) to
+       answer "Press any key to boot from CD or DVD"
   -> wait_for_guest_os ("Install Windows"):
        Windows Setup (windowsPE -> specialize -> oobeSystem) with no page shown
        -> AutoLogon once -> first-logon command installs Tools from SATA 0:1
@@ -88,7 +88,7 @@ network configuration and guest operations.
 | Pass | Component | Settings |
 |---|---|---|
 | windowsPE | International-Core-WinPE | Setup UI language, input/system/UI/user locale |
-| windowsPE | Setup | Disk 0 wiped (`WillWipeDisk`) and partitioned — GPT EFI/MSR/Windows for EFI, MBR System/Windows (active) for BIOS; `InstallFrom` `/IMAGE/INDEX` (the edition index); `InstallTo` disk 0; `UserData` `AcceptEula` and, when configured, `ProductKey` |
+| windowsPE | Setup | Disk 0 wiped (`WillWipeDisk`) and partitioned — GPT EFI/MSR/Windows for EFI, MBR System (active)/Windows for BIOS, one `ModifyPartition` per partition numbered like the partitions, Windows on `C:`; `InstallFrom` `/IMAGE/INDEX` (the edition index); `InstallTo` disk 0; `UserData` `AcceptEula` and, when configured, `ProductKey` |
 | specialize | Shell-Setup | `ComputerName`, `TimeZone` |
 | oobeSystem | International-Core | input/system/UI/user locale (the region and keyboard pages) |
 | oobeSystem | Shell-Setup | OOBE pages hidden (EULA, OEM registration, online/local account, wireless), `ProtectYourPC=3`, `TimeZone`, `AdministratorPassword` from the credential store (or a new Administrators member plus a random, discarded password for the built-in Administrator), single-use `AutoLogon`, first-logon VMware Tools installation |

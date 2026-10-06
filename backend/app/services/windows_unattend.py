@@ -68,7 +68,14 @@ def _action_child(parent: ET.Element, name: str) -> ET.Element:
 
 
 def _add_disk_configuration(setup: ET.Element, firmware: str) -> int:
-    """Wipe disk 0 (the only disk attached during Setup) and lay it out for the firmware."""
+    """Wipe disk 0 (the only disk attached during Setup) and lay it out for the firmware.
+
+    Follows Microsoft's documented samples: one ModifyPartition per created
+    partition, numbered 1..n like the partitions (MSR included, unformatted),
+    and drive letter C for Windows. Setup processes ModifyPartitions by Order;
+    a gap leaves the Windows partition unformatted and Setup then stops at
+    "Select location to install".
+    """
     disk_configuration = ET.SubElement(setup, f"{{{UNATTEND_NS}}}DiskConfiguration")
     disk = _action_child(disk_configuration, "Disk")
     _text(disk, "DiskID", "0")
@@ -76,41 +83,44 @@ def _add_disk_configuration(setup: ET.Element, firmware: str) -> int:
     create = ET.SubElement(disk, f"{{{UNATTEND_NS}}}CreatePartitions")
     modify = ET.SubElement(disk, f"{{{UNATTEND_NS}}}ModifyPartitions")
 
-    if firmware.upper() == "EFI":
+    efi = firmware.upper() == "EFI"
+    # (type, size MB or None to extend, format, label, letter, active)
+    if efi:
         # GPT: EFI system partition, Microsoft reserved, Windows.
         layouts = (
-            (1, "EFI", "100", False, "FAT32", "System"),
-            (2, "MSR", "16", False, None, None),
-            (3, "Primary", None, True, "NTFS", "Windows"),
+            ("EFI", "100", "FAT32", "System", None, False),
+            ("MSR", "16", None, None, None, False),
+            ("Primary", None, "NTFS", "Windows", "C", False),
         )
-        windows_partition = 3
     else:
         # MBR: active system partition, Windows.
         layouts = (
-            (1, "Primary", "550", False, "NTFS", "System"),
-            (2, "Primary", None, True, "NTFS", "Windows"),
+            ("Primary", "550", "NTFS", "System", None, True),
+            ("Primary", None, "NTFS", "Windows", "C", False),
         )
-        windows_partition = 2
 
-    for order, type_name, size, extend, filesystem, label in layouts:
+    for order, (type_name, size, filesystem, label, letter, active) in enumerate(layouts, start=1):
         partition = _action_child(create, "CreatePartition")
         _text(partition, "Order", str(order))
         _text(partition, "Type", type_name)
         if size:
             _text(partition, "Size", size)
-        if extend:
+        else:
             _text(partition, "Extend", "true")
+
+        changed = _action_child(modify, "ModifyPartition")
+        _text(changed, "Order", str(order))
+        _text(changed, "PartitionID", str(order))
         if filesystem:
-            changed = _action_child(modify, "ModifyPartition")
-            _text(changed, "Order", str(order))
-            _text(changed, "PartitionID", str(order))
             _text(changed, "Format", filesystem)
-            if label:
-                _text(changed, "Label", label)
-            if firmware.upper() != "EFI" and order == 1:
-                _text(changed, "Active", "true")
+        if label:
+            _text(changed, "Label", label)
+        if letter:
+            _text(changed, "Letter", letter)
+        if active:
+            _text(changed, "Active", "true")
     _text(disk_configuration, "WillShowUI", "OnError")
-    return windows_partition
+    return len(layouts)  # Windows is the last partition
 
 
 def _local_account_name(username: str) -> str:

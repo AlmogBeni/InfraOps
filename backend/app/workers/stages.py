@@ -919,13 +919,14 @@ async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
 # USB HID usage ID of the space bar.
 _HID_SPACEBAR = 0x2C
 # Windows installation media boots only after "Press any key to boot from CD or
-# DVD", shown for about five seconds once the firmware reaches the CD. On a
-# slow host that can take a while, and the firmware retries the CD every few
-# seconds when it is missed, so presses continue for a minute. Setup's first
-# restart, after which a key press would boot the CD again, is many minutes
-# later.
-_BOOT_KEY_SECONDS = 60.0
-_BOOT_KEY_INTERVAL_SECONDS = 1.0
+# DVD", shown for about five seconds once the firmware reaches the CD; when it is
+# missed the firmware retries the CD every 10 seconds. A press every 3 seconds
+# always lands inside the prompt, and 45 seconds cover slow firmware plus a
+# retry. vCenter records every press as a task, so presses are kept this sparse.
+# Setup's first restart, after which a key press would boot the CD again, is
+# many minutes later.
+_BOOT_KEY_SECONDS = 45.0
+_BOOT_KEY_INTERVAL_SECONDS = 3.0
 
 
 async def press_key_to_boot_from_iso(ctx: JobRunContext, vm_id: str) -> int:

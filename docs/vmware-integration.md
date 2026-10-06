@@ -97,9 +97,10 @@ vCenter and the `pyvmomi` package (installed via requirements).
   root, ISO 9660 + Joliet) to `[datastore] infraops-unattend/infraops-<job>.iso` with an
   HTTP `PUT` and attaches it as a third, read-only CD drive. Windows Setup searches removable
   read-only media for `Autounattend.xml` under both BIOS and EFI.
-* `power_on`, then `send_keystrokes` presses the space bar (`PutUsbScanCodes`) once a second
-  for 60 seconds to answer "Press any key to boot from CD or DVD"; the window covers slow
-  firmware and ends long before Setup's first restart, when a key press would boot the ISO
+* `power_on`, then `send_keystrokes` presses the space bar (`PutUsbScanCodes`) every 3
+  seconds for 45 seconds to answer "Press any key to boot from CD or DVD" (each press appears
+  as a *Put USB HID scan codes* task in vCenter); the window covers slow firmware and a boot
+  retry and ends long before Setup's first restart, when a key press would boot the ISO
   again. A rerun of that stage resets the VM first.
 * `wait_for_tools` polls `guest.toolsRunningStatus`, `guest.toolsVersionStatus2`,
   `guest.guestOperationsReady` and the legacy `guest.toolsStatus`. The Tools heartbeat from

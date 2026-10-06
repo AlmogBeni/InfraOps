@@ -240,10 +240,13 @@ async def test_iso_boot_prompt_is_answered_with_keystrokes(monkeypatch: pytest.M
 def test_boot_prompt_window_covers_slow_firmware_but_ends_long_before_setup_restarts() -> None:
     from app.workers import stages
 
-    # The prompt shows for ~5 s once the firmware reaches the CD; Setup's
-    # first restart (where a key press would boot the ISO again) is minutes later.
+    # The prompt shows for ~5 s once the firmware reaches the CD and returns with
+    # the 10 s boot retry; Setup's first restart (where a key press would boot the
+    # ISO again) is minutes later.
     assert 30 <= stages._BOOT_KEY_SECONDS <= 120
-    assert stages._BOOT_KEY_INTERVAL_SECONDS <= 2
+    assert stages._BOOT_KEY_INTERVAL_SECONDS < 5
+    # Each press is a vCenter task; keep the Recent Tasks list readable.
+    assert stages._BOOT_KEY_SECONDS / stages._BOOT_KEY_INTERVAL_SECONDS <= 20
 
 
 async def test_refused_keystrokes_explain_the_missing_privilege(monkeypatch: pytest.MonkeyPatch) -> None:

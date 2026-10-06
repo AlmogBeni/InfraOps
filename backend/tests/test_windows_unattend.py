@@ -146,6 +146,29 @@ def test_bios_answer_file_uses_an_active_mbr_layout_and_a_local_administrator() 
     )
 
 
+@pytest.mark.parametrize(
+    ("spec", "types"), [(EFI_SPEC, ["EFI", "MSR", "Primary"]), (BIOS_SPEC, ["Primary", "Primary"])]
+)
+def test_every_partition_is_modified_in_order_and_windows_is_c(spec: WindowsUnattendSpec, types: list[str]) -> None:
+    # Setup applies ModifyPartitions by Order; a gap left the Windows partition
+    # unformatted and Setup stopped at "Select location to install".
+    root = ET.fromstring(build_autounattend_xml(spec))
+    setup = _component(_settings(root, "windowsPE"), "Microsoft-Windows-Setup")
+    disk = setup.find("u:DiskConfiguration/u:Disk", NS)
+    created = disk.findall("u:CreatePartitions/u:CreatePartition", NS)
+    modified = disk.findall("u:ModifyPartitions/u:ModifyPartition", NS)
+    expected = [str(number) for number in range(1, len(types) + 1)]
+
+    assert [node.findtext("u:Type", namespaces=NS) for node in created] == types
+    assert [node.findtext("u:Order", namespaces=NS) for node in created] == expected
+    assert [node.findtext("u:Order", namespaces=NS) for node in modified] == expected
+    assert [node.findtext("u:PartitionID", namespaces=NS) for node in modified] == expected
+    windows = modified[-1]
+    assert windows.findtext("u:Format", namespaces=NS) == "NTFS"
+    assert windows.findtext("u:Letter", namespaces=NS) == "C"
+    assert setup.findtext("u:ImageInstall/u:OSImage/u:InstallTo/u:PartitionID", namespaces=NS) == expected[-1]
+
+
 def test_answer_file_escapes_secrets() -> None:
     password = 'A&<"strong>password'
     xml = build_autounattend_xml(WindowsUnattendSpec("SERVER-042", "Administrator", password))

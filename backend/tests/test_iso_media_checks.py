@@ -33,6 +33,7 @@ from tests.conftest import make_request
         ("J_CCSA_X64FRE_EN-US_DV5", WindowsMediaKind.CLIENT),
         ("CPBA_X64FRE_EN-US_DV5", WindowsMediaKind.CLIENT),
         ("ESD-ISO", WindowsMediaKind.CLIENT),
+        ("ESD_ISO", WindowsMediaKind.CLIENT),  # Windows 10 22H2 Media Creation Tool
         ("Ubuntu-Server 24.04 LTS amd64", WindowsMediaKind.UNKNOWN),
         (None, WindowsMediaKind.UNKNOWN),
     ],

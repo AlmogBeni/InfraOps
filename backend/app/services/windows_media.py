@@ -5,7 +5,7 @@ editions add OOBE pages (account, privacy, network) and Windows 11 also needs
 a vTPM. Microsoft labels every Windows Server installation ISO with an
 ``SSS_`` volume identifier (``SSS_X64FREE_EN-US_DV9``; 2012 R2 used
 ``IR3_SSS_...``), while client media use ``CCCOMA_``, ``CPBA_``, ``CENA_``,
-``CCSA_``, ``CPRA_`` or ``ESD-ISO`` (Media Creation Tool).
+``CCSA_``, ``CPRA_`` or ``ESD-ISO`` / ``ESD_ISO`` (Media Creation Tool).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _PVD_OFFSET = 16 * _SECTOR
 ISO_HEADER_BYTES = _PVD_OFFSET + _SECTOR
 
 _SERVER_LABEL = re.compile(r"(?:^|_)SSS_")
-_CLIENT_LABEL = re.compile(r"^(?:J_)?(?:CCCOMA|CCOMA|CPBA|CPRA|CENA|CCSA)_|^ESD-ISO$")
+_CLIENT_LABEL = re.compile(r"^(?:J_)?(?:CCCOMA|CCOMA|CPBA|CPRA|CENA|CCSA)_|^ESD[-_]ISO$")
 
 PRODUCT_KEY = re.compile(r"^[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4}$")
 

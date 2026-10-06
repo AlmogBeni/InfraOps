@@ -39,6 +39,7 @@
               <PartitionID>2</PartitionID>
               <Format>NTFS</Format>
               <Label>Windows</Label>
+              <Letter>C</Letter>
             </ModifyPartition>
           </ModifyPartitions>
         </Disk>
