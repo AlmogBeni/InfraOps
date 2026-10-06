@@ -5,6 +5,7 @@ import {
   initialWizardData,
   parsePrefixInput,
   validateStep,
+  windowsEditionLabel,
   type WizardData,
 } from '@/features/vm-provisioning/schema'
 
@@ -130,6 +131,22 @@ describe('validateStep', () => {
     }
 
     expect(validateStep('directory', data)['domain_join.domain']).toContain('63 characters')
+  })
+
+  it('installs only Desktop Experience editions', () => {
+    const data = validData()
+    expect(data.windows_image_index).toBe(2)
+    expect(windowsEditionLabel(2)).toBe('Standard (Desktop Experience)')
+    expect(windowsEditionLabel(4)).toBe('Datacenter (Desktop Experience)')
+
+    data.windows_image_index = 4
+    expect(validateStep('configuration', data)).toEqual({})
+    for (const serverCore of [1, 3]) {
+      data.windows_image_index = serverCore
+      expect(validateStep('configuration', data).windows_image_index).toBe(
+        'Choose Windows Server Standard or Datacenter (Desktop Experience).',
+      )
+    }
   })
 
   it('requires a Windows installation ISO', () => {

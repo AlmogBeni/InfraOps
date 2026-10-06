@@ -264,6 +264,13 @@ class PreflightValidator:
                 else:
                     add("host", "Host available", CheckStatus.PASS, host.name)
 
+            if request.compute.host_id:
+                transfer_hosts = [hosts[request.compute.host_id].name] if request.compute.host_id in hosts else []
+            else:
+                transfer_hosts = [host.name for host in hosts.values() if host.available_for_provisioning]
+            if transfer_hosts:
+                await self._check_host_file_transfers(target, transfer_hosts, add)
+
             if request.compute.resource_pool_id:
                 pools = {p.id for p in await self._vmware.get_resource_pools(target, cluster.id)}
                 if request.compute.resource_pool_id not in pools:
@@ -324,6 +331,27 @@ class PreflightValidator:
                     "Infrastructure inventory could not be loaded. Try again.",
                 ),
             )
+
+    async def _check_host_file_transfers(self, target: VCenterTarget, host_names: list[str], add) -> None:
+        """VMware Tools file transfers go directly to the ESXi host that runs the VM."""
+        label = "ESXi hosts reachable for VMware Tools file transfers"
+        try:
+            results = await self._vmware.check_host_https(target, host_names)
+        except Exception as exc:  # noqa: BLE001
+            add("esxi_https", label, CheckStatus.FAIL,
+                _safe_infrastructure_failure(exc, "The ESXi hosts could not be checked."))
+            return
+        problems = {name: problem for name, problem in results.items() if problem}
+        if not problems:
+            add("esxi_https", label, CheckStatus.PASS, ", ".join(host_names))
+            return
+        add("esxi_https", label, CheckStatus.FAIL,
+            "; ".join(f"{name}: {problem}" for name, problem in problems.items())
+            + ". Every guest configuration step uploads its script to the ESXi host that runs the "
+            "VM: allow HTTPS (TCP 443) from the InfraOps server to every ESXi host, make the host "
+            "names resolve inside the backend and worker containers, and trust their certificates "
+            "(the vCenter VMCA root in VCENTER_CA_FILE) or untick 'Verify the TLS certificate' on "
+            "the vCenter connection.")
 
     async def _check_windows_server_media(self, target: VCenterTarget, datacenter_id: str, image, add) -> None:
         """Only Windows Server media installs without any page needing input."""

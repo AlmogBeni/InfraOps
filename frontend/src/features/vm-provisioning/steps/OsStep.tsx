@@ -1,10 +1,11 @@
 import { MonitorCog } from 'lucide-react'
 
 import { Badge } from '@/components/ui/feedback'
-import { FormRow, Input } from '@/components/ui/form-controls'
+import { FormRow, Input, Select } from '@/components/ui/form-controls'
 import { useWizard } from '@/features/vm-provisioning/context'
 import { useIsos } from '@/features/vm-provisioning/hooks'
 import { deriveGuestIdentity } from '@/features/vm-provisioning/identity'
+import { WINDOWS_EDITIONS } from '@/features/vm-provisioning/schema'
 
 export function OsStep({ embedded = false }: { embedded?: boolean }) {
   const wizard = useWizard()
@@ -82,11 +83,20 @@ export function OsStep({ embedded = false }: { embedded?: boolean }) {
             <Input id="input-locale" className="font-mono" value={data.input_locale} onChange={(event) => wizard.update({ input_locale: event.target.value })} />
           </FormRow>
           <FormRow
-            label="Windows image index"
-            htmlFor="windows-image-index"
-            hint="Edition inside install.wim. Server ISOs usually list Standard Core (1), Standard with Desktop Experience (2), Datacenter Core (3) and Datacenter with Desktop Experience (4)."
+            label="Windows Server edition"
+            htmlFor="windows-edition"
+            hint="Always installed with the Desktop Experience (full graphical interface)."
+            error={wizard.errors.windows_image_index}
           >
-            <Input id="windows-image-index" type="number" min={1} max={99} value={data.windows_image_index} onChange={(event) => wizard.update({ windows_image_index: Number(event.target.value) || 1 })} />
+            <Select
+              id="windows-edition"
+              value={String(data.windows_image_index)}
+              onChange={(event) => wizard.update({ windows_image_index: Number(event.target.value) })}
+            >
+              {WINDOWS_EDITIONS.map((edition) => (
+                <option key={edition.index} value={edition.index}>{edition.label}</option>
+              ))}
+            </Select>
           </FormRow>
         </div>
       </div>

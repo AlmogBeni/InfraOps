@@ -23,6 +23,10 @@ class GuestCredentialsRejected(InfraOperationError):
     """The guest refused the automation credentials (VMware Tools InvalidGuestLogin)."""
 
 
+class GuestFileTransferError(InfraOperationError):
+    """InfraOps could not exchange a file with the ESXi host that runs the VM."""
+
+
 @dataclass(frozen=True)
 class GuestCredentials:
     """Local/domain credentials used inside the guest OS.

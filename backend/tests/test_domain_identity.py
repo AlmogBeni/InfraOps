@@ -363,7 +363,15 @@ def final_validation_context(identity: CommandResult) -> SimpleNamespace:
                 )
             )
         ),
-        guest_ops=SimpleNamespace(run_powershell=AsyncMock(return_value=identity)),
+        guest_ops=SimpleNamespace(
+            run_powershell=AsyncMock(
+                side_effect=[
+                    # Installation type first (Desktop Experience), then the identity probe.
+                    CommandResult(exit_code=0, stdout="Server", stderr="", duration_seconds=0.1),
+                    identity,
+                ]
+            )
+        ),
         resolve_guest_credentials=AsyncMock(
             return_value=GuestCredentials(username="local-admin", password="local-password")
         ),

@@ -88,10 +88,16 @@ address to evade login rate limits or falsify audit records.
 - A vCenter FQDN/port, TLS trust chain, least-privilege service account, and its managed
   vCenter credential selected in the UI.
 - Access to the vSphere datacenters, clusters, and hosts that operators may target.
+- HTTPS (TCP 443) from the backend and worker containers to **every ESXi host**, with host
+  names that resolve inside the containers. VMware Tools file transfers — every in-guest
+  configuration step — go directly to the host that runs the VM, not through vCenter. With
+  *Verify the TLS certificate* ticked, `VCENTER_CA_FILE` must also contain the CA that signs
+  the ESXi host certificates (normally the vCenter VMCA root). Preflight checks this.
 - A managed Windows provisioning-administrator credential selected in every workflow.
 - Optional domain name, OU path, and a separate managed domain-join credential.
 - A Windows Server ISO on a datastore of each target datacenter (the only manual
-  prerequisite), its edition index, language, keyboard input locale and time-zone
+  prerequisite), the edition (Standard or Datacenter, always with the Desktop
+  Experience), language, keyboard input locale and time-zone
   identifier, and — for retail or MAK media — a product key stored as a credential with
   purpose *Windows product key*. The ESXi hosts must provide the VMware Tools ISO
   (`[] /vmimages/tools-isoimages/windows.iso`), which they do by default.

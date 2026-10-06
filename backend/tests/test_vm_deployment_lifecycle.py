@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from types import SimpleNamespace
@@ -20,7 +19,7 @@ from app.models.jobs import (
     VMwareToolsStatus,
 )
 from app.schemas.provisioning import DiskProvisioning, DiskSpec, ProvisioningRequest
-from app.services.guest.base import CommandResult, GuestCredentialsRejected
+from app.services.guest.base import CommandResult
 from app.services.vmware.base import PowerStateInfo, VmOwnership, VmRef
 from app.workers.stages import (
     DATA_DISKS_NOT_VISIBLE_EXIT,
@@ -85,47 +84,33 @@ def _tools_running(host_name: str | None = None) -> PowerStateInfo:
     )
 
 
-def _setup_state(*, setup: int = 0, oobe: int = 0, image: str = "IMAGE_STATE_COMPLETE",
-                 name: str = "SERVER-PROD-042") -> CommandResult:
-    payload = {"ImageState": image, "SystemSetupInProgress": setup, "OOBEInProgress": oobe, "ComputerName": name}
-    return CommandResult(exit_code=0, stdout=json.dumps(payload), stderr="", duration_seconds=0.1)
-
-
-def _rejected() -> GuestCredentialsRejected:
-    return GuestCredentialsRejected(
-        "The guest operating system rejected the automation credentials.",
-        reason="Invalid username or password for the local administrator account.",
-        recommended_action="n/a",
-    )
-
-
 @pytest.fixture
 def fast_setup_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.workers import stages
 
-    for name in ("_SETUP_POLL_SECONDS", "_SETUP_PROBE_SECONDS", "_SETUP_PROBE_SECONDS_AFTER_REJECTION"):
-        monkeypatch.setattr(stages, name, 0.0)
     monkeypatch.setattr(stages, "_DATA_DISK_DETECTION_DELAYS", (0.0, 0.0))
 
 
 # ── Windows Setup ────────────────────────────────────────────────────────────
 
 
-async def test_iso_installation_is_detected_without_any_confirmation(fast_setup_polling) -> None:
+async def test_running_tools_from_first_logon_proves_windows_is_installed() -> None:
     vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042"))
+        wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=_tools_running("TEST123"))
     )
-    ctx = setup_context(vmware, [_setup_state()])
+    ctx = setup_context(vmware, [])
 
     outcome = await stage_wait_for_guest_os(ctx)
 
     assert outcome.status == "SUCCEEDED"
     assert "installed unattended from the ISO" in outcome.output
+    assert outcome.artifacts == {"windows_setup": {"computer_name": "TEST123"}}
     assert ctx.job.guest_os_status == GuestOsStatus.READY.value
     assert ctx.job.guest_provisioning_status == GuestProvisioningStatus.IN_PROGRESS.value
-    # The whole installation is one bounded wait: no prompt, no second Tools mount.
+    # One bounded wait for the Tools that Windows installs after OOBE; no guest
+    # file transfer, so ESXi connectivity cannot make this stage fail.
     assert vmware.wait_for_tools.await_args.args[1] == "vm-101"
-    assert not vmware.wait_for_tools.await_args.kwargs
+    ctx.guest_ops.run_powershell.assert_not_awaited()
     ctx.guest_ops.upload_file.assert_not_awaited()
 
 
@@ -155,57 +140,6 @@ async def test_media_that_installs_another_operating_system_fails_clearly() -> N
 
     assert caught.value.retryable is False
     ctx.guest_ops.run_powershell.assert_not_awaited()
-
-
-async def test_tools_heartbeat_during_oobe_is_not_os_readiness(fast_setup_polling) -> None:
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042"))
-    )
-    in_oobe = _setup_state(setup=1, oobe=1, image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE")
-    ctx = setup_context(vmware, [_rejected(), in_oobe, _setup_state()])
-
-    outcome = await stage_wait_for_guest_os(ctx)
-
-    assert outcome.status == "SUCCEEDED"
-    assert ctx.guest_ops.run_powershell.await_count == 3
-    assert outcome.artifacts["windows_setup"]["image_state"] == "IMAGE_STATE_COMPLETE"
-
-
-async def test_no_guest_sign_in_is_attempted_while_tools_is_down(fast_setup_polling) -> None:
-    from app.workers.stages import wait_for_windows_setup
-
-    restarting = PowerStateInfo(power_state="poweredOn", tools_running_status="guestToolsNotRunning")
-    ctx = setup_context(SimpleNamespace(get_vm_info=AsyncMock(return_value=restarting)), [])
-
-    with pytest.raises(InfraOperationError, match="did not finish its first-boot setup") as caught:
-        await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 0.05)
-
-    ctx.guest_ops.run_powershell.assert_not_awaited()
-    assert "VMware Tools is not running" in caught.value.reason
-
-
-async def test_persistent_credential_rejection_stops_the_wait(fast_setup_polling) -> None:
-    from app.workers.stages import _SETUP_MAX_REJECTED_LOGINS, wait_for_windows_setup
-
-    vmware = SimpleNamespace(get_vm_info=AsyncMock(return_value=_tools_running("SERVER-PROD-042")))
-    ctx = setup_context(vmware, [_rejected() for _ in range(_SETUP_MAX_REJECTED_LOGINS)])
-
-    with pytest.raises(InfraOperationError, match="keeps rejecting"):
-        await wait_for_windows_setup(ctx, asyncio.get_running_loop().time() + 60)
-
-    assert ctx.guest_ops.run_powershell.await_count == _SETUP_MAX_REJECTED_LOGINS
-
-
-def test_windows_setup_state_parsing() -> None:
-    from app.workers.stages import parse_windows_setup_state
-
-    assert parse_windows_setup_state(_setup_state().stdout).complete
-    assert not parse_windows_setup_state(_setup_state(oobe=1).stdout).complete
-    assert not parse_windows_setup_state(_setup_state(image="IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE").stdout).complete
-    # Releases that do not record ImageState rely on the in-progress flags.
-    assert parse_windows_setup_state(_setup_state(image="").stdout).complete
-    with pytest.raises(ValueError):
-        parse_windows_setup_state("not json")
 
 
 # ── Boot prompt ──────────────────────────────────────────────────────────────
@@ -640,16 +574,25 @@ async def test_static_address_taken_after_submission_blocks_configuration(monkey
 
 
 @pytest.mark.parametrize("scrub_exit", [1, None])
-async def test_answer_file_left_in_the_guest_stops_the_job(scrub_exit) -> None:
-    vmware = SimpleNamespace(remove_answer_media=AsyncMock(), detach_installation_media=AsyncMock())
+async def test_answer_file_left_in_the_guest_stops_the_job_after_the_media_is_released(scrub_exit) -> None:
+    from app.services.guest.base import GuestFileTransferError
+
+    vmware = SimpleNamespace(remove_answer_media=AsyncMock(), detach_installation_media=AsyncMock(return_value=[]))
     ctx = cleanup_context(vmware, scrub_exit=scrub_exit or 0)
     if scrub_exit is None:
-        ctx.guest_ops.run_powershell.side_effect = InfraOperationError(
-            "Guest operations unavailable", reason="Tools restarting", recommended_action="n/a"
+        ctx.guest_ops.run_powershell.side_effect = GuestFileTransferError(
+            "InfraOps could not connect to ESXi host 'esx01.corp' on port 443.",
+            reason="Connection refused",
+            recommended_action="Allow HTTPS (TCP 443) from the InfraOps server to every ESXi host.",
         )
 
     with pytest.raises(InfraOperationError, match="cached answer file could not be removed") as caught:
         await stage_cleanup_unattended_media(ctx)
 
     assert caught.value.retryable is True
-    vmware.detach_installation_media.assert_not_awaited()
+    # The answer CD and the installation ISOs are released before the guest step.
+    vmware.remove_answer_media.assert_awaited_once()
+    vmware.detach_installation_media.assert_awaited_once()
+    if scrub_exit is None:
+        assert "esx01.corp" in caught.value.reason
+        assert caught.value.recommended_action.startswith("Allow HTTPS (TCP 443)")

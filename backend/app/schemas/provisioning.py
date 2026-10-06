@@ -146,7 +146,9 @@ class GuestSpec(BaseModel):
     timezone: str | None = Field(default=None, max_length=100)
     installation_locale: str = Field(default="en-US", min_length=2, max_length=35)
     input_locale: str = Field(default="0409:00000409", min_length=2, max_length=100)
-    windows_image_index: int = Field(default=1, ge=1, le=99)
+    # Edition inside install.wim; see DESKTOP_EXPERIENCE_EDITIONS. Stored jobs
+    # may hold any index, new requests only a Desktop Experience edition.
+    windows_image_index: int = Field(default=2, ge=1, le=99)
     credential_secret_ref: str = Field(default="guest-local-admin", min_length=2, max_length=150)
     # Optional credential (purpose windows_product_key) whose password is the
     # Windows product key, for media that asks for one (retail / MAK).
@@ -338,6 +340,15 @@ class ProvisioningRequest(BaseModel):
         return sum(disk.size_gb for disk in self.hardware.disks)
 
 
+# Microsoft's Windows Server media (2016-2025, evaluation, volume and retail)
+# list their editions in this order: 1 Standard and 3 Datacenter are Server
+# Core, 2 and 4 the same editions with the Desktop Experience.
+DESKTOP_EXPERIENCE_EDITIONS: dict[int, str] = {
+    2: "Standard (Desktop Experience)",
+    4: "Datacenter (Desktop Experience)",
+}
+
+
 def parse_stored_request(payload: object) -> ProvisioningRequest | None:
     """Read a stored request with the current contract; None for legacy shapes.
 
@@ -369,6 +380,15 @@ class ProvisioningSubmissionRequest(ProvisioningRequest):
     """Public validation/submission body; historical v1 is read-only."""
 
     identity_policy_version: Literal[IdentityPolicyVersion.V2] = IdentityPolicyVersion.V2
+
+    @model_validator(mode="after")
+    def _desktop_experience_only(self) -> ProvisioningSubmissionRequest:
+        if self.guest.windows_image_index not in DESKTOP_EXPERIENCE_EDITIONS:
+            raise ValueError(
+                "guest.windows_image_index must be 2 (Standard) or 4 (Datacenter): every server "
+                "is installed with the Desktop Experience."
+            )
+        return self
 
 
 class CredentialOptionOut(BaseModel):

@@ -34,6 +34,7 @@ import { LogViewer } from '@/components/ui/log-viewer'
 import { ConsolePanel, DataPoint, PageHeader, PanelHeader } from '@/components/ui/page'
 import { useJobEvents } from '@/features/jobs/useJobEvents'
 import { derivePersistedGuestIdentity } from '@/features/vm-provisioning/identity'
+import { windowsEditionLabel } from '@/features/vm-provisioning/schema'
 import { api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import {
@@ -294,7 +295,7 @@ function RequestSnapshot({
 
         <SnapshotSection icon={MonitorCog} title="Windows installation" summary={labels.iso}>
           <DetailLine label="Installation ISO" value={labels.iso} />
-          <DetailLine label="Edition index" value={String(request.guest.windows_image_index)} mono />
+          <DetailLine label="Edition" value={windowsEditionLabel(request.guest.windows_image_index)} />
           <DetailLine label="Product key" value={request.guest.product_key_secret_ref ?? 'None (volume-license or evaluation media)'} />
           <DetailLine label="Windows computer name" value={identity.computerName} />
           <DetailLine label="Fully qualified DNS name" value={identity.fqdn ?? 'Not domain joined'} />

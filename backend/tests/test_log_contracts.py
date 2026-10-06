@@ -141,8 +141,14 @@ async def test_final_validation_reports_data_volumes_without_inventory_ids() -> 
         vm_name="SERVER-001",
         request=SimpleNamespace(
             effective_computer_name="SERVER-001",
-            guest=SimpleNamespace(domain_join=None),
+            guest=SimpleNamespace(domain_join=None, windows_image_index=2),
             network=SimpleNamespace(network_id="dvportgroup-51", mode=IpMode.DHCP, ipv4=None),
+        ),
+        resolve_guest_credentials=AsyncMock(return_value=SimpleNamespace(username="Administrator", password="x")),
+        guest_ops=SimpleNamespace(
+            run_powershell=AsyncMock(
+                return_value=SimpleNamespace(succeeded=True, exit_code=0, stdout="Server\r\n", stderr="")
+            )
         ),
         steps_by_key={
             "initialize_data_disks": SimpleNamespace(

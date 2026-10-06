@@ -38,12 +38,11 @@ from app.models.jobs import (
     InfrastructureStatus,
     VMwareToolsStatus,
 )
-from app.schemas.provisioning import IpMode
+from app.schemas.provisioning import DESKTOP_EXPERIENCE_EDITIONS, IpMode
 from app.services.applications.installer import ApplicationDefinition
 from app.services.applications.paths import path_within_roots
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
-from app.services.guest.base import GuestCredentialsRejected
 from app.services.guest.scripts import HOSTNAME_PATH
 from app.services.guest.scripts import ps_quote as ps_single_quote
 from app.services.settings_store import (
@@ -272,66 +271,6 @@ async def probe_windows_identity(
             technical_detail=result.stdout[-1500:],
             retryable=True,
         ) from exc
-
-
-@dataclass(frozen=True)
-class WindowsSetupState:
-    image_state: str
-    system_setup_in_progress: bool
-    oobe_in_progress: bool
-    computer_name: str
-
-    @property
-    def complete(self) -> bool:
-        # Older releases may not record ImageState; the in-progress flags
-        # alone then decide.
-        return (
-            not self.system_setup_in_progress
-            and not self.oobe_in_progress
-            and self.image_state in ("", "IMAGE_STATE_COMPLETE")
-        )
-
-    @property
-    def detail(self) -> str:
-        return (
-            f"ImageState={self.image_state or 'unrecorded'}, "
-            f"SystemSetupInProgress={int(self.system_setup_in_progress)}, "
-            f"OOBEInProgress={int(self.oobe_in_progress)}, ComputerName={self.computer_name}"
-        )
-
-
-def build_windows_setup_state_script() -> str:
-    """Read-only probe of Windows Setup progress (specialize / OOBE)."""
-    return (
-        "$setup = Get-ItemProperty -LiteralPath "
-        "'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\Setup' -ErrorAction Stop; "
-        "$image = (Get-ItemProperty -LiteralPath "
-        "'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State' "
-        "-ErrorAction SilentlyContinue).ImageState; "
-        "[pscustomobject]@{ImageState=[string]$image;"
-        "SystemSetupInProgress=[int]$setup.SystemSetupInProgress;"
-        "OOBEInProgress=[int]$setup.OOBEInProgress;"
-        "ComputerName=[string]$env:COMPUTERNAME} | ConvertTo-Json -Compress"
-    )
-
-
-def parse_windows_setup_state(stdout: str) -> WindowsSetupState:
-    for line in reversed([entry.strip() for entry in stdout.splitlines() if entry.strip()]):
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and "SystemSetupInProgress" in payload:
-            try:
-                return WindowsSetupState(
-                    image_state=str(payload.get("ImageState") or "").strip().upper(),
-                    system_setup_in_progress=int(payload.get("SystemSetupInProgress") or 0) != 0,
-                    oobe_in_progress=int(payload.get("OOBEInProgress") or 0) != 0,
-                    computer_name=str(payload.get("ComputerName") or "").strip(),
-                )
-            except (TypeError, ValueError) as exc:
-                raise ValueError("The Windows Setup probe returned non-numeric flags.") from exc
-    raise ValueError("The Windows Setup probe did not return a JSON object.")
 
 
 DOMAIN_JOIN_PASSWORD_SECRET = "domain_join_password"
@@ -978,19 +917,19 @@ async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
 
 
 async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
-    """Windows installs from the ISO, then installs VMware Tools at first logon
-    from the host's Tools ISO; its heartbeat is the first sign of the new OS.
-    Power state is never accepted as proof of an installed OS."""
+    """Windows installs from the ISO, then — at the first logon, which happens only
+    after Setup and OOBE have finished — installs VMware Tools from the host's
+    Tools ISO. Windows Server media carry no VMware Tools, so a running Tools
+    service with Guest Operations ready proves the installation finished. Power
+    state is never accepted as proof, and no file transfer is needed here."""
     vm_id = _require_vm_id(ctx)
     ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
     ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
-    loop = asyncio.get_running_loop()
     timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
-    # Finish with a clear error before the pipeline's own stage timeout fires.
-    deadline = loop.time() + max(60.0, timeout - 30.0)
     try:
-        await ctx.vmware.wait_for_tools(ctx.target, vm_id, max(1.0, deadline - loop.time() - 120.0))
+        # Finish with a clear error before the pipeline's own stage timeout fires.
+        await ctx.vmware.wait_for_tools(ctx.target, vm_id, max(60.0, timeout - 60.0))
     except InfraOperationError as exc:
         raise InfraOperationError(
             "Windows did not finish installing from the ISO in time.",
@@ -1001,7 +940,7 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
             recommended_action=(
                 "Check the console screenshot in the administrator diagnostics: an EFI boot list or "
                 "'Press any key to boot from CD or DVD' means Setup never started; a Windows Setup "
-                "error usually points at the image index, product key or ISO; a Windows desktop "
+                "page or error usually points at the edition, product key or ISO; a Windows desktop "
                 "without VMware Tools means the host's Tools ISO "
                 "([] /vmimages/tools-isoimages/windows.iso) was not available. Fix the cause and "
                 "submit a new request."
@@ -1017,105 +956,16 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
             recommended_action="Select a Windows Server ISO and submit a new request.",
             retryable=False,
         )
-    state, probes = await wait_for_windows_setup(ctx, deadline)
     ctx.job.guest_os_status = GuestOsStatus.READY.value
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
+    computer_name = info.guest_host_name if info is not None else None
     return StageOutcome(
         output=(
-            f"Windows was installed unattended from the ISO; Setup has finished as "
-            f"'{state.computer_name}' and the provisioning account signs in through VMware Tools "
-            f"({probes} probe(s)).\n{state.detail}"
+            "Windows was installed unattended from the ISO. VMware Tools, which Windows installs "
+            "at the first logon after Setup and OOBE, is running"
+            + (f" and reports the computer name '{computer_name}'." if computer_name else ".")
         ),
-        artifacts={
-            "windows_setup": {
-                "image_state": state.image_state,
-                "computer_name": state.computer_name,
-            }
-        },
-    )
-
-
-_SETUP_POLL_SECONDS = 10.0
-_SETUP_PROBE_SECONDS = 30.0
-# After a rejected sign-in the next attempt waits long enough that failures
-# stay below the default lockout threshold (10 bad sign-ins in 10 minutes).
-_SETUP_PROBE_SECONDS_AFTER_REJECTION = 75.0
-_SETUP_MAX_REJECTED_LOGINS = 8
-
-
-async def wait_for_windows_setup(ctx: JobRunContext, deadline: float) -> tuple[WindowsSetupState, int]:
-    """Wait until Windows itself reports Setup and OOBE finished.
-
-    Readiness is proven inside the guest: the provisioning account signs in
-    through VMware Tools and the registry shows no Setup or OOBE in progress.
-    """
-    loop = asyncio.get_running_loop()
-    credentials = await ctx.resolve_guest_credentials()
-    next_probe = loop.time()
-    probes = 0
-    rejected = 0
-    last = "VMware Tools has not reported yet."
-    while loop.time() < deadline:
-        info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
-        tools_running = info is not None and info.guest_operations_ready and (
-            info.tools_running_status == "guestToolsRunning"
-            or info.tools_status in ("toolsOk", "toolsOld")
-        )
-        if not tools_running:
-            last = "VMware Tools is not running (Windows restarts during Setup)."
-        elif loop.time() >= next_probe:
-            next_probe = loop.time() + _SETUP_PROBE_SECONDS
-            probes += 1
-            try:
-                result = await ctx.guest_ops.run_powershell(
-                    ctx.target, ctx.vm_name, credentials, build_windows_setup_state_script(), 60
-                )
-            except GuestCredentialsRejected as exc:
-                rejected += 1
-                next_probe = loop.time() + _SETUP_PROBE_SECONDS_AFTER_REJECTION
-                last = f"Windows rejected the provisioning account ({rejected} rejection(s))."
-                if rejected >= _SETUP_MAX_REJECTED_LOGINS:
-                    raise InfraOperationError(
-                        "Windows keeps rejecting the provisioning account.",
-                        reason=(
-                            f"{rejected} sign-in attempts through VMware Tools were rejected after "
-                            "Windows Setup set the account's password from the answer file."
-                        ),
-                        recommended_action=(
-                            "Check that the provisioning credential was not changed while the job "
-                            "ran, then submit a new request."
-                        ),
-                        technical_detail=exc.technical_detail,
-                        retryable=True,
-                    ) from exc
-            except InfraOperationError as exc:
-                last = exc.human_message
-            else:
-                if not result.succeeded:
-                    last = f"The Windows Setup probe exited with code {result.exit_code}."
-                else:
-                    try:
-                        state = parse_windows_setup_state(result.stdout)
-                    except ValueError as exc:
-                        last = str(exc)
-                    else:
-                        if state.complete:
-                            return state, probes
-                        last = f"Windows Setup is still running ({state.detail})."
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            break
-        await asyncio.sleep(min(_SETUP_POLL_SECONDS, remaining))
-    raise InfraOperationError(
-        "Windows did not finish its first-boot setup in time.",
-        reason=f"Last observation: {last}",
-        recommended_action=(
-            "Check the console screenshot in the administrator diagnostics for the page Windows "
-            "Setup stopped on, fix the cause (answer settings, product key or media) and submit a "
-            "new request."
-        ),
-        technical_detail=f"probes={probes} rejected_logins={rejected}",
-        retryable=True,
+        artifacts={"windows_setup": {"computer_name": computer_name}},
     )
 
 
@@ -1244,6 +1094,19 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
     else:
         lines.append("No temporary answer media was recorded.")
 
+    # The installation and Tools ISOs are no longer needed; the VM now boots
+    # from its disk only, so later restarts never reach the DVD prompt. Done
+    # before the guest step below so the media is released even if that fails.
+    try:
+        released = await ctx.vmware.detach_installation_media(ctx.target, vm_id)
+        lines.append(
+            "Installation media disconnected and boot order set to disk only"
+            + (f": {', '.join(released)}." if released else ".")
+        )
+    except InfraOperationError as exc:
+        status = "WARNING"
+        lines.append(f"The installation ISOs could not be disconnected: {exc.human_message}")
+
     # Windows Setup caches the answer file inside the guest. Remove every copy
     # and the AutoLogon residue so the plaintext password does not survive;
     # the job does not continue while a copy may remain.
@@ -1255,8 +1118,8 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
     except InfraOperationError as exc:
         raise InfraOperationError(
             "The cached answer file could not be removed from Windows.",
-            reason=f"The in-guest cleanup could not run: {exc.human_message}",
-            recommended_action="Retry this stage once VMware Tools reports the guest as running.",
+            reason=f"{exc.human_message} {exc.reason}",
+            recommended_action=exc.recommended_action,
             technical_detail=exc.technical_detail,
             retryable=True,
         ) from exc
@@ -1269,18 +1132,6 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
             retryable=True,
         )
     lines.append("Cached answer-file copies and AutoLogon values were removed from the guest.")
-
-    # The installation and Tools ISOs are no longer needed; the VM now boots
-    # from its disk only, so later restarts never reach the DVD prompt.
-    try:
-        released = await ctx.vmware.detach_installation_media(ctx.target, vm_id)
-        lines.append(
-            "Installation media disconnected and boot order set to disk only"
-            + (f": {', '.join(released)}." if released else ".")
-        )
-    except InfraOperationError as exc:
-        status = "WARNING"
-        lines.append(f"The installation ISOs could not be disconnected: {exc.human_message}")
     return StageOutcome(status=status, output="\n".join(lines))
 
 
@@ -1922,6 +1773,31 @@ async def stage_validate_applications(ctx: JobRunContext) -> StageOutcome:
     return StageOutcome(output="\n".join(lines), artifacts={"validated": [entry["name"] for entry in outcomes]})
 
 
+# "Server" for the Desktop Experience, "Server Core" without it.
+INSTALLATION_TYPE_SCRIPT = (
+    "(Get-ItemProperty -LiteralPath "
+    "'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' "
+    "-ErrorAction Stop).InstallationType"
+)
+
+
+async def windows_installation_type(ctx: JobRunContext) -> str:
+    credentials = await ctx.resolve_guest_credentials()
+    result = await ctx.guest_ops.run_powershell(
+        ctx.target, ctx.vm_name, credentials, INSTALLATION_TYPE_SCRIPT, 60
+    )
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not result.succeeded or not lines:
+        raise InfraOperationError(
+            "Windows did not report its installation type.",
+            reason=f"The read-only registry query exited with code {result.exit_code}.",
+            recommended_action="Retry this stage.",
+            technical_detail=(result.stdout + "\n" + result.stderr)[-1000:],
+            retryable=True,
+        )
+    return lines[-1]
+
+
 async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
     checklist: list[dict] = []
     observed_computer_name = (
@@ -1939,6 +1815,27 @@ async def stage_final_validation(ctx: JobRunContext) -> StageOutcome:
         add("VM", "Powered on", info.power_state == "poweredOn", info.power_state)
         add("VM", "VMware Tools running", info.tools_status in ("toolsOk", "toolsOld"),
             info.tools_status or "unknown")
+
+    edition = DESKTOP_EXPERIENCE_EDITIONS.get(ctx.request.guest.windows_image_index)
+    if edition is not None:
+        installation_type = await windows_installation_type(ctx)
+        add("Windows", f"{edition} installed", installation_type == "Server", installation_type)
+        if installation_type != "Server":
+            raise InfraOperationError(
+                "Windows was installed without the Desktop Experience.",
+                reason=(
+                    f"Windows reports installation type '{installation_type}' for edition index "
+                    f"{ctx.request.guest.windows_image_index}, which Microsoft's Windows Server media "
+                    f"use for {edition}."
+                ),
+                recommended_action=(
+                    "The ISO lists its editions in a different order than Microsoft's Windows Server "
+                    "media. The Desktop Experience cannot be added to a Server Core installation: "
+                    "delete the VM and submit a new request with unmodified Microsoft media."
+                ),
+                technical_detail=json.dumps(checklist, default=str),
+                retryable=False,
+            )
 
     disk_step = ctx.steps_by_key.get("initialize_data_disks")
     for volume in ((disk_step.artifacts or {}).get("volumes") if disk_step else None) or []:

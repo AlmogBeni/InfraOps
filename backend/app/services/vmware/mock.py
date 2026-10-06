@@ -739,6 +739,9 @@ class MockVMwareService(VMwareService):
         vm.disks_gb.extend(disk.size_gb for disk in missing)
         return len(missing)
 
+    async def check_host_https(self, target: VCenterTarget, host_names: list[str]) -> dict[str, str | None]:
+        return {name: None for name in host_names}
+
     async def capture_screenshot(self, target: VCenterTarget, vm_id: str) -> str:
         vm = self._require_vm(target, vm_id)
         vm.screenshots += 1

@@ -5,6 +5,7 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import {
   buildRequest,
   initialWizardData,
+  isDesktopExperienceEdition,
   stepSchemas,
   validateStep,
   type StepKey,
@@ -52,7 +53,10 @@ function loadDraft(): WizardData {
   try {
     for (const key of RETIRED_STORAGE_KEYS) localStorage.removeItem(key)
     const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? { ...fresh, ...(JSON.parse(raw) as Partial<WizardData>) } : fresh
+    const draft = raw ? { ...fresh, ...(JSON.parse(raw) as Partial<WizardData>) } : fresh
+    // Drafts saved before editions replaced the free image index.
+    if (!isDesktopExperienceEdition(draft.windows_image_index)) draft.windows_image_index = fresh.windows_image_index
+    return draft
   } catch {
     /* corrupted draft — start fresh */
   }

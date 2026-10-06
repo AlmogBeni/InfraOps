@@ -63,6 +63,15 @@ describe('WizardProvider datacenter scope', () => {
     expect(state.disks[0].datastore_id).toBeNull()
   })
 
+  it('moves drafts that chose a Server Core image to a Desktop Experience edition', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...initialWizardData(), windows_image_index: 1 }))
+
+    render(<WizardProvider><Harness /></WizardProvider>)
+
+    const state = JSON.parse(screen.getByTestId('wizard-state').textContent ?? '{}')
+    expect(state.windows_image_index).toBe(2)
+  })
+
   it('drops drafts written by the previous wizard', () => {
     localStorage.setItem('infraops.provisioning-draft.v2', JSON.stringify({ vm_name: 'OLD-DRAFT', iso_id: null }))
 

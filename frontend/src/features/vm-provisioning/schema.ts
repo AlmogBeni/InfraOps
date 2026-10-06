@@ -60,6 +60,24 @@ function validateDomainIdentity(
   }
 }
 
+/**
+ * Microsoft's Windows Server media list their editions in a fixed order:
+ * 1 Standard and 3 Datacenter are Server Core, 2 and 4 the same editions with
+ * the Desktop Experience. Every server is installed with the Desktop Experience.
+ */
+export const WINDOWS_EDITIONS = [
+  { index: 2, label: 'Standard (Desktop Experience)' },
+  { index: 4, label: 'Datacenter (Desktop Experience)' },
+] as const
+
+export function isDesktopExperienceEdition(index: number): boolean {
+  return WINDOWS_EDITIONS.some((edition) => edition.index === index)
+}
+
+export function windowsEditionLabel(index: number): string {
+  return WINDOWS_EDITIONS.find((edition) => edition.index === index)?.label ?? `Image index ${index}`
+}
+
 export interface WizardData {
   iso_id: string
   /** Credential reference holding a Windows product key; '' when the media needs none. */
@@ -122,7 +140,7 @@ export function initialWizardData(): WizardData {
     timezone: '',
     installation_locale: 'en-US',
     input_locale: '0409:00000409',
-    windows_image_index: 1,
+    windows_image_index: 2,
     guest_credential_secret_ref: '',
     domain_join: { enabled: false, domain: '', ou: '', credential_secret_ref: 'domain-join' },
     network_id: '',
@@ -220,7 +238,9 @@ export const stepSchemas = {
     hostname: z.string(),
     installation_locale: z.string().trim().min(2, 'Enter a Windows language tag.'),
     input_locale: z.string().trim().min(2, 'Enter a Windows keyboard input locale.'),
-    windows_image_index: z.number().int().min(1).max(99),
+    windows_image_index: z
+      .number()
+      .refine(isDesktopExperienceEdition, 'Choose Windows Server Standard or Datacenter (Desktop Experience).'),
     domain_join: domainJoinSchema,
   }).superRefine((value, context) => {
     if (value.storage_mode === 'manual' && !value.datastore_id) {

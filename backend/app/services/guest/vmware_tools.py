@@ -28,6 +28,7 @@ from app.services.guest.base import (
     CommandResult,
     GuestCredentials,
     GuestCredentialsRejected,
+    GuestFileTransferError,
     GuestOperations,
 )
 from app.services.guest.scripts import (
@@ -64,6 +65,79 @@ def _file_transfer_url(url: str, target: VCenterTarget) -> str:
 
 def _file_transfer_verify(target: VCenterTarget) -> bool | ssl.SSLContext:
     return vcenter_ssl_context(target)
+
+
+_TRANSFER_PATH_NOTE = (
+    "VMware Tools file transfers go directly to the ESXi host that runs the VM, not through "
+    "vCenter, so the InfraOps backend and worker must reach every ESXi host over HTTPS."
+)
+
+
+def _certificate_rejected(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        if "CERTIFICATE_VERIFY_FAILED" in str(current) or "hostname mismatch" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _transfer_error(operation: str, url: str, exc: Exception) -> GuestFileTransferError:
+    """Name the ESXi host and the actual cause instead of a generic failure."""
+    parts = urlsplit(url)
+    host = parts.hostname or "the ESXi host"
+    port = parts.port or 443
+    technical = f"{operation} {parts.scheme}://{host}:{port}{parts.path}: {type(exc).__name__}: {exc}"
+    if _certificate_rejected(exc):
+        return GuestFileTransferError(
+            f"The TLS certificate of ESXi host '{host}' is not trusted.",
+            reason=f"{_TRANSFER_PATH_NOTE} The host's certificate failed verification.",
+            recommended_action=(
+                "Add the CA that signs the ESXi host certificates (normally the vCenter VMCA root "
+                "certificate) to VCENTER_CA_FILE and restart the backend and worker, or untick "
+                "'Verify the TLS certificate' on the vCenter connection; then retry this stage."
+            ),
+            technical_detail=technical,
+            retryable=True,
+        )
+    if isinstance(exc, httpx.TimeoutException | httpx.ConnectError | OSError):
+        return GuestFileTransferError(
+            f"InfraOps could not connect to ESXi host '{host}' on port {port}.",
+            reason=f"{_TRANSFER_PATH_NOTE} The connection failed: {exc}",
+            recommended_action=(
+                f"Allow HTTPS (TCP {port}) from the InfraOps server to every ESXi host and make "
+                f"sure '{host}' resolves inside the backend and worker containers; then retry this "
+                "stage."
+            ),
+            technical_detail=technical,
+            retryable=True,
+        )
+    return GuestFileTransferError(
+        f"ESXi host '{host}' refused the VMware Tools file transfer.",
+        reason=f"{_TRANSFER_PATH_NOTE} {exc}",
+        recommended_action="Check the ESXi host's health and retry this stage.",
+        technical_detail=technical,
+        retryable=True,
+    )
+
+
+async def _transfer(
+    target: VCenterTarget, operation: str, method: str, url: str, content: bytes | None = None
+) -> bytes:
+    try:
+        async with httpx.AsyncClient(
+            timeout=_TRANSFER_TIMEOUT_SECONDS, verify=_file_transfer_verify(target)
+        ) as client:
+            response = await client.request(method, url, content=content)
+        if response.status_code >= 300:
+            raise RuntimeError(f"HTTP {response.status_code}")
+        return response.content
+    except InfraOperationError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _transfer_error(operation, url, exc) from exc
 
 
 def _wrap(operation: str, exc: Exception, *, retryable: bool = True) -> InfraOperationError:
@@ -285,14 +359,9 @@ class VMwareToolsGuestOperations(GuestOperations):
 
         try:
             url = _file_transfer_url(await asyncio.to_thread(prepare_url), target)
-            async with httpx.AsyncClient(
-                timeout=_TRANSFER_TIMEOUT_SECONDS, verify=_file_transfer_verify(target)
-            ) as client:
-                response = await client.put(url, content=content)
-            if response.status_code >= 300:
-                raise RuntimeError(f"File transfer HTTP {response.status_code}")
         except Exception as exc:  # noqa: BLE001
             raise _wrap("upload-file", exc) from exc
+        await _transfer(target, "upload-file", "PUT", url, content)
 
     async def download_file(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str
@@ -309,15 +378,9 @@ class VMwareToolsGuestOperations(GuestOperations):
         try:
             info = await asyncio.to_thread(prepare)
             url = _file_transfer_url(info.url, target)
-            async with httpx.AsyncClient(
-                timeout=_TRANSFER_TIMEOUT_SECONDS, verify=_file_transfer_verify(target)
-            ) as client:
-                response = await client.get(url)
-            if response.status_code >= 300:
-                raise RuntimeError(f"File transfer HTTP {response.status_code}")
-            return response.content
         except Exception as exc:  # noqa: BLE001
             raise _wrap("download-file", exc) from exc
+        return await _transfer(target, "download-file", "GET", url)
 
     async def delete_file(
         self, target: VCenterTarget, vm_name: str, credentials: GuestCredentials, guest_path: str

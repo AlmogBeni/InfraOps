@@ -16,6 +16,8 @@ import contextvars
 import datetime as dt
 import hashlib
 import re
+import socket
+import ssl
 import threading
 import time
 import urllib.parse
@@ -65,6 +67,7 @@ except ImportError:  # pragma: no cover - exercised only without pyvmomi install
 
 _CONNECTION_TTL_SECONDS = 1800.0
 _TOOLS_POLL_INTERVAL = 5.0
+_HOST_HTTPS_TIMEOUT_SECONDS = 5.0
 # VMware Tools ISO every ESXi host provides (the path VMware's own Packer
 # examples for vSphere use).
 HOST_TOOLS_ISO_PATH = "[] /vmimages/tools-isoimages/windows.iso"
@@ -1563,6 +1566,36 @@ class VsphereVMwareService(VMwareService):
             return len(changes)
 
         return await self._with_session(target, op, operation="add-data-disks")
+
+    async def check_host_https(self, target: VCenterTarget, host_names: list[str]) -> dict[str, str | None]:
+        context = vcenter_ssl_context_or_unverified(target)
+        verify = context.verify_mode != ssl.CERT_NONE
+
+        async def probe(name: str) -> str | None:
+            try:
+                _reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(
+                        name, 443, ssl=context, server_hostname=name if verify else None
+                    ),
+                    timeout=_HOST_HTTPS_TIMEOUT_SECONDS,
+                )
+            except ssl.SSLCertVerificationError as exc:
+                return f"certificate not trusted ({getattr(exc, 'verify_message', None) or exc})"
+            except TimeoutError:
+                return f"no answer on TCP 443 within {int(_HOST_HTTPS_TIMEOUT_SECONDS)} seconds"
+            except socket.gaierror:
+                return "the name does not resolve"
+            except OSError as exc:
+                return f"connection failed ({exc.strerror or exc})"
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (OSError, ssl.SSLError):
+                pass
+            return None
+
+        results = await asyncio.gather(*(probe(name) for name in host_names))
+        return dict(zip(host_names, results, strict=True))
 
     async def capture_screenshot(self, target: VCenterTarget, vm_id: str) -> str:
         def op(si):

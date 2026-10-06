@@ -7,7 +7,7 @@ All vSphere access goes through `app/services/vmware/base.py::VMwareService`:
 ```python
 test_connection / get_datacenters / get_clusters / get_hosts /
 get_resource_pools / get_datastores / get_datastore_clusters /
-get_networks / get_isos / read_datastore_file
+get_networks / get_isos / read_datastore_file / check_host_https
 vm_exists / get_vm_info / get_used_ips / resolve_vm_id /
 find_vm_ownership / tag_vm_owner
 create_vm / configure_hardware / attach_network /
@@ -116,6 +116,11 @@ vCenter and the `pyvmomi` package (installed via requirements).
   still missing.
 * `capture_screenshot` runs `CreateScreenshot_Task`; the PNG stays in the VM's folder and
   its datastore path is recorded on the failed stage.
+* `check_host_https` opens TLS to port 443 of each ESXi host the VM can be placed on, verified
+  like vCenter. Guest file transfers (`InitiateFileTransferToGuest`/`FromGuest`) return URLs
+  on the ESXi host that runs the VM, so preflight blocks a request when a host is unreachable,
+  does not resolve or presents an untrusted certificate. A failing transfer reports the host
+  and the cause (`GuestFileTransferError`).
 
 ### Errors
 

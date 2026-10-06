@@ -332,3 +332,12 @@ class VMwareService(ABC):
     @abstractmethod
     async def capture_screenshot(self, target: VCenterTarget, vm_id: str) -> str:
         """Save a console screenshot in the VM folder and return its datastore path."""
+
+    @abstractmethod
+    async def check_host_https(self, target: VCenterTarget, host_names: list[str]) -> dict[str, str | None]:
+        """Open HTTPS (TCP 443) to each ESXi host, verified like vCenter.
+
+        VMware Tools file transfers go directly to the host that runs the VM.
+        Returns each host name mapped to None when it is reachable and trusted,
+        otherwise to a short description of the problem.
+        """

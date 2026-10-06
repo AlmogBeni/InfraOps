@@ -13,7 +13,8 @@ the ISO on a datastore of the target datacenter.
    none).
 3. **Configuration** — VM name, CPU, memory, firmware (UEFI with optional Secure Boot, or
    BIOS), the OS disk and up to seven data disks, storage placement, Windows computer name,
-   time zone, language, keyboard, edition index, certificate packages and applications.
+   time zone, language, keyboard, Windows Server edition (Standard or Datacenter, always with
+   the Desktop Experience), certificate packages and applications.
 4. **Administrator** — the encrypted local administrator credential Windows Setup creates
    and InfraOps signs in with.
 5. **Network** — port group, adapter, and DHCP or static IPv4 with DNS (with an optional
@@ -25,19 +26,19 @@ the ISO on a datastore of the target datacenter.
 confirmation dialog and no mandatory dry run. The server runs the complete preflight on
 every submission and creates nothing when a blocking check fails; the wizard then lists the
 blocking checks inline. Preflight covers the vCenter connection, placement, capacity, the
-ISO (present, reachable from the compute target, and Windows Server media), the product
-key, credentials, VM name and ownership, static-IP conflicts, certificates, applications and
-installer-root policy.
+ISO (present, reachable from the compute target, and Windows Server media), HTTPS to the ESXi
+hosts (guest file transfers go there directly), the product key, credentials, VM name and
+ownership, static-IP conflicts, certificates, applications and installer-root policy.
 
 ## What happens after submission
 
 InfraOps creates the VM with only its OS disk, attaches the Windows ISO, the host's VMware
 Tools ISO and a temporary answer-file CD, powers it on and answers the "Press any key to boot
 from CD or DVD" prompt itself. Windows Setup installs and configures Windows without showing
-any page, logs on once and installs VMware Tools. A sign-in through VMware Tools and the Setup
-state in the registry prove Windows is ready. InfraOps then removes the answer media and its
-cached copies (the plaintext Setup password is never persisted in InfraOps), disconnects
-the installation ISOs, hot-adds and formats the data disks, configures the network, computer
+any page, logs on once and installs VMware Tools; the running Tools service proves Windows is
+installed. InfraOps then removes the answer media, disconnects the installation ISOs and
+deletes the cached answer-file copies in the guest (the plaintext Setup password is never
+persisted in InfraOps), hot-adds and formats the data disks, configures the network, computer
 name and domain, installs certificates and applications and runs the final validation.
 
 See [vm-deployment-lifecycle.md](vm-deployment-lifecycle.md) for every stage and the answer

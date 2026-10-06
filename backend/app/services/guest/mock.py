@@ -42,6 +42,7 @@ class _MockGuestState:
         self.part_of_domain: bool = False
         self.ip_address: str | None = None
         self.reboot_pending: bool = False
+        self.installation_type = "Server"
         # Data volumes created by the simulated data-disk initialization.
         self.data_volumes: list[dict] = []
         self.files: dict[str, bytes] = {}
@@ -133,18 +134,9 @@ class MockGuestOperations(GuestOperations):
         self, lowered: str, arguments: str, state: _MockGuestState,
         target: VCenterTarget, vm_name: str,
     ) -> str:
-        # Windows Setup progress probe: the simulated install has finished by
-        # the time VMware Tools reports, and specialize applied the name.
-        if "systemsetupinprogress" in lowered:
-            return json.dumps(
-                {
-                    "ImageState": "IMAGE_STATE_COMPLETE",
-                    "SystemSetupInProgress": 0,
-                    "OOBEInProgress": 0,
-                    "ComputerName": state.hostname or vm_name.upper(),
-                },
-                separators=(",", ":"),
-            )
+        # Installation type: the simulated install has the Desktop Experience.
+        if ").installationtype" in lowered:
+            return state.installation_type
 
         # Data-disk initialization: every hot-added disk becomes one NTFS volume.
         if "update-hoststoragecache" in lowered:

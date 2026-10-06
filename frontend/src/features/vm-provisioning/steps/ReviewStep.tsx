@@ -31,6 +31,7 @@ import {
   useVcenters,
 } from '@/features/vm-provisioning/hooks'
 import { guestIdentityReviewRows } from '@/features/vm-provisioning/identity'
+import { windowsEditionLabel } from '@/features/vm-provisioning/schema'
 import { api } from '@/lib/api'
 import { displayValue } from '@/lib/utils'
 import type { PreflightReport } from '@/types/api'
@@ -299,7 +300,7 @@ export function ReviewStep() {
             ['Method', 'Unattended Windows Server installation'],
             ['Installation ISO', selectedIso?.name ?? nameOf(isos, data.iso_id)],
             ['ISO storage', selectedIso?.datastore_name ?? 'Storage details not available'],
-            ['Edition index', String(data.windows_image_index)],
+            ['Edition', windowsEditionLabel(data.windows_image_index)],
             ['Product key', productKeyName(data.product_key_secret_ref)],
             ['Language / keyboard', `${data.installation_locale} · ${data.input_locale}`],
             ['Time zone', data.timezone || 'UTC'],
