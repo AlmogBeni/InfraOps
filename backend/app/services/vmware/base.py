@@ -177,6 +177,10 @@ class PowerStateInfo:
     host_id: str | None = None
     # Computer name as reported by VMware Tools (guest.hostName).
     guest_host_name: str | None = None
+    # Measured by the host, so available before VMware Tools runs: the
+    # current CPU use and the VM's CPU capacity, in MHz.
+    cpu_usage_mhz: int | None = None
+    cpu_capacity_mhz: int | None = None
 
 
 class VMwareService(ABC):
@@ -231,6 +235,10 @@ class VMwareService(ABC):
 
     @abstractmethod
     async def get_vm_info(self, target: VCenterTarget, vm_name: str) -> PowerStateInfo | None: ...
+
+    @abstractmethod
+    async def get_vm_info_by_id(self, target: VCenterTarget, vm_id: str) -> PowerStateInfo | None:
+        """State of a VM by its managed object id (None when it no longer exists)."""
 
     @abstractmethod
     async def get_used_ips(self, target: VCenterTarget) -> dict[str, str]:

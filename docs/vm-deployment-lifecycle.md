@@ -66,12 +66,16 @@ validate request and live inventory (ISO, placement, capacity, network)
   -> power_on: PowerOnVM_Task, space bar pressed every 3 s for 45 s (PutUsbScanCodes) to
        answer "Press any key to boot from CD or DVD"
   -> wait_for_guest_os ("Install Windows"):
-       Windows Setup (windowsPE -> specialize -> oobeSystem) with no page shown
-       -> AutoLogon once -> InfraOps-FirstLogon.ps1 from the answer CD finds the Tools CD
-          (setup64.exe or setup.exe; the Windows ISO is skipped) and runs it silently
-          (/s /v"/qn REBOOT=R"), showing progress in its window and logging to
-          C:\Windows\Temp\infraops-firstlogon.log (installer: infraops-vmtools-msi.log)
+       Windows Setup (windowsPE -> specialize -> oobeSystem) with no page shown;
+       specialize copies InfraOps-FirstLogon.ps1 from the answer CD to
+       C:\Windows\Setup\Scripts, so it no longer depends on the CD
+       -> AutoLogon once -> the script finds the Tools CD (setup64.exe or setup.exe; the
+          Windows ISO is skipped) and runs it silently (/s /v"/qn REBOOT=R"), showing
+          progress in its window and logging to C:\Windows\Temp\infraops-firstlogon.log
+          (installer: infraops-vmtools-msi.log)
        -> the Tools heartbeat proves Setup and OOBE finished (no file transfer needed)
+       Meanwhile InfraOps watches the VM every 20 s (power state, CPU use measured by the
+       host, Tools) and shows it live on the stage; see "Watching Windows Setup"
   -> wait_for_tools: Tools RUNNING (OUTDATED continues with a warning)
   -> cleanup_unattended_media: delete the answer CD and file, disconnect the Windows and
        Tools ISOs (boot from disk), then scrub cached answer files and AutoLogon values in
@@ -90,9 +94,26 @@ VM, not through vCenter, so the backend and worker must reach every ESXi host ov
 this for the hosts the VM can be placed on; a transfer that still fails names the host and
 whether the connection or the certificate failed.
 
-Timeouts are generous and configurable in **Settings → Default operation time limits**:
-VM creation (30 min), Windows installation (120 min, 30–480), VMware Tools verification,
-network configuration and guest operations.
+## Watching Windows Setup
+
+Windows Setup has no VMware Tools, so InfraOps watches what the host can see. Every 20 seconds
+it reads the VM's power state, its CPU use (measured by ESXi) and the Tools status, and once a
+minute it shows the result as the stage's live status on the job page, for example *"Windows
+Setup running for 47 min: VM busy (CPU 2.1 GHz); VMware Tools not installed yet"*.
+
+* **Busy** (CPU above 3% of the VM's capacity, at least 100 MHz): Setup is working — applying
+  the image, installing devices or restarting — and InfraOps keeps waiting, however slow the
+  host is.
+* **Tools reports**: Windows is installed; the stage succeeds.
+* **Powered off**: the stage fails at once.
+* **Idle for 30 minutes without Tools**: Setup is waiting on a page or an error; the stage
+  fails with a console screenshot.
+* **Absolute limit** (*Install Windows*, default 6 hours, 30–720 minutes in **Settings →
+  Default operation time limits**): the stage fails even if the VM is still busy. Retrying the
+  stage simply keeps watching; Setup continues meanwhile.
+
+The other limits (VM creation, VMware Tools verification, network configuration and guest
+operations) are configured on the same page.
 
 ## Windows Setup never waits for input
 

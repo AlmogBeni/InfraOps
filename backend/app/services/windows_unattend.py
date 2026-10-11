@@ -221,10 +221,24 @@ FIRST_LOGON_SCRIPT = "\r\n".join((
     "",
 ))
 
-# The FirstLogonCommands entry only locates the script on the answer CD; Windows
-# Setup limits that command line to 1024 characters.
+# During specialize, while the answer CD is certainly attached, Windows copies
+# the script to its own disk. First logon runs that copy, so the installation
+# no longer depends on the CD, which InfraOps removes as soon as a job stops.
+LOCAL_SCRIPT_DIR = r"C:\Windows\Setup\Scripts"
+LOCAL_FIRST_LOGON_SCRIPT = f"{LOCAL_SCRIPT_DIR}\\{FIRST_LOGON_SCRIPT_NAME}"
+# RunSynchronousCommand/Path is limited to 259 characters, so this one is not encoded.
+COPY_FIRST_LOGON_SCRIPT_COMMAND = (
+    "powershell.exe -NoProfile -Command \""
+    "$s=(Get-PSDrive -PSProvider FileSystem).Root|%{$_+'" + FIRST_LOGON_SCRIPT_NAME + "'}|?{Test-Path $_}"
+    f"|select -f 1;if($s){{md {LOCAL_SCRIPT_DIR} -Force;copy $s {LOCAL_SCRIPT_DIR} -Force}}\""
+)
+MAX_SYNCHRONOUS_PATH = 259
+
+# The FirstLogonCommands entry runs the copy (or, as a fallback, the script on
+# the answer CD); Windows Setup limits that command line to 1024 characters.
 _FIRST_LOGON_LAUNCHER = (
-    "$s=(Get-PSDrive -PSProvider FileSystem).Root|%{Join-Path $_ '" + FIRST_LOGON_SCRIPT_NAME + "'}"
+    f"$s=@('{LOCAL_FIRST_LOGON_SCRIPT}')+((Get-PSDrive -PSProvider FileSystem).Root"
+    "|%{Join-Path $_ '" + FIRST_LOGON_SCRIPT_NAME + "'})"
     "|?{Test-Path -LiteralPath $_}|select -f 1;if($s){& $s;exit $LASTEXITCODE};exit 1"
 )
 MAX_COMMAND_LINE = 1024
@@ -281,6 +295,13 @@ def build_autounattend_xml(spec: WindowsUnattendSpec) -> bytes:
         _text(key, "WillShowUI", "OnError")
 
     specialize = ET.SubElement(root, f"{{{UNATTEND_NS}}}settings", {"pass": "specialize"})
+    deployment = _component(specialize, "Microsoft-Windows-Deployment")
+    synchronous = ET.SubElement(deployment, f"{{{UNATTEND_NS}}}RunSynchronous")
+    copy_script = ET.SubElement(synchronous, f"{{{UNATTEND_NS}}}RunSynchronousCommand")
+    copy_script.set(f"{{{WCM_NS}}}action", "add")
+    _text(copy_script, "Description", "Copy the InfraOps first-logon script to disk")
+    _text(copy_script, "Order", "1")
+    _text(copy_script, "Path", COPY_FIRST_LOGON_SCRIPT_COMMAND)
     shell_specialize = _component(specialize, "Microsoft-Windows-Shell-Setup")
     _text(shell_specialize, "ComputerName", spec.computer_name)
     _text(shell_specialize, "TimeZone", spec.timezone)

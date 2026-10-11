@@ -918,43 +918,160 @@ async def stage_power_on(ctx: JobRunContext) -> StageOutcome:
     )
 
 
+# Windows Setup is watched, not timed: vCenter reports the VM's CPU use even
+# before VMware Tools exists. Setup keeps the CPUs busy (applying the image,
+# installing devices, restarting); a VM that sits idle with no Tools heartbeat
+# is waiting on a page or an error.
+_SETUP_POLL_SECONDS = 20.0
+_SETUP_STATUS_SECONDS = 60.0
+_SETUP_STALL_SECONDS = 30 * 60
+_SETUP_BUSY_MIN_MHZ = 100
+_SETUP_BUSY_SHARE = 0.03
+
+
+def _tools_ready(info: PowerStateInfo) -> bool:
+    return info.guest_operations_ready and (
+        info.tools_running_status == "guestToolsRunning" or info.tools_status in ("toolsOk", "toolsOld")
+    )
+
+
+def _vm_busy(info: PowerStateInfo) -> bool:
+    usage = info.cpu_usage_mhz or 0
+    return usage >= max(_SETUP_BUSY_MIN_MHZ, (info.cpu_capacity_mhz or 0) * _SETUP_BUSY_SHARE)
+
+
+def _minutes(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60:02d} min"
+
+
+def _cpu_text(info: PowerStateInfo) -> str:
+    usage = info.cpu_usage_mhz or 0
+    return f"{usage / 1000:.1f} GHz" if usage >= 1000 else f"{usage} MHz"
+
+
+async def report_live_status(ctx: JobRunContext, stage_key: str, text: str) -> None:
+    """Show what a long stage currently observes on the job page (best effort)."""
+    step = ctx.steps_by_key.get(stage_key)
+    if step is None:
+        return
+    step.output = text
+    step.artifacts = {
+        **(step.artifacts or {}),
+        "live_status": {"text": text, "updated_at": dt.datetime.now(dt.UTC).isoformat()},
+    }
+    try:
+        if getattr(ctx, "db", None) is not None:
+            await ctx.db.commit()
+        if getattr(ctx, "publisher", None) is not None:
+            await ctx.publisher.publish_stage(
+                str(ctx.job_id), stage=stage_key, status="RUNNING", progress=ctx.job.progress, message=text
+            )
+    except Exception:  # noqa: BLE001 - live status must never fail the stage
+        log.warning("Could not publish the live status of job %s", ctx.job_id, exc_info=True)
+
+
 async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
     """Windows installs from the ISO, then — at the first logon, which happens only
     after Setup and OOBE have finished — installs VMware Tools from the host's
     Tools ISO. Windows Server media carry no VMware Tools, so a running Tools
     service with Guest Operations ready proves the installation finished. Power
-    state is never accepted as proof, and no file transfer is needed here."""
+    state is never accepted as proof, and no file transfer is needed here.
+
+    While waiting, the VM's power state and CPU activity are watched and shown
+    live: the stage keeps waiting while Setup works, and fails only when the VM
+    powers off, stays idle for _SETUP_STALL_SECONDS, or reaches the configured
+    limit."""
     vm_id = _require_vm_id(ctx)
     ctx.job.guest_os_status = GuestOsStatus.INSTALLATION_IN_PROGRESS.value
     ctx.job.vmware_tools_status = VMwareToolsStatus.NOT_APPLICABLE_YET.value
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.WAITING_FOR_OS.value
+    loop = asyncio.get_running_loop()
     timeout = await effective_timeout_seconds(ctx, "wait_for_guest_os")
-    try:
-        # Finish with a clear error before the pipeline's own stage timeout fires.
-        await ctx.vmware.wait_for_tools(ctx.target, vm_id, max(60.0, timeout - 60.0))
-    except InfraOperationError as exc:
-        raise InfraOperationError(
-            "Windows did not finish installing from the ISO in time.",
-            reason=(
-                "VMware Tools never reported from the new installation, so Windows Setup or the "
-                "first-logon VMware Tools installation did not complete. Without VMware Tools "
-                "InfraOps cannot configure the network, domain or software."
-            ),
-            recommended_action=(
-                "Check the console screenshot in the administrator diagnostics: an EFI boot list or "
-                "'Press any key to boot from CD or DVD' means Setup never started; a Windows Setup "
-                "page or error usually points at the edition, product key or ISO. A Windows desktop "
-                "means Windows installed but VMware Tools did not: the InfraOps window on the "
-                f"desktop and {FIRST_LOGON_LOG} show whether the host's Tools "
-                "ISO ([] /vmimages/tools-isoimages/windows.iso) was missing or its installer failed "
-                f"(installer log: {TOOLS_MSI_LOG}). Fix the cause and "
-                "submit a new request."
-            ),
-            technical_detail=exc.technical_detail,
-            retryable=True,
-        ) from exc
-    info = await ctx.vmware.get_vm_info(ctx.target, ctx.vm_name)
-    if info is not None and info.guest_family and "windows" not in info.guest_family.casefold():
+    started = loop.time()
+    # Finish with a clear error before the pipeline's own stage timeout fires.
+    deadline = started + max(_SETUP_POLL_SECONDS, timeout - 60.0)
+    last_busy = started
+    last_report: float | None = None
+
+    while True:
+        now = loop.time()
+        info = await ctx.vmware.get_vm_info_by_id(ctx.target, vm_id)
+        if info is None:
+            raise InfraOperationError(
+                "The VM disappeared from vCenter while Windows was installing.",
+                reason="It was deleted or unregistered outside InfraOps.",
+                recommended_action="Submit a new request.",
+                retryable=False,
+            )
+        if _tools_ready(info):
+            break
+        if info.power_state != "poweredOn":
+            raise InfraOperationError(
+                "The VM was powered off while Windows was installing.",
+                reason=f"vCenter reports the VM as {info.power_state}.",
+                recommended_action=(
+                    "Check the VM's events in vCenter. Power it on to let Setup continue, then retry "
+                    "this stage, or submit a new request."
+                ),
+                retryable=True,
+            )
+        if _vm_busy(info):
+            last_busy = now
+        idle = now - last_busy
+        elapsed = now - started
+        activity = (
+            f"VM busy (CPU {_cpu_text(info)})"
+            if idle < _SETUP_POLL_SECONDS
+            else f"VM idle for {_minutes(idle)} (CPU {_cpu_text(info)})"
+        )
+        if last_report is None or now - last_report >= _SETUP_STATUS_SECONDS:
+            await report_live_status(
+                ctx,
+                "wait_for_guest_os",
+                f"Windows Setup running for {_minutes(elapsed)}: {activity}; VMware Tools not "
+                "installed yet (it is installed at the first logon after Setup).",
+            )
+            last_report = now
+        if idle >= _SETUP_STALL_SECONDS:
+            raise InfraOperationError(
+                "Windows Setup stopped making progress.",
+                reason=(
+                    f"After {_minutes(elapsed)} the VM has been idle for {_minutes(idle)} and VMware "
+                    "Tools has not reported, so Setup is most likely waiting on a page or an error. "
+                    "Without VMware Tools InfraOps cannot configure the network, domain or software."
+                ),
+                recommended_action=(
+                    "Check the console screenshot in the administrator diagnostics: an EFI boot list "
+                    "or 'Press any key to boot from CD or DVD' means Setup never started; a Windows "
+                    "Setup page or error usually points at the edition, product key or ISO. A Windows "
+                    "desktop means Windows installed but VMware Tools did not: the InfraOps window on "
+                    f"the desktop and {FIRST_LOGON_LOG} show whether the host's Tools ISO "
+                    "([] /vmimages/tools-isoimages/windows.iso) was missing or its installer failed "
+                    f"(installer log: {TOOLS_MSI_LOG}). Fix the cause and submit a new request."
+                ),
+                technical_detail=f"elapsed={int(elapsed)}s idle={int(idle)}s cpu={info.cpu_usage_mhz}MHz",
+                retryable=True,
+            )
+        if now >= deadline:
+            raise InfraOperationError(
+                f"Windows Setup did not finish within the {_minutes(timeout)} limit.",
+                reason=(
+                    f"The VM was still active ({activity}) but VMware Tools never reported. "
+                    "Installation on this host is unusually slow; it normally takes 15–40 minutes."
+                ),
+                recommended_action=(
+                    "Check the console screenshot. If Setup is still progressing, raise 'Install "
+                    "Windows' under Settings → Default operation time limits and retry this stage — "
+                    "Setup keeps running meanwhile. Also check the host's load and the datastore "
+                    "performance of the VM and its ISO."
+                ),
+                technical_detail=f"elapsed={int(elapsed)}s cpu={info.cpu_usage_mhz}MHz",
+                retryable=True,
+            )
+        await asyncio.sleep(min(_SETUP_POLL_SECONDS, max(0.0, deadline - now)))
+
+    if info.guest_family and "windows" not in info.guest_family.casefold():
         raise InfraOperationError(
             f"The installed guest reports '{info.guest_family}', not Windows.",
             reason="Only Windows Server installation media is supported.",
@@ -963,11 +1080,14 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
         )
     ctx.job.guest_os_status = GuestOsStatus.READY.value
     ctx.job.guest_provisioning_status = GuestProvisioningStatus.IN_PROGRESS.value
-    computer_name = info.guest_host_name if info is not None else None
+    computer_name = info.guest_host_name
+    step = ctx.steps_by_key.get("wait_for_guest_os")
+    if step is not None and step.artifacts:
+        step.artifacts = {key: value for key, value in step.artifacts.items() if key != "live_status"}
     return StageOutcome(
         output=(
-            "Windows was installed unattended from the ISO. VMware Tools, which Windows installs "
-            "at the first logon after Setup and OOBE, is running"
+            f"Windows was installed unattended from the ISO in {_minutes(loop.time() - started)}. "
+            "VMware Tools, which Windows installs at the first logon after Setup and OOBE, is running"
             + (f" and reports the computer name '{computer_name}'." if computer_name else ".")
         ),
         artifacts={"windows_setup": {"computer_name": computer_name}},

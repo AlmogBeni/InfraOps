@@ -107,7 +107,7 @@ class SecretReferenceOut(BaseModel):
 class DefaultTimeouts(BaseModel):
     create_vm_minutes: int = Field(default=30, ge=1, le=240)
     # Windows Setup from the ISO through first logon and VMware Tools.
-    os_installation_minutes: int = Field(default=120, ge=30, le=480)
+    os_installation_minutes: int = Field(default=360, ge=30, le=720)
     vmware_tools_minutes: int = Field(default=15, ge=1, le=120)
     network_configuration_minutes: int = Field(default=5, ge=1, le=60)
     guest_operations_minutes: int = Field(default=10, ge=1, le=120)

@@ -20,9 +20,11 @@ from app.schemas.provisioning import FirmwareType
 from app.services.guest.base import GuestCredentials
 from app.services.vmware.base import TemporaryMediaRef, VmRef
 from app.services.windows_unattend import (
+    COPY_FIRST_LOGON_SCRIPT_COMMAND,
     FIRST_LOGON_LOG,
     FIRST_LOGON_SCRIPT,
     FIRST_LOGON_SCRIPT_NAME,
+    LOCAL_FIRST_LOGON_SCRIPT,
     UNATTEND_NS,
     WindowsUnattendSpec,
     build_answer_iso,
@@ -180,14 +182,30 @@ def test_answer_file_escapes_secrets() -> None:
     assert password in [node.text for node in ET.fromstring(xml).iter()]
 
 
-def test_first_logon_command_runs_the_script_from_the_answer_cd_within_setup_limits() -> None:
+def test_first_logon_command_prefers_the_copy_on_disk_within_setup_limits() -> None:
     command = tools_install_command()
     launcher = base64.b64decode(command.rsplit(" ", 1)[1]).decode("utf-16-le")
 
     assert len(command) <= 1024  # Windows Setup's FirstLogonCommands limit
     assert command.startswith("powershell.exe -NoProfile -ExecutionPolicy Bypass ")
+    # The copy made during specialize comes first; the answer CD is only a fallback.
+    assert launcher.startswith(f"$s=@('{LOCAL_FIRST_LOGON_SCRIPT}')+(")
     assert f"'{FIRST_LOGON_SCRIPT_NAME}'" in launcher
     assert "exit $LASTEXITCODE" in launcher
+
+
+def test_specialize_copies_the_script_to_disk_while_the_answer_cd_is_attached() -> None:
+    root = ET.fromstring(build_autounattend_xml(EFI_SPEC))
+    deployment = _component(_settings(root, "specialize"), "Microsoft-Windows-Deployment")
+    command = deployment.find("u:RunSynchronous/u:RunSynchronousCommand", NS)
+
+    assert command.findtext("u:Order", namespaces=NS) == "1"
+    path = command.findtext("u:Path", namespaces=NS)
+    assert path == COPY_FIRST_LOGON_SCRIPT_COMMAND
+    assert len(path) <= 259  # RunSynchronousCommand/Path limit
+    assert path.startswith('powershell.exe -NoProfile -Command "') and path.endswith('"')
+    assert f"'{FIRST_LOGON_SCRIPT_NAME}'" in path
+    assert r"copy $s C:\Windows\Setup\Scripts -Force" in path
 
 
 def test_first_logon_script_finds_either_tools_installer_and_explains_itself() -> None:

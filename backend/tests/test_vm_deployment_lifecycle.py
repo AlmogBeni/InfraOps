@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from types import SimpleNamespace
@@ -94,11 +95,41 @@ def fast_setup_polling(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── Windows Setup ────────────────────────────────────────────────────────────
 
 
-async def test_running_tools_from_first_logon_proves_windows_is_installed() -> None:
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=_tools_running("TEST123"))
-    )
+def _installing(cpu_mhz: int, power_state: str = "poweredOn") -> PowerStateInfo:
+    return PowerStateInfo(power_state=power_state, cpu_usage_mhz=cpu_mhz, cpu_capacity_mhz=4800)
+
+
+@pytest.fixture
+async def fast_install_watch(monkeypatch: pytest.MonkeyPatch):
+    """Poll without sleeping and count each poll as a minute of wall time."""
+    from app.workers import stages
+
+    clock = SimpleNamespace(now=0.0)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "time", lambda: clock.now)
+
+    async def no_sleep(_seconds):
+        clock.now += 60.0
+
+    monkeypatch.setattr(stages.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(stages, "effective_timeout_seconds", AsyncMock(return_value=6 * 3600))
+    return clock
+
+
+def watch_context(infos: list[PowerStateInfo]) -> SimpleNamespace:
+    vmware = SimpleNamespace(get_vm_info_by_id=AsyncMock(side_effect=infos))
     ctx = setup_context(vmware, [])
+    step = SimpleNamespace(stage_key="wait_for_guest_os", artifacts={}, output=None)
+    ctx.job.steps = [step]
+    ctx.job.progress = 30
+    ctx.steps_by_key = {"wait_for_guest_os": step}
+    ctx.db = SimpleNamespace(commit=AsyncMock())
+    ctx.publisher = SimpleNamespace(publish_stage=AsyncMock())
+    return ctx
+
+
+async def test_running_tools_from_first_logon_proves_windows_is_installed(fast_install_watch) -> None:
+    ctx = watch_context([_tools_running("TEST123")])
 
     outcome = await stage_wait_for_guest_os(ctx)
 
@@ -107,39 +138,91 @@ async def test_running_tools_from_first_logon_proves_windows_is_installed() -> N
     assert outcome.artifacts == {"windows_setup": {"computer_name": "TEST123"}}
     assert ctx.job.guest_os_status == GuestOsStatus.READY.value
     assert ctx.job.guest_provisioning_status == GuestProvisioningStatus.IN_PROGRESS.value
-    # One bounded wait for the Tools that Windows installs after OOBE; no guest
-    # file transfer, so ESXi connectivity cannot make this stage fail.
-    assert vmware.wait_for_tools.await_args.args[1] == "vm-101"
+    assert ctx.vmware.get_vm_info_by_id.await_args.args[1] == "vm-101"
+    # No guest file transfer, so ESXi connectivity cannot make this stage fail.
     ctx.guest_ops.run_powershell.assert_not_awaited()
     ctx.guest_ops.upload_file.assert_not_awaited()
 
 
-async def test_installation_that_never_reports_tools_fails_with_console_guidance() -> None:
-    vmware = SimpleNamespace(
-        wait_for_tools=AsyncMock(
-            side_effect=InfraOperationError("Tools never ready", reason="timeout", recommended_action="n/a")
-        )
-    )
-    ctx = setup_context(vmware, [])
+async def test_a_slow_but_busy_installation_is_watched_and_reported_live(fast_install_watch) -> None:
+    # Three hours of busy Setup, then Tools: far beyond the old fixed two hours.
+    ctx = watch_context([_installing(2100)] * 180 + [_tools_running("TEST123")])
 
-    with pytest.raises(InfraOperationError, match="did not finish installing from the ISO") as caught:
+    outcome = await stage_wait_for_guest_os(ctx)
+
+    assert outcome.status == "SUCCEEDED"
+    assert "in 3 h 00 min" in outcome.output
+    published = ctx.publisher.publish_stage.await_args_list
+    assert len(published) == 180  # once a minute while Setup runs
+    first, last = published[0].kwargs["message"], published[-1].kwargs["message"]
+    assert first.startswith("Windows Setup running for 0 min: VM busy (CPU 2.1 GHz)")
+    assert last.startswith("Windows Setup running for 2 h 59 min: VM busy")
+    assert ctx.db.commit.await_count == 180
+    assert "live_status" not in ctx.steps_by_key["wait_for_guest_os"].artifacts
+
+
+async def test_an_idle_vm_without_tools_fails_as_stalled(fast_install_watch) -> None:
+    # Busy for 10 minutes, then idle: Setup is waiting on a page or an error.
+    ctx = watch_context([_installing(2000)] * 10 + [_installing(40)] * 60)
+
+    with pytest.raises(InfraOperationError, match="stopped making progress") as caught:
         await stage_wait_for_guest_os(ctx)
 
+    assert "idle for 30 min" in caught.value.reason
     assert "console screenshot" in caught.value.recommended_action
-    assert "Press any key to boot from CD or DVD" in caught.value.recommended_action
+    assert "infraops-firstlogon.log" in caught.value.recommended_action
     assert caught.value.retryable is True
+    assert ctx.steps_by_key["wait_for_guest_os"].artifacts["live_status"]["text"].startswith(
+        "Windows Setup running for 39 min: VM idle for 30 min"
+    )
 
 
-async def test_media_that_installs_another_operating_system_fails_clearly() -> None:
-    linux = PowerStateInfo(power_state="poweredOn", tools_status="toolsOk", guest_family="linuxGuest")
-    vmware = SimpleNamespace(wait_for_tools=AsyncMock(), get_vm_info=AsyncMock(return_value=linux))
-    ctx = setup_context(vmware, [])
+async def test_the_absolute_limit_still_applies_to_an_endlessly_busy_vm(fast_install_watch) -> None:
+    from app.workers import stages
+
+    stages.effective_timeout_seconds.return_value = 30 * 60
+    ctx = watch_context([_installing(2000)] * 60)
+
+    with pytest.raises(InfraOperationError, match="did not finish within the 30 min limit") as caught:
+        await stage_wait_for_guest_os(ctx)
+
+    assert "still active" in caught.value.reason
+    assert "Settings" in caught.value.recommended_action
+
+
+async def test_a_vm_powered_off_during_installation_fails_immediately(fast_install_watch) -> None:
+    ctx = watch_context([_installing(2000), _installing(0, power_state="poweredOff")])
+
+    with pytest.raises(InfraOperationError, match="powered off while Windows was installing"):
+        await stage_wait_for_guest_os(ctx)
+
+
+async def test_media_that_installs_another_operating_system_fails_clearly(fast_install_watch) -> None:
+    linux = PowerStateInfo(
+        power_state="poweredOn", tools_status="toolsOk", guest_operations_ready=True, guest_family="linuxGuest"
+    )
+    ctx = watch_context([linux])
 
     with pytest.raises(InfraOperationError, match="not Windows") as caught:
         await stage_wait_for_guest_os(ctx)
 
     assert caught.value.retryable is False
     ctx.guest_ops.run_powershell.assert_not_awaited()
+
+
+def test_vm_activity_comes_from_the_host_not_vmware_tools() -> None:
+    from app.services.vmware.vsphere import VsphereVMwareService
+
+    vm = SimpleNamespace(
+        guest=SimpleNamespace(net=None, ipAddress=None),
+        runtime=SimpleNamespace(powerState="poweredOn", host=None, maxCpuUsage=4800),
+        summary=SimpleNamespace(quickStats=SimpleNamespace(overallCpuUsage=2150)),
+    )
+
+    info = VsphereVMwareService._power_state_info(vm)
+
+    assert (info.cpu_usage_mhz, info.cpu_capacity_mhz) == (2150, 4800)
+    assert info.tools_status is None
 
 
 # ── Boot prompt ──────────────────────────────────────────────────────────────

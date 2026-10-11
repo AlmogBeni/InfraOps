@@ -36,7 +36,7 @@ function timeoutError(value: number, max: number, min = 1): string | null {
 export function validatePlatformSettings(value: PlatformSettingsOut): SettingsValidation {
   const timeoutErrors: SettingsValidation['timeoutErrors'] = {
     create_vm_minutes: timeoutError(value.default_timeouts.create_vm_minutes, 240),
-    os_installation_minutes: timeoutError(value.default_timeouts.os_installation_minutes, 480, 30),
+    os_installation_minutes: timeoutError(value.default_timeouts.os_installation_minutes, 720, 30),
     vmware_tools_minutes: timeoutError(value.default_timeouts.vmware_tools_minutes, 120),
     network_configuration_minutes: timeoutError(value.default_timeouts.network_configuration_minutes, 60),
     guest_operations_minutes: timeoutError(value.default_timeouts.guest_operations_minutes, 120),
@@ -252,7 +252,7 @@ export function SettingsPage() {
       >
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <TimeoutField id="timeout-create" label="Create virtual machine" description="Maximum time for vCenter to create the VM and its OS disk." value={draft.default_timeouts.create_vm_minutes} max={240} error={validation.timeoutErrors.create_vm_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, create_vm_minutes: value } })} />
-          <TimeoutField id="timeout-install" label="Install Windows" description="Maximum time for Windows Setup from the ISO through first logon and VMware Tools." value={draft.default_timeouts.os_installation_minutes} min={30} max={480} error={validation.timeoutErrors.os_installation_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, os_installation_minutes: value } })} />
+          <TimeoutField id="timeout-install" label="Install Windows" description="Upper limit for Windows Setup through first logon and VMware Tools. A VM idle for 30 minutes fails earlier." value={draft.default_timeouts.os_installation_minutes} min={30} max={720} error={validation.timeoutErrors.os_installation_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, os_installation_minutes: value } })} />
           <TimeoutField id="timeout-tools" label="Verify VMware Tools" description="Maximum time to confirm VMware Tools after Windows is installed." value={draft.default_timeouts.vmware_tools_minutes} max={120} error={validation.timeoutErrors.vmware_tools_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, vmware_tools_minutes: value } })} />
           <TimeoutField id="timeout-network" label="Configure guest network" description="Maximum time to apply and verify network settings inside the VM." value={draft.default_timeouts.network_configuration_minutes} max={60} error={validation.timeoutErrors.network_configuration_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, network_configuration_minutes: value } })} />
           <TimeoutField id="timeout-guest" label="Run guest operations" description="Maximum time for certificates, installers, and other guest tasks." value={draft.default_timeouts.guest_operations_minutes} max={120} error={validation.timeoutErrors.guest_operations_minutes} onChange={(value) => setDraft({ ...draft, default_timeouts: { ...draft.default_timeouts, guest_operations_minutes: value } })} />

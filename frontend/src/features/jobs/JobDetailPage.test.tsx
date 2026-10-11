@@ -124,6 +124,31 @@ describe('JobDetailPage', () => {
     }
   })
 
+  it('shows what a running installation stage observes live', async () => {
+    vi.spyOn(api, 'job').mockResolvedValue(job({
+      status: 'RUNNING',
+      error_summary: null,
+      steps: [step({
+        status: 'RUNNING',
+        error_human: null,
+        error_technical: null,
+        finished_at: null,
+        artifacts: {
+          live_status: {
+            text: 'Windows Setup running for 47 min: VM busy (CPU 2.1 GHz); VMware Tools not installed yet.',
+            updated_at: '2026-10-11T12:23:00Z',
+          },
+        },
+      })],
+    }))
+    vi.spyOn(api, 'jobEventsTicket').mockRejectedValue(new Error('no live events in tests'))
+
+    renderPage()
+
+    expect(await screen.findByText('Live status')).toBeInTheDocument()
+    expect(screen.getByText(/Windows Setup running for 47 min: VM busy \(CPU 2\.1 GHz\)/)).toBeInTheDocument()
+  })
+
   it('never offers the screenshot to engineers without administrator rights', async () => {
     vi.spyOn(api, 'job').mockResolvedValue(job())
     const screenshot = vi.spyOn(api, 'consoleScreenshot')

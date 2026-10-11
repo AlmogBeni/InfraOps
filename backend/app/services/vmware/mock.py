@@ -441,8 +441,34 @@ class MockVMwareService(VMwareService):
     async def get_vm_info(self, target: VCenterTarget, vm_name: str) -> PowerStateInfo | None:
         await asyncio.sleep(_LATENCY_DISCOVERY)
         vm = _estate(target.id).find_vm_by_name(vm_name)
-        if vm is None:
-            return None
+        return None if vm is None else self._info(vm)
+
+    async def get_vm_info_by_id(self, target: VCenterTarget, vm_id: str) -> PowerStateInfo | None:
+        await asyncio.sleep(_LATENCY_DISCOVERY)
+        vm = next((entry for entry in _estate(target.id).existing_vms.values() if entry.id == vm_id), None)
+        return None if vm is None else self._info(vm)
+
+    @staticmethod
+    def _advance_installation(vm: _MockVM) -> bool:
+        """Windows Setup "finishes" a few seconds after power-on, but only when the
+        answer media is attached; VMware Tools then reports. True when Tools runs."""
+        installing = vm.answer_media and vm.installation_media
+        if vm.powered_on_at is not None and (vm.has_guest_os or installing):
+            elapsed = (dt.datetime.now(dt.UTC) - vm.powered_on_at).total_seconds()
+            if elapsed >= _TOOLS_READY_DELAY_SECONDS and not vm.guest_operations_ready:
+                vm.has_guest_os = True
+                vm.guest_state = "running"
+                vm.guest_family = "windowsGuest"
+                vm.tools_status = "toolsOk"
+                vm.tools_running_status = "guestToolsRunning"
+                vm.tools_version_status = "guestToolsCurrent"
+                vm.guest_operations_ready = True
+                log.info("MOCK VMware Tools ready: %s", vm.name)
+        return vm.guest_operations_ready
+
+    def _info(self, vm: _MockVM) -> PowerStateInfo:
+        tools_ready = self._advance_installation(vm)
+        powered_on = vm.power_state == "poweredOn"
         ips = [vm.ip_address] if vm.ip_address else []
         return PowerStateInfo(
             power_state=vm.power_state,
@@ -454,6 +480,9 @@ class MockVMwareService(VMwareService):
             guest_family=vm.guest_family,
             ip_addresses=ips,
             guest_host_name=vm.hostname or (vm.name.upper() if vm.guest_operations_ready else None),
+            # Setup keeps the CPUs busy; an installed, idle guest barely uses them.
+            cpu_usage_mhz=(120 if tools_ready else 1800) if powered_on else 0,
+            cpu_capacity_mhz=vm.cpu * 2400,
         )
 
     async def get_used_ips(self, target: VCenterTarget) -> dict[str, str]:
@@ -684,20 +713,8 @@ class MockVMwareService(VMwareService):
         vm = self._require_vm(target, vm_id)
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while True:
-            # Windows Setup only runs unattended when the answer media is attached.
-            installing = vm.answer_media and vm.installation_media
-            if vm.powered_on_at is not None and (vm.has_guest_os or installing):
-                elapsed = (dt.datetime.now(dt.UTC) - vm.powered_on_at).total_seconds()
-                if elapsed >= _TOOLS_READY_DELAY_SECONDS:
-                    vm.has_guest_os = True
-                    vm.guest_state = "running"
-                    vm.guest_family = "windowsGuest"
-                    vm.tools_status = "toolsOk"
-                    vm.tools_running_status = "guestToolsRunning"
-                    vm.tools_version_status = "guestToolsCurrent"
-                    vm.guest_operations_ready = True
-                    log.info("MOCK VMware Tools ready: %s", vm.name)
-                    return
+            if self._advance_installation(vm):
+                return
             if asyncio.get_running_loop().time() >= deadline:
                 raise InfraOperationError(
                     f"VMware Tools did not become ready on '{vm.name}' within the configured timeout.",

@@ -147,7 +147,7 @@ describe('admin infrastructure and settings redesign', () => {
     const installTimeout = screen.getByRole('spinbutton', { name: 'Install Windows' })
     fireEvent.change(installTimeout, { target: { value: '20' } })
     expect(saveButton).toBeDisabled()
-    expect(screen.getByText('Enter a value from 30 to 480 minutes.')).toBeInTheDocument()
+    expect(screen.getByText('Enter a value from 30 to 720 minutes.')).toBeInTheDocument()
     fireEvent.change(installTimeout, { target: { value: '120' } })
 
     const repositoryRoots = screen.getByRole('textbox', { name: 'Network repository roots' })

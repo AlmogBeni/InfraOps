@@ -36,7 +36,9 @@ InfraOps creates the VM with only its OS disk, attaches the Windows ISO, the hos
 Tools ISO and a temporary answer-file CD, powers it on and answers the "Press any key to boot
 from CD or DVD" prompt itself. Windows Setup installs and configures Windows without showing
 any page, logs on once and installs VMware Tools; the running Tools service proves Windows is
-installed. InfraOps then removes the answer media, disconnects the installation ISOs and
+installed. While Setup runs, the job page shows live what InfraOps observes (time so far, CPU
+activity, Tools); it keeps waiting while the VM is busy and stops only when the VM powers off,
+sits idle for 30 minutes or reaches the configured limit. InfraOps then removes the answer media, disconnects the installation ISOs and
 deletes the cached answer-file copies in the guest (the plaintext Setup password is never
 persisted in InfraOps), hot-adds and formats the data disks, configures the network, computer
 name and domain, installs certificates and applications and runs the final validation.

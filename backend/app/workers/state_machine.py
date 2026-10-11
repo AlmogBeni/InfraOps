@@ -65,7 +65,7 @@ DEFAULT_STAGE_TIMEOUTS: dict[str, int] = {
     "attach_network_adapter": 600,
     "prepare_unattended_install": 600,
     "power_on": 600,
-    "wait_for_guest_os": 7200,
+    "wait_for_guest_os": 21600,
     "wait_for_tools": 900,
     "cleanup_unattended_media": 600,
     "add_data_disks": 600,

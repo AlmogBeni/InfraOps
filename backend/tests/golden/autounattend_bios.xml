@@ -66,6 +66,15 @@
     </component>
   </settings>
   <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Description>Copy the InfraOps first-logon script to disk</Description>
+          <Order>1</Order>
+          <Path>powershell.exe -NoProfile -Command "$s=(Get-PSDrive -PSProvider FileSystem).Root|%{$_+'InfraOps-FirstLogon.ps1'}|?{Test-Path $_}|select -f 1;if($s){md C:\Windows\Setup\Scripts -Force;copy $s C:\Windows\Setup\Scripts -Force}"</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <ComputerName>SERVER-BIOS-01</ComputerName>
       <TimeZone>W. Europe Standard Time</TimeZone>
@@ -91,7 +100,7 @@
       </AutoLogon>
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
-          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABzAD0AKABHAGUAdAAtAFAAUwBEAHIAaQB2AGUAIAAtAFAAUwBQAHIAbwB2AGkAZABlAHIAIABGAGkAbABlAFMAeQBzAHQAZQBtACkALgBSAG8AbwB0AHwAJQB7AEoAbwBpAG4ALQBQAGEAdABoACAAJABfACAAJwBJAG4AZgByAGEATwBwAHMALQBGAGkAcgBzAHQATABvAGcAbwBuAC4AcABzADEAJwB9AHwAPwB7AFQAZQBzAHQALQBQAGEAdABoACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAF8AfQB8AHMAZQBsAGUAYwB0ACAALQBmACAAMQA7AGkAZgAoACQAcwApAHsAJgAgACQAcwA7AGUAeABpAHQAIAAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFAH0AOwBlAHgAaQB0ACAAMQA=</CommandLine>
+          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABzAD0AQAAoACcAQwA6AFwAVwBpAG4AZABvAHcAcwBcAFMAZQB0AHUAcABcAFMAYwByAGkAcAB0AHMAXABJAG4AZgByAGEATwBwAHMALQBGAGkAcgBzAHQATABvAGcAbwBuAC4AcABzADEAJwApACsAKAAoAEcAZQB0AC0AUABTAEQAcgBpAHYAZQAgAC0AUABTAFAAcgBvAHYAaQBkAGUAcgAgAEYAaQBsAGUAUwB5AHMAdABlAG0AKQAuAFIAbwBvAHQAfAAlAHsASgBvAGkAbgAtAFAAYQB0AGgAIAAkAF8AIAAnAEkAbgBmAHIAYQBPAHAAcwAtAEYAaQByAHMAdABMAG8AZwBvAG4ALgBwAHMAMQAnAH0AKQB8AD8AewBUAGUAcwB0AC0AUABhAHQAaAAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAJABfAH0AfABzAGUAbABlAGMAdAAgAC0AZgAgADEAOwBpAGYAKAAkAHMAKQB7ACYAIAAkAHMAOwBlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQB9ADsAZQB4AGkAdAAgADEA</CommandLine>
           <Description>Install VMware Tools</Description>
           <Order>1</Order>
         </SynchronousCommand>

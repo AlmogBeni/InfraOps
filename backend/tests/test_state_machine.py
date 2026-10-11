@@ -100,8 +100,8 @@ class TestTimeouts:
     def test_create_timeout_is_thirty_minutes(self):
         assert DEFAULT_STAGE_TIMEOUTS["create_vm"] == 1800
 
-    def test_windows_installation_gets_two_hours(self):
-        assert DEFAULT_STAGE_TIMEOUTS["wait_for_guest_os"] == 7200
+    def test_windows_installation_gets_six_hours(self):
+        assert DEFAULT_STAGE_TIMEOUTS["wait_for_guest_os"] == 21600
 
     def test_tools_timeout_fifteen_minutes(self):
         assert DEFAULT_STAGE_TIMEOUTS["wait_for_tools"] == 900

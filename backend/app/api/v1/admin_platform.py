@@ -147,7 +147,7 @@ def _settings_out(effective: dict[str, object]) -> PlatformSettingsOut:
         allowed_installer_roots=list(effective.get(SETTING_ALLOWED_INSTALLER_ROOTS) or []),
         default_timeouts=DefaultTimeouts(
             create_vm_minutes=int(timeouts.get("create_vm_minutes", 30)),
-            os_installation_minutes=int(timeouts.get("os_installation_minutes", 120)),
+            os_installation_minutes=int(timeouts.get("os_installation_minutes", 360)),
             vmware_tools_minutes=int(timeouts.get("vmware_tools_minutes", 15)),
             network_configuration_minutes=int(timeouts.get("network_configuration_minutes", 5)),
             guest_operations_minutes=int(timeouts.get("guest_operations_minutes", 10)),

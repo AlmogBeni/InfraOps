@@ -768,6 +768,12 @@ class VsphereVMwareService(VMwareService):
             value = getattr(owner, name, None)
             return str(value) if value else None
 
+        def number(owner, name: str) -> int | None:
+            value = getattr(owner, name, None)
+            return int(value) if isinstance(value, int | float) else None
+
+        quick_stats = getattr(getattr(vm, "summary", None), "quickStats", None)
+
         return PowerStateInfo(
             power_state=str(vm.runtime.powerState),
             tools_status=text(guest, "toolsStatus"),
@@ -779,6 +785,8 @@ class VsphereVMwareService(VMwareService):
             ip_addresses=ips,
             host_id=vm.runtime.host._moId if vm.runtime.host else None,
             guest_host_name=text(guest, "hostName"),
+            cpu_usage_mhz=number(quick_stats, "overallCpuUsage"),
+            cpu_capacity_mhz=number(vm.runtime, "maxCpuUsage"),
         )
 
     async def get_vm_info(self, target: VCenterTarget, vm_name: str) -> PowerStateInfo | None:

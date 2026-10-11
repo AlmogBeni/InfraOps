@@ -461,6 +461,9 @@ function StageRow({
   isLast: boolean
 }) {
   const hasScreenshot = isAdmin && typeof step.artifacts?.['console_screenshot'] === 'string'
+  const liveStatus = step.status === 'RUNNING'
+    ? (step.artifacts?.['live_status'] as { text?: string; updated_at?: string } | undefined)
+    : undefined
   const hasTechnicalOutput = Boolean(step.output || (isAdmin && step.error_technical) || hasScreenshot)
 
   return (
@@ -511,6 +514,16 @@ function StageRow({
             )}
           </div>
         </header>
+
+        {liveStatus?.text && (
+          <div className="border-t border-[#f3d6c3] bg-[#fff8f3] px-4 py-2.5" aria-live="polite">
+            <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#b4552c]">Live status</p>
+            <p className="mt-1 text-xs leading-5 text-[#4a3326]">{liveStatus.text}</p>
+            {liveStatus.updated_at && (
+              <p className="mt-0.5 text-[10px] tabular-nums text-[#8a6a55]">Updated {formatTime(liveStatus.updated_at)}</p>
+            )}
+          </div>
+        )}
 
         {step.error_human && (
           <div className="border-t border-red-100 bg-red-50/70 px-4 py-3">
