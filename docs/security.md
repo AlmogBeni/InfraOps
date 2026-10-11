@@ -44,9 +44,10 @@ by deployment hardening guidance.
 * The API never returns username/password values. Jobs and vCenter records contain only
   reference names; the worker resolves the latest encrypted revision for each operation,
   so rotations apply without a restart.
-* Unattended installation builds a temporary answer **ISO** (`Autounattend.xml`, attached
-  as a CD drive) containing the local administrator password — and the product key when
-  one is selected — because Windows Setup requires them. The bytes are created in memory
+* Unattended installation builds a temporary answer **ISO** (`Autounattend.xml` and the
+  secret-free first-logon script, attached as a CD drive); the answer file contains the local
+  administrator password — and the product key when one is selected — because Windows Setup
+  requires them. The bytes are created in memory
   and never logged or stored in job payloads. The CD is detached and its datastore file
   deleted by the `cleanup_unattended_media` stage **and** on every failure, cancellation and
   worker-interruption path (`UNATTENDED_MEDIA_REMOVED` is audited). The cleanup stage also

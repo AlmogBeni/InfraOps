@@ -13,6 +13,7 @@ import base64
 import datetime as dt
 import re
 import struct
+from collections.abc import Mapping
 from dataclasses import dataclass
 from xml.etree import ElementTree as ET
 
@@ -177,28 +178,63 @@ def _add_international_core(settings: ET.Element, component_name: str, spec: Win
         _text(intl, key, value)
 
 
-# Installs VMware Tools at first logon from the host's Tools ISO, which
-# InfraOps attaches as a second CD drive. Only that ISO has setup64.exe at its
-# root (Windows media has setup.exe only). The installer is retried for up to
-# two hours in case the drive is still being enumerated.
-# Compact so the encoded command stays within the length limit below.
-_TOOLS_INSTALL_STATEMENTS = (
-    "$d=(Get-Date).AddHours(2)",
-    "do{$i=Get-PSDrive -PSProvider FileSystem|%{Join-Path $_.Root setup64.exe}|?{Test-Path $_}|select -f 1",
-    "if($i){exit (Start-Process $i '/s /v\"/qn REBOOT=R\"' -Wait -PassThru).ExitCode}",
-    "sleep 15}while((Get-Date)-lt $d)",
-    "exit 1",
+# First logon (AutoLogon, after Setup and OOBE) installs VMware Tools from the
+# host's Tools ISO, which InfraOps attaches as the second CD drive. The script
+# travels on the answer CD; it shows its progress in the console window and
+# keeps a transcript in C:\Windows\Temp so a stalled installation can be read
+# at the console. It contains no secrets.
+FIRST_LOGON_SCRIPT_NAME = "InfraOps-FirstLogon.ps1"
+FIRST_LOGON_LOG = r"C:\Windows\Temp\infraops-firstlogon.log"
+TOOLS_MSI_LOG = r"C:\Windows\Temp\infraops-vmtools-msi.log"
+FIRST_LOGON_SCRIPT = "\r\n".join((
+    "# InfraOps first logon: install VMware Tools from the host's VMware Tools CD.",
+    f"Start-Transcript -LiteralPath '{FIRST_LOGON_LOG}' -Append | Out-Null",
+    "Write-Host 'InfraOps is installing VMware Tools. Do not close this window.'",
+    "$deadline = (Get-Date).AddHours(2)",
+    "$installer = $null",
+    "$exitCode = 1",
+    "while (-not $installer -and (Get-Date) -lt $deadline) {",
+    "    foreach ($root in (Get-PSDrive -PSProvider FileSystem).Root) {",
+    "        # Windows installation media also has setup.exe at its root; only it has \\sources.",
+    "        if (Test-Path -LiteralPath (Join-Path $root 'sources')) { continue }",
+    "        # Older Tools ISOs ship setup64.exe; newer, 64-bit-only ones only setup.exe.",
+    "        foreach ($name in 'setup64.exe', 'setup.exe') {",
+    "            $candidate = Join-Path $root $name",
+    "            if (-not $installer -and (Test-Path -LiteralPath $candidate)) { $installer = $candidate }",
+    "        }",
+    "    }",
+    "    if (-not $installer) {",
+    "        Write-Host 'Waiting for the VMware Tools CD (setup64.exe or setup.exe)...'",
+    "        Start-Sleep -Seconds 15",
+    "    }",
+    "}",
+    "if ($installer) {",
+    "    Write-Host \"Running $installer silently. Windows stays usable meanwhile.\"",
+    f"    $arguments = '/s /v\"/qn REBOOT=R /l*v {TOOLS_MSI_LOG}\"'",
+    "    $exitCode = (Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru).ExitCode",
+    "    Write-Host \"The VMware Tools installer exited with code $exitCode (0 and 3010 mean success).\"",
+    "} else {",
+    "    Write-Host 'No VMware Tools CD was found within two hours. InfraOps cannot configure this VM.'",
+    "}",
+    "Stop-Transcript | Out-Null",
+    "exit $exitCode",
+    "",
+))
+
+# The FirstLogonCommands entry only locates the script on the answer CD; Windows
+# Setup limits that command line to 1024 characters.
+_FIRST_LOGON_LAUNCHER = (
+    "$s=(Get-PSDrive -PSProvider FileSystem).Root|%{Join-Path $_ '" + FIRST_LOGON_SCRIPT_NAME + "'}"
+    "|?{Test-Path -LiteralPath $_}|select -f 1;if($s){& $s;exit $LASTEXITCODE};exit 1"
 )
-# Windows Setup limits a FirstLogonCommands command line to 1024 characters.
 MAX_COMMAND_LINE = 1024
 
 
 def tools_install_command() -> str:
     """First-logon command line; -EncodedCommand avoids any nested quoting."""
-    script = "; ".join(_TOOLS_INSTALL_STATEMENTS)
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    encoded = base64.b64encode(_FIRST_LOGON_LAUNCHER.encode("utf-16-le")).decode("ascii")
     command = (
-        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass "
         f"-EncodedCommand {encoded}"
     )
     if len(command) > MAX_COMMAND_LINE:  # pragma: no cover - guarded by a unit test
@@ -378,23 +414,28 @@ def _volume_descriptor(
     return bytes(descriptor)
 
 
-def build_answer_iso(xml_bytes: bytes) -> bytes:
-    """A single-file ISO 9660 image with a Joliet tree exposing ``Autounattend.xml``.
+def build_answer_iso(files: Mapping[str, bytes]) -> bytes:
+    """An ISO 9660 image with a Joliet tree holding ``files`` in its root.
 
-    The primary tree names the file ``AUTOUNATTEND.XML;1``; Windows reads the
-    Joliet tree, which carries the exact long name Setup searches for.
+    The primary tree uses upper-case ``NAME.EXT;1`` identifiers; Windows reads
+    the Joliet tree, which carries the exact long names (``Autounattend.xml``
+    is the name Setup searches for). Records are sorted as ECMA-119 requires.
     """
-    data_sectors = max(1, -(-len(xml_bytes) // _SECTOR))
+    names = sorted(files)
     pvd, svd, terminator = 16, 17, 18
     l_primary, m_primary, l_joliet, m_joliet = 19, 20, 21, 22
     root_primary, root_joliet = 23, 24
-    data = 25
-    total = data + data_sectors
+    extents: dict[str, int] = {}
+    sector = 25
+    for name in names:
+        extents[name] = sector
+        sector += max(1, -(-len(files[name]) // _SECTOR))
+    total = sector
 
     image = bytearray(total * _SECTOR)
 
-    def put(sector: int, payload: bytes) -> None:
-        image[sector * _SECTOR:sector * _SECTOR + len(payload)] = payload
+    def put(at: int, payload: bytes) -> None:
+        image[at * _SECTOR:at * _SECTOR + len(payload)] = payload
 
     # The root record's padding byte is part of the record (ECMA-119 9.4).
     path_table_size = len(_path_table(0, big_endian=False))
@@ -408,15 +449,28 @@ def build_answer_iso(xml_bytes: bytes) -> bytes:
     put(l_joliet, _path_table(root_joliet, big_endian=False))
     put(m_joliet, _path_table(root_joliet, big_endian=True))
 
-    for root, name in (
-        (root_primary, ANSWER_FILE_NAME.upper().encode("ascii") + b";1"),
-        (root_joliet, ANSWER_FILE_NAME.encode("utf-16-be")),
+    for root, identifier in (
+        (root_primary, lambda name: name.upper().replace("-", "_").encode("ascii") + b";1"),
+        (root_joliet, lambda name: name.encode("utf-16-be")),
     ):
+        records = sorted((identifier(name), name) for name in names)
         put(
             root,
             _directory_record(b"\x00", root, _SECTOR, directory=True)
             + _directory_record(b"\x01", root, _SECTOR, directory=True)
-            + _directory_record(name, data, len(xml_bytes), directory=False),
+            + b"".join(
+                _directory_record(record, extents[name], len(files[name]), directory=False)
+                for record, name in records
+            ),
         )
-    put(data, xml_bytes)
+    for name in names:
+        put(extents[name], files[name])
     return bytes(image)
+
+
+def build_answer_media(xml_bytes: bytes) -> bytes:
+    """The answer CD: ``Autounattend.xml`` and the first-logon script."""
+    return build_answer_iso({
+        ANSWER_FILE_NAME: xml_bytes,
+        FIRST_LOGON_SCRIPT_NAME: FIRST_LOGON_SCRIPT.encode("ascii"),
+    })

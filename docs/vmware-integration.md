@@ -93,8 +93,8 @@ vCenter and the `pyvmomi` package (installed via requirements).
 * `configure_hardware` re-applies CPU and memory; `attach_network` replaces existing
   adapters with VMXNET3/E1000E on the selected distributed or standard port group after
   revalidating the datacenter boundary.
-* `attach_answer_media` uploads the generated answer ISO (one `Autounattend.xml` at the
-  root, ISO 9660 + Joliet) to `[datastore] infraops-unattend/infraops-<job>.iso` with an
+* `attach_answer_media` uploads the generated answer ISO (`Autounattend.xml` and the
+  first-logon script `InfraOps-FirstLogon.ps1` at the root, ISO 9660 + Joliet) to `[datastore] infraops-unattend/infraops-<job>.iso` with an
   HTTP `PUT` and attaches it as a third, read-only CD drive. Windows Setup searches removable
   read-only media for `Autounattend.xml` under both BIOS and EFI.
 * `power_on`, then `send_keystrokes` presses the space bar (`PutUsbScanCodes`) every 3

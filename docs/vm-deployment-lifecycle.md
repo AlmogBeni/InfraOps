@@ -67,8 +67,10 @@ validate request and live inventory (ISO, placement, capacity, network)
        answer "Press any key to boot from CD or DVD"
   -> wait_for_guest_os ("Install Windows"):
        Windows Setup (windowsPE -> specialize -> oobeSystem) with no page shown
-       -> AutoLogon once -> first-logon command installs Tools from SATA 0:1
-          (setup64.exe /s /v"/qn REBOOT=R")
+       -> AutoLogon once -> InfraOps-FirstLogon.ps1 from the answer CD finds the Tools CD
+          (setup64.exe or setup.exe; the Windows ISO is skipped) and runs it silently
+          (/s /v"/qn REBOOT=R"), showing progress in its window and logging to
+          C:\Windows\Temp\infraops-firstlogon.log (installer: infraops-vmtools-msi.log)
        -> the Tools heartbeat proves Setup and OOBE finished (no file transfer needed)
   -> wait_for_tools: Tools RUNNING (OUTDATED continues with a warning)
   -> cleanup_unattended_media: delete the answer CD and file, disconnect the Windows and
@@ -107,7 +109,8 @@ network configuration and guest operations.
   they are formatted.
 * **Storage driver.** The OS disk is on LSI Logic SAS, whose driver is in Windows Setup;
   no driver injection is needed. (PVSCSI would need injected drivers.)
-* **Answer media** is a small ISO 9660 + Joliet image with `Autounattend.xml` at its root,
+* **Answer media** is a small ISO 9660 + Joliet image with `Autounattend.xml` and
+  `InfraOps-FirstLogon.ps1` (the VMware Tools installer step, no secrets) at its root,
   attached as a CD drive. Windows Setup finds it on removable read-only media under BIOS and
   EFI. It is never offered as installation media in the wizard.
 * **Windows Server only.** Client editions add OOBE pages (Microsoft account, privacy) and
@@ -140,7 +143,10 @@ or file transfer.
   screenshot (`CreateScreenshot_Task`) and records its datastore path on the failed stage.
   Administrators open it from the stage's technical output on the job page. It shows where
   Setup stopped: an EFI boot list or the "Press any key" prompt (Setup never started), a Setup
-  error (edition, product key, media), or a desktop without VMware Tools.
+  error (edition, product key, media), or a desktop without VMware Tools. In the last case
+  the InfraOps PowerShell window on the desktop and `C:\Windows\Temp\infraops-firstlogon.log`
+  say whether the Tools CD was missing or its installer failed. Without VMware Tools
+  InfraOps cannot reach Windows, so the network, domain and software steps never run.
 * Answer media holds a plaintext password, so it is removed on success, failure, cancellation
   and interruption. If it was removed before the VM booted from it, the preparation stage is
   reset so a retry regenerates it. The cleanup stage fails (retryably) rather than continue

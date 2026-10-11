@@ -20,9 +20,13 @@ from app.schemas.provisioning import FirmwareType
 from app.services.guest.base import GuestCredentials
 from app.services.vmware.base import TemporaryMediaRef, VmRef
 from app.services.windows_unattend import (
+    FIRST_LOGON_LOG,
+    FIRST_LOGON_SCRIPT,
+    FIRST_LOGON_SCRIPT_NAME,
     UNATTEND_NS,
     WindowsUnattendSpec,
     build_answer_iso,
+    build_answer_media,
     build_autounattend_xml,
     tools_install_command,
 )
@@ -176,17 +180,29 @@ def test_answer_file_escapes_secrets() -> None:
     assert password in [node.text for node in ET.fromstring(xml).iter()]
 
 
-def test_first_logon_installs_tools_from_the_tools_iso_within_setup_limits() -> None:
+def test_first_logon_command_runs_the_script_from_the_answer_cd_within_setup_limits() -> None:
     command = tools_install_command()
-    script = base64.b64decode(command.rsplit(" ", 1)[1]).decode("utf-16-le")
+    launcher = base64.b64decode(command.rsplit(" ", 1)[1]).decode("utf-16-le")
 
     assert len(command) <= 1024  # Windows Setup's FirstLogonCommands limit
-    assert command.startswith("powershell.exe ")
-    # Only the Tools ISO has setup64.exe at its root; Windows media has setup.exe.
-    assert "setup64.exe" in script
-    assert "setup.exe" not in script.replace("setup64.exe", "")
+    assert command.startswith("powershell.exe -NoProfile -ExecutionPolicy Bypass ")
+    assert f"'{FIRST_LOGON_SCRIPT_NAME}'" in launcher
+    assert "exit $LASTEXITCODE" in launcher
+
+
+def test_first_logon_script_finds_either_tools_installer_and_explains_itself() -> None:
+    script = FIRST_LOGON_SCRIPT
+
+    assert script.isascii()  # Windows PowerShell 5.1 reads a BOM-less file as ANSI
+    # Newer, 64-bit-only Tools ISOs ship setup.exe instead of setup64.exe.
+    assert "foreach ($name in 'setup64.exe', 'setup.exe')" in script
+    # Windows media also has setup.exe at its root; only it has \sources.
+    assert "Join-Path $root 'sources'" in script
     # InstallShield passes everything after /v to msiexec as one argument.
-    assert "'/s /v\"/qn REBOOT=R\"'" in script
+    assert "'/s /v\"/qn REBOOT=R /l*v C:\\Windows\\Temp\\infraops-vmtools-msi.log\"'" in script
+    assert f"Start-Transcript -LiteralPath '{FIRST_LOGON_LOG}'" in script
+    assert "Waiting for the VMware Tools CD" in script
+    assert "No VMware Tools CD was found" in script
 
 
 @pytest.mark.parametrize("key", ["AAAAA-BBBBB", "aaaaa-bbbbb-ccccc-ddddd-eeee!", "not a key"])
@@ -221,17 +237,25 @@ def _joliet_files(image: bytes) -> dict[str, bytes]:
     return files
 
 
-def test_answer_iso_exposes_autounattend_at_the_root() -> None:
+def test_answer_media_holds_autounattend_and_the_first_logon_script() -> None:
     xml = build_autounattend_xml(EFI_SPEC)
-    image = build_answer_iso(xml)
+    image = build_answer_media(xml)
 
     assert len(image) % SECTOR == 0
     primary = image[16 * SECTOR:17 * SECTOR]
     assert primary[0] == 1 and primary[1:6] == b"CD001"
     assert primary[40:72].decode("ascii").strip() == "INFRAOPS_ANSWER"
     assert image[18 * SECTOR:18 * SECTOR + 6] == b"\xffCD001"
-    assert _joliet_files(image) == {"Autounattend.xml": xml}
-    assert build_answer_iso(xml) == image  # deterministic
+    assert _joliet_files(image) == {
+        "Autounattend.xml": xml,
+        FIRST_LOGON_SCRIPT_NAME: FIRST_LOGON_SCRIPT.encode("ascii"),
+    }
+    assert build_answer_media(xml) == image  # deterministic
+
+
+def test_answer_iso_lays_out_files_larger_than_a_sector() -> None:
+    files = {"b.bin": b"b" * 5000, "a.txt": b"short"}
+    assert _joliet_files(build_answer_iso(files)) == files
 
 
 def _prepare_context(*, product_key_ref: str | None, firmware: FirmwareType):
@@ -270,7 +294,9 @@ async def test_prepared_media_uses_the_credential_store_and_never_domain_credent
 
     kwargs = ctx.vmware.attach_answer_media.await_args.kwargs
     assert kwargs["file_name"] == "infraops-job-42.iso"
-    xml = _joliet_files(kwargs["content"])["Autounattend.xml"]
+    files = _joliet_files(kwargs["content"])
+    assert set(files) == {"Autounattend.xml", FIRST_LOGON_SCRIPT_NAME}
+    xml = files["Autounattend.xml"]
     root = ET.fromstring(xml)
     shell = _component(_settings(root, "oobeSystem"), "Microsoft-Windows-Shell-Setup")
     assert (

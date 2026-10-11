@@ -52,8 +52,10 @@ from app.services.settings_store import (
 )
 from app.services.vmware.base import PowerStateInfo, VmRef
 from app.services.windows_unattend import (
+    FIRST_LOGON_LOG,
+    TOOLS_MSI_LOG,
     WindowsUnattendSpec,
-    build_answer_iso,
+    build_answer_media,
     build_autounattend_xml,
 )
 from app.workers.context import JobRunContext
@@ -842,7 +844,7 @@ async def stage_prepare_unattended_install(ctx: JobRunContext) -> StageOutcome:
         datacenter_id=ctx.request.compute.datacenter_id,
         datastore_id=_os_disk_datastore(ctx),
         file_name=f"infraops-{ctx.job_id}.iso",
-        content=build_answer_iso(xml),
+        content=build_answer_media(xml),
     )
     return StageOutcome(
         output=(
@@ -935,14 +937,17 @@ async def stage_wait_for_guest_os(ctx: JobRunContext) -> StageOutcome:
             "Windows did not finish installing from the ISO in time.",
             reason=(
                 "VMware Tools never reported from the new installation, so Windows Setup or the "
-                "first-logon VMware Tools installation did not complete."
+                "first-logon VMware Tools installation did not complete. Without VMware Tools "
+                "InfraOps cannot configure the network, domain or software."
             ),
             recommended_action=(
                 "Check the console screenshot in the administrator diagnostics: an EFI boot list or "
                 "'Press any key to boot from CD or DVD' means Setup never started; a Windows Setup "
-                "page or error usually points at the edition, product key or ISO; a Windows desktop "
-                "without VMware Tools means the host's Tools ISO "
-                "([] /vmimages/tools-isoimages/windows.iso) was not available. Fix the cause and "
+                "page or error usually points at the edition, product key or ISO. A Windows desktop "
+                "means Windows installed but VMware Tools did not: the InfraOps window on the "
+                f"desktop and {FIRST_LOGON_LOG} show whether the host's Tools "
+                "ISO ([] /vmimages/tools-isoimages/windows.iso) was missing or its installer failed "
+                f"(installer log: {TOOLS_MSI_LOG}). Fix the cause and "
                 "submit a new request."
             ),
             technical_detail=exc.technical_detail,
