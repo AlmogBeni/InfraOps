@@ -66,8 +66,8 @@ Nothing is ever interpreted by `cmd.exe` (`app/services/guest/scripts.py`):
 | Gateway/DNS validation | `Test-Connection` to gateway, `Resolve-DnsName` via first DNS server |
 | Hostname | `$env:COMPUTERNAME` probe then `Rename-Computer -Force` |
 | Domain join | `Add-Computer` with a PSCredential whose password is read from a self-deleting secret file (never in the script text); optional OU path (quoted literal, so values such as `OU=R&D` are safe); `-NewName` only when Windows does not already have the requested name (Add-Computer skips the join when it equals the current name) |
-| Reboot | `shutdown.exe /r /t 10`, followed by availability probes (`hostname.exe`) that tolerate Tools being unavailable while the guest restarts |
-| Answer-file cleanup | After the answer CD is removed, cached copies under `C:\Windows\Panther` / `Sysprep` and the AutoLogon values (`DefaultPassword`, `AutoLogonCount`, `AutoAdminLogon`) are deleted; the stage fails rather than continue if this cannot run |
+| Reboot | `shutdown.exe /r /t 10`. The guest counts as back only when Windows reports a later `LastBootUpTime` than before the restart; probes tolerate Tools being unavailable meanwhile, and Tools still answering during shutdown is never mistaken for a completed restart |
+| Answer-file cleanup | After the answer CD is removed, cached copies under `C:\Windows\Panther` / `Sysprep` and the AutoLogon values (`DefaultPassword`, `AutoLogonCount`, `AutoAdminLogon`) are deleted; the stage fails rather than continue if this cannot run. Windows then restarts once: Tools was installed with its restart suppressed, and its mouse, display and network drivers load only after one. Afterwards the console shows the sign-in screen |
 | Certificates | see below |
 | Applications | detection probes + controlled installers |
 

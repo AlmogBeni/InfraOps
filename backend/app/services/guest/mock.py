@@ -42,6 +42,8 @@ class _MockGuestState:
         self.part_of_domain: bool = False
         self.ip_address: str | None = None
         self.reboot_pending: bool = False
+        # Simulated restarts; each one moves the reported boot time forward.
+        self.boot_count: int = 0
         self.installation_type = "Server"
         # Data volumes created by the simulated data-disk initialization.
         self.data_volumes: list[dict] = []
@@ -218,7 +220,11 @@ class MockGuestOperations(GuestOperations):
             )
             state.reboot_pending = True
             return "DOMAIN-JOINED"
+        # Boot-time probe that confirms a restart.
+        if "lastbootuptime" in lowered:
+            return (dt.datetime(2026, 1, 1, tzinfo=dt.UTC) + dt.timedelta(minutes=state.boot_count)).isoformat()
         if "restart-computer" in lowered or "shutdown" in lowered:
+            state.boot_count += 1
             if state.pending_hostname:
                 state.hostname = state.pending_hostname
                 state.pending_hostname = None

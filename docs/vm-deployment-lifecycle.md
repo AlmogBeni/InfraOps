@@ -81,8 +81,9 @@ validate request and live inventory (ISO, placement, capacity, network)
        host, Tools) and shows it live on the stage; see "Watching Windows Setup"
   -> wait_for_tools: Tools RUNNING (OUTDATED continues with a warning)
   -> cleanup_unattended_media: delete the answer CD and file, disconnect the Windows and
-       Tools ISOs (boot from disk), then scrub cached answer files and AutoLogon values in
-       the guest
+       Tools ISOs (boot from disk), scrub cached answer files and AutoLogon values in the
+       guest, then restart Windows once so the VMware Tools drivers (mouse, display,
+       network) load; the restart is confirmed by a new boot time reported by Windows
   -> add_data_disks: hot-add the data disks to the running VM
   -> initialize_data_disks: online, writable, GPT, one NTFS volume each (Data1, Data2, …)
   -> guest IP / hostname / domain join / reboot / certificates / applications

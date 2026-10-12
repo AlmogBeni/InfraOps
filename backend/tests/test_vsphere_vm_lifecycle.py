@@ -272,6 +272,52 @@ async def test_installation_media_is_disconnected_and_the_vm_boots_from_disk(mon
     assert [entry.deviceKey for entry in spec.bootOptions.bootOrder] == [2000]
 
 
+
+def _questioned_vm(labels: tuple[str, str]) -> tuple[SimpleNamespace, list]:
+    answered: list = []
+    vm = fake_vm([])
+    vm.runtime.question = SimpleNamespace(
+        id="q-7",
+        text="The guest operating system has locked the CD-ROM door. Disconnect anyway?",
+        choice=SimpleNamespace(
+            choiceInfo=[SimpleNamespace(key="0", label=labels[0]), SimpleNamespace(key="1", label=labels[1])]
+        ),
+    )
+
+    def answer(questionId, answerChoice):
+        answered.append((questionId, answerChoice))
+        vm.runtime.question = None
+
+    vm.AnswerVM = answer
+    vm.ReconfigVM_Task = lambda spec: FakeTask(running_until=lambda: bool(answered))
+    return vm, answered
+
+
+def test_untranslated_yes_label_still_overrides_the_cd_lock(monkeypatch) -> None:
+    service = service_for(monkeypatch, {})
+    vm, answered = _questioned_vm(("button.yes", "button.no"))
+
+    service._reconfigure_answering_questions(vm, real_vim.vm.ConfigSpec(), "detach-installation-media")
+
+    assert answered == [("q-7", "0")]
+
+
+def test_question_infraops_cannot_answer_is_reported_with_its_text(monkeypatch) -> None:
+    from app.services.vmware.base import VmQuestionPending
+
+    service = service_for(monkeypatch, {})
+    vm, answered = _questioned_vm(("Retry", "Cancel"))
+    ticks = iter(range(0, 100_000, 100))
+    monkeypatch.setattr(vsphere, "time", SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda seconds: None))
+
+    with pytest.raises(VmQuestionPending) as caught:
+        service._reconfigure_answering_questions(vm, real_vim.vm.ConfigSpec(), "detach-installation-media")
+
+    assert answered == []
+    assert "locked the CD-ROM door" in caught.value.reason
+    assert "vSphere Client" in caught.value.recommended_action
+
+
 async def test_data_disks_are_hot_added_once_on_free_units(monkeypatch) -> None:
     controller = devices.VirtualLsiLogicSASController(key=1000)
     os_disk = devices.VirtualDisk(key=2000, controllerKey=1000, unitNumber=0)

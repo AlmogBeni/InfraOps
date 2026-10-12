@@ -67,7 +67,7 @@ DEFAULT_STAGE_TIMEOUTS: dict[str, int] = {
     "power_on": 600,
     "wait_for_guest_os": 21600,
     "wait_for_tools": 900,
-    "cleanup_unattended_media": 600,
+    "cleanup_unattended_media": 1800,  # includes the restart that loads the Tools drivers
     "add_data_disks": 600,
     "initialize_data_disks": 600,
     "configure_guest_network": 300,

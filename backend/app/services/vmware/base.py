@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from app.core.errors import InfraOperationError
 from app.schemas.infrastructure import (
     ClusterOut,
     ConnectionTestResult,
@@ -162,6 +163,10 @@ class VmOwnership:
 @dataclass(frozen=True)
 class TemporaryMediaRef:
     datastore_path: str
+
+
+class VmQuestionPending(InfraOperationError):
+    """vCenter asked a question about the VM; the VM, console included, is frozen until answered."""
 
 
 @dataclass

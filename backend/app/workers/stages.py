@@ -43,6 +43,7 @@ from app.services.applications.installer import ApplicationDefinition
 from app.services.applications.paths import path_within_roots
 from app.services.applications.resolver import AppNode, resolve_install_order
 from app.services.certificates.deployer import CertificateDeployer, CertificateToDeploy
+from app.services.guest.base import GuestCredentials
 from app.services.guest.scripts import HOSTNAME_PATH
 from app.services.guest.scripts import ps_quote as ps_single_quote
 from app.services.settings_store import (
@@ -51,7 +52,7 @@ from app.services.settings_store import (
     SETTING_VM_NAME_POLICY,
     load_effective,
 )
-from app.services.vmware.base import PowerStateInfo, VmRef
+from app.services.vmware.base import PowerStateInfo, VmQuestionPending, VmRef
 from app.services.windows_unattend import (
     FIRST_LOGON_LOG,
     TOOLS_MSI_LOG,
@@ -1270,9 +1271,11 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
             "Installation media disconnected and boot order set to disk only"
             + (f": {', '.join(released)}." if released else ".")
         )
+    except VmQuestionPending:
+        raise  # the VM is frozen until answered, so nothing below could run
     except InfraOperationError as exc:
         status = "WARNING"
-        lines.append(f"The installation ISOs could not be disconnected: {exc.human_message}")
+        lines.append(f"The installation ISOs could not be disconnected: {exc.human_message} {exc.reason}")
 
     # Windows Setup caches the answer file inside the guest. Remove every copy
     # and the AutoLogon residue so the plaintext password does not survive;
@@ -1299,6 +1302,16 @@ async def stage_cleanup_unattended_media(ctx: JobRunContext) -> StageOutcome:
             retryable=True,
         )
     lines.append("Cached answer-file copies and AutoLogon values were removed from the guest.")
+
+    # VMware Tools was installed with its restart suppressed, so its mouse,
+    # display and network drivers are not loaded yet. One restart loads them
+    # and proves Windows now boots from its disk without the installation media.
+    boot_before = await guest_boot_time(ctx, credentials)
+    await schedule_guest_restart(ctx, credentials, "InfraOps: finish installing VMware Tools")
+    await wait_for_guest_restart(ctx, credentials, boot_before, _TOOLS_RESTART_SECONDS)
+    lines.append(
+        "Windows restarted from its disk to load the VMware Tools drivers (mouse, display and network)."
+    )
     return StageOutcome(status=status, output="\n".join(lines))
 
 
@@ -1677,6 +1690,81 @@ async def stage_join_domain(ctx: JobRunContext) -> StageOutcome:
     )
 
 
+# Windows reports when it last started, so a restart is confirmed by the guest
+# itself: VMware Tools keeps answering for a while after shutdown.exe returns,
+# and a probe in that window would wrongly report the guest as back.
+GUEST_BOOT_TIME_SCRIPT = (
+    "(Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop)"
+    ".LastBootUpTime.ToUniversalTime().ToString('o')"
+)
+_RESTART_POLL_SECONDS = 10.0
+_GUEST_RESTART_SECONDS = 540.0
+# The first restart after installation also finishes installing drivers.
+_TOOLS_RESTART_SECONDS = 900.0
+
+
+async def guest_boot_time(ctx: JobRunContext, credentials: GuestCredentials) -> str:
+    result = await ctx.guest_ops.run_powershell(
+        ctx.target, ctx.vm_name, credentials, GUEST_BOOT_TIME_SCRIPT, 60
+    )
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not result.succeeded or not lines:
+        raise InfraOperationError(
+            "Windows did not report when it last started.",
+            reason=f"The boot-time probe exited with code {result.exit_code}.",
+            recommended_action="Review the technical output, then retry this stage.",
+            technical_detail=(result.stdout + "\n" + result.stderr)[-1000:],
+            retryable=True,
+        )
+    return lines[-1]
+
+
+async def schedule_guest_restart(ctx: JobRunContext, credentials: GuestCredentials, comment: str) -> None:
+    # A delayed restart lets the command return cleanly before the guest
+    # (and VMware Tools) goes down.
+    result = await ctx.guest_ops.run_program(
+        ctx.target, ctx.vm_name, credentials, SHUTDOWN_PATH,
+        f'/r /t 10 /d p:4:1 /c "{comment}"', 60,
+    )
+    if not result.succeeded:
+        raise InfraOperationError(
+            "The guest restart could not be scheduled.",
+            reason=f"shutdown.exe exited with code {result.exit_code}.",
+            recommended_action="Restart the VM from the console, then retry this stage.",
+            technical_detail=result.stdout[-1000:],
+            retryable=True,
+        )
+
+
+async def wait_for_guest_restart(
+    ctx: JobRunContext, credentials: GuestCredentials, boot_before: str, timeout_seconds: float
+) -> int:
+    """Wait until Windows reports a later start than ``boot_before``; return the probes used."""
+    deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=timeout_seconds)
+    probes = 0
+    last_error = "Windows had not restarted yet"
+    while True:
+        await asyncio.sleep(_RESTART_POLL_SECONDS)
+        probes += 1
+        try:
+            if await guest_boot_time(ctx, credentials) != boot_before:
+                return probes
+            last_error = "Windows had not restarted yet"
+        except InfraOperationError as exc:
+            # Expected while Windows restarts and VMware Tools is down.
+            last_error = exc.human_message
+        if dt.datetime.now(dt.UTC) >= deadline:
+            raise InfraOperationError(
+                "Windows did not come back after the restart.",
+                reason=(
+                    f"No new start was reported within {int(timeout_seconds // 60)} minutes "
+                    f"(last: {last_error})."
+                ),
+                recommended_action="Check the VM console in vCenter, then retry this stage.",
+                retryable=True,
+            )
+
+
 async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
     steps = ctx.steps_by_key
     join_step = steps.get("join_domain")
@@ -1688,22 +1776,9 @@ async def stage_reboot_guest(ctx: JobRunContext) -> StageOutcome:
         return StageOutcome(status="SKIPPED", output="No pending changes require a reboot.")
 
     credentials = await ctx.resolve_guest_credentials()
-    # A delayed restart lets the command return cleanly before the guest
-    # (and VMware Tools) goes down.
-    result = await ctx.guest_ops.run_program(
-        ctx.target, ctx.vm_name, credentials, SHUTDOWN_PATH,
-        '/r /t 10 /d p:4:1 /c "InfraOps provisioning restart"', 60,
-    )
-    if not result.succeeded:
-        raise InfraOperationError(
-            "The guest restart could not be scheduled.",
-            reason=f"shutdown.exe exited with code {result.exit_code}.",
-            recommended_action="Restart the VM from the console, then retry this stage.",
-            technical_detail=result.stdout[-1000:],
-            retryable=True,
-        )
-    await asyncio.sleep(20)
-    return StageOutcome(output="Guest restart initiated.")
+    boot_before = await guest_boot_time(ctx, credentials)
+    await schedule_guest_restart(ctx, credentials, "InfraOps provisioning restart")
+    return StageOutcome(output="Guest restart initiated.", artifacts={"boot_time": boot_before})
 
 
 async def stage_wait_guest_ready(ctx: JobRunContext) -> StageOutcome:
@@ -1716,6 +1791,11 @@ async def stage_wait_guest_ready(ctx: JobRunContext) -> StageOutcome:
         return StageOutcome(status="SKIPPED", output="Guest was not restarted — availability confirmed earlier.")
 
     credentials = await ctx.resolve_guest_credentials()
+    boot_before = (reboot_step.artifacts or {}).get("boot_time") if rebooted else None
+    if boot_before:
+        probes = await wait_for_guest_restart(ctx, credentials, str(boot_before), _GUEST_RESTART_SECONDS)
+        return StageOutcome(output=f"Guest responsive after restart ({probes} probe(s)).")
+
     deadline = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=600)
     attempts = 0
     last_error = ""

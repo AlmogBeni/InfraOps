@@ -110,7 +110,10 @@ vCenter and the `pyvmomi` package (installed via requirements).
 * `detach_installation_media` switches the Windows and Tools CD drives to a disconnected
   client device and sets the boot order to the OS disk only. If the guest has locked a
   drive, vCenter raises a question; InfraOps answers it so the media is released without
-  anyone at the console.
+  anyone at the console. A question InfraOps cannot answer stops the stage with the
+  question's text: an unanswered question freezes the VM, console input included.
+* Guest operation failures name the vSphere fault: a missing privilege names the privilege
+  (for example `VirtualMachine.GuestOperations.Modify`), any other fault its type and message.
 * `add_data_disks` hot-adds the requested data disks to the LSI SAS controller once Windows
   is running (never using SCSI unit 7). It is idempotent: a retry only adds disks that are
   still missing.

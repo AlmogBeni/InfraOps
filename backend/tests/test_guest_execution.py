@@ -182,3 +182,102 @@ async def test_rejected_guest_login_is_reported_as_its_own_error_type() -> None:
 
     assert isinstance(error, GuestCredentialsRejected)
     assert error.retryable is False
+
+
+def _tools_guest(manager):
+    """A VMware Tools adapter wired to a fake session holding ``manager``."""
+    from types import SimpleNamespace
+
+    from app.services.guest.vmware_tools import VMwareToolsGuestOperations
+
+    vm = SimpleNamespace(_moId="vm-501")
+    content = SimpleNamespace(guestOperationsManager=manager)
+    si = SimpleNamespace(RetrieveContent=lambda: content)
+
+    async def with_session(target, fn, *, operation):
+        return fn(si)
+
+    guest = object.__new__(VMwareToolsGuestOperations)
+    guest._vsphere = SimpleNamespace(_with_session=with_session, _find_vm_by_name=lambda found_in, name: vm)
+    return guest, vm
+
+
+@pytest.mark.asyncio
+async def test_upload_builds_real_pyvmomi_attributes_and_puts_the_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The real pyVmomi types are used, so a misspelt type name fails here and
+    # not on the first job against a real vCenter.
+    from types import SimpleNamespace
+
+    from pyVmomi import vim
+
+    from app.services.guest import vmware_tools
+
+    requested: list = []
+    sent: list = []
+
+    def initiate(vm, auth, path, attributes, size, overwrite):
+        requested.append((vm, auth, path, attributes, size, overwrite))
+        return "https://esx01.example.test/guestFile?id=1"
+
+    async def transfer(target, operation, method, url, content=None):
+        sent.append((operation, method, url, content))
+        return b""
+
+    monkeypatch.setattr(vmware_tools, "_transfer", transfer)
+    guest, vm = _tools_guest(SimpleNamespace(fileManager=SimpleNamespace(InitiateFileTransferToGuest=initiate)))
+
+    await guest.upload_file(object(), "SRV01", CREDENTIALS, b"Write-Output 1", r"C:\Windows\Temp\x.ps1")
+
+    found_vm, auth, path, attributes, size, overwrite = requested[0]
+    assert found_vm is vm and path == r"C:\Windows\Temp\x.ps1" and size == 14 and overwrite is True
+    assert isinstance(attributes, vim.vm.guest.FileManager.FileAttributes)
+    assert isinstance(auth, vim.vm.guest.NamePasswordAuthentication) and auth.username == "admin"
+    assert sent == [("upload-file", "PUT", "https://esx01.example.test/guestFile?id=1", b"Write-Output 1")]
+
+
+@pytest.mark.asyncio
+async def test_missing_guest_file_is_reported_as_absent() -> None:
+    from types import SimpleNamespace
+
+    from pyVmomi import vim
+
+    def listing(vm, auth, directory, index, limit, pattern):
+        raise vim.fault.FileNotFound(file=directory)
+
+    guest, _ = _tools_guest(SimpleNamespace(fileManager=SimpleNamespace(ListFilesInGuest=listing)))
+
+    assert await guest.file_exists(object(), "SRV01", CREDENTIALS, r"C:\Missing\setup.exe") is False
+
+
+def test_missing_vcenter_privilege_names_the_privilege() -> None:
+    from pyVmomi import vim
+
+    from app.services.guest.vmware_tools import _wrap
+
+    error = _wrap(
+        "upload-file", vim.fault.NoPermission(privilegeId="VirtualMachine.GuestOperations.Modify")
+    )
+
+    assert "may not run the 'upload-file' guest operation" in error.human_message
+    assert "VirtualMachine.GuestOperations.Modify" in error.reason
+    assert "Guest operations" in error.recommended_action
+
+
+def test_other_vsphere_faults_are_named_instead_of_unexpected() -> None:
+    from pyVmomi import vim
+
+    from app.services.guest.vmware_tools import _wrap
+
+    error = _wrap("upload-file", vim.fault.InvalidState(msg="The operation is not allowed in the current state."))
+
+    assert error.human_message == "vCenter refused the 'upload-file' guest operation."
+    assert error.reason == "InvalidState: The operation is not allowed in the current state."
+    assert error.retryable is True
+
+
+def test_non_vsphere_errors_keep_their_type_and_message() -> None:
+    from app.services.guest.vmware_tools import _wrap
+
+    error = _wrap("upload-file", AttributeError("FileAttributes"))
+
+    assert "AttributeError: FileAttributes" in error.reason

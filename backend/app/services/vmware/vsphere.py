@@ -46,6 +46,7 @@ from app.services.vmware.base import (
     VCenterTarget,
     VmCreateSpec,
     VmOwnership,
+    VmQuestionPending,
     VmRef,
     VMwareService,
     ensure_tls_policy,
@@ -1280,15 +1281,31 @@ class VsphereVMwareService(VMwareService):
                 question = getattr(getattr(vm, "runtime", None), "question", None)
                 if question is not None:
                     choices = list(getattr(getattr(question, "choice", None), "choiceInfo", None) or [])
+                    # Some ESXi builds return the untranslated "button.yes".
                     override = next(
-                        (choice for choice in choices if str(getattr(choice, "label", "")).lower() == "yes"),
+                        (
+                            choice for choice in choices
+                            if str(getattr(choice, "label", "")).strip().lower() in ("yes", "button.yes")
+                        ),
                         None,
                     )
                     if override is not None:
                         vm.AnswerVM(questionId=question.id, answerChoice=override.key)
                         log.info("Answered VM question %s on %s to release a locked CD-ROM", question.id, vm._moId)
                 if time.monotonic() > deadline:
-                    raise RuntimeError("Reconfiguration did not finish within 300 seconds.")
+                    pending = getattr(getattr(vm, "runtime", None), "question", None)
+                    if pending is None:
+                        raise RuntimeError("Reconfiguration did not finish within 300 seconds.")
+                    raise VmQuestionPending(
+                        "The VM is waiting for an answer to a question in vCenter.",
+                        reason=f"vCenter asked: {pending.text}",
+                        recommended_action=(
+                            "Answer the question on the VM's Summary page in the vSphere Client, "
+                            "then retry this stage."
+                        ),
+                        technical_detail=f"{operation}: question {pending.id} on {vm._moId}",
+                        retryable=True,
+                    )
                 time.sleep(_TASK_POLL_INTERVAL)
             self._wait_for_task(task)
         except Exception as exc:  # noqa: BLE001

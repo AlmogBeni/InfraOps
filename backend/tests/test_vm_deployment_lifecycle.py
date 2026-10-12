@@ -22,17 +22,21 @@ from app.models.jobs import (
 from app.schemas.infrastructure import DatastoreOut
 from app.schemas.provisioning import DiskProvisioning, DiskSpec, ProvisioningRequest
 from app.services.guest.base import CommandResult
-from app.services.vmware.base import PowerStateInfo, VmOwnership, VmRef
+from app.services.vmware.base import PowerStateInfo, VmOwnership, VmQuestionPending, VmRef
 from app.workers.stages import (
     DATA_DISKS_NOT_VISIBLE_EXIT,
+    GUEST_BOOT_TIME_SCRIPT,
+    SHUTDOWN_PATH,
     stage_add_data_disks,
     stage_cleanup_unattended_media,
     stage_configure_hardware,
     stage_create_vm,
     stage_initialize_data_disks,
     stage_power_on,
+    stage_reboot_guest,
     stage_wait_for_guest_os,
     stage_wait_for_tools,
+    stage_wait_guest_ready,
 )
 from tests.conftest import make_request
 
@@ -574,6 +578,51 @@ async def test_failed_console_stage_keeps_a_console_screenshot(
 # ── Media cleanup ────────────────────────────────────────────────────────────
 
 
+class RestartingWindows:
+    """Guest double that runs scripts and really restarts on shutdown.exe."""
+
+    def __init__(self, scrub_exit: int = 0, *, restarts: bool = True, probes_while_down: int = 2) -> None:
+        self.scrub_exit = scrub_exit
+        self.restarts = restarts
+        self.probes_while_down = probes_while_down
+        self.boot_time = "2026-10-12T08:00:00.0000000Z"
+        self.down = 0
+        self.scripts: list[str] = []
+        self.programs: list[tuple[str, str]] = []
+        self.scrub_error: Exception | None = None
+
+    async def run_powershell(self, target, vm_name, credentials, script, timeout_seconds, **kwargs):
+        self.scripts.append(script)
+        if script == GUEST_BOOT_TIME_SCRIPT:
+            if self.down:
+                self.down -= 1
+                raise InfraOperationError(
+                    "VMware Tools guest operations are unavailable inside the VM.",
+                    reason="Windows is restarting.",
+                    recommended_action="n/a",
+                )
+            return CommandResult(exit_code=0, stdout=f"{self.boot_time}\r\n", stderr="", duration_seconds=0.1)
+        if self.scrub_error is not None:
+            raise self.scrub_error
+        return CommandResult(exit_code=self.scrub_exit, stdout="ANSWER-FILE-SCRUBBED", stderr="",
+                             duration_seconds=0.1)
+
+    async def run_program(self, target, vm_name, credentials, program_path, arguments, timeout_seconds,
+                          working_directory=None):
+        self.programs.append((program_path, arguments))
+        if self.restarts:
+            self.down = self.probes_while_down
+            self.boot_time = "2026-10-12T08:04:00.0000000Z"
+        return CommandResult(exit_code=0, stdout="", stderr="", duration_seconds=0.1)
+
+
+@pytest.fixture
+def fast_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import stages
+
+    monkeypatch.setattr(stages, "_RESTART_POLL_SECONDS", 0.0)
+
+
 def cleanup_context(vmware, scrub_exit: int = 0) -> SimpleNamespace:
     ctx = context(vmware)
     ctx.steps_by_key = {
@@ -581,16 +630,11 @@ def cleanup_context(vmware, scrub_exit: int = 0) -> SimpleNamespace:
             artifacts={"datastore_path": "[ds] infraops-unattend/infraops-job.iso"}
         )
     }
-    ctx.guest_ops = SimpleNamespace(
-        run_powershell=AsyncMock(
-            return_value=CommandResult(exit_code=scrub_exit, stdout="ANSWER-FILE-SCRUBBED", stderr="",
-                                       duration_seconds=0.1)
-        )
-    )
+    ctx.guest_ops = RestartingWindows(scrub_exit)
     return ctx
 
 
-async def test_cleanup_removes_answer_media_scrubs_the_guest_and_disconnects_the_isos() -> None:
+async def test_cleanup_removes_answer_media_scrubs_the_guest_and_disconnects_the_isos(fast_restart) -> None:
     vmware = SimpleNamespace(
         remove_answer_media=AsyncMock(),
         detach_installation_media=AsyncMock(
@@ -604,13 +648,61 @@ async def test_cleanup_removes_answer_media_scrubs_the_guest_and_disconnects_the
     assert outcome.status == "SUCCEEDED"
     assert vmware.remove_answer_media.await_args.kwargs["datastore_path"] == "[ds] infraops-unattend/infraops-job.iso"
     assert ctx.steps_by_key["prepare_unattended_install"].artifacts["media_removed"] is True
-    script = ctx.guest_ops.run_powershell.await_args.args[3]
+    script = ctx.guest_ops.scripts[0]
     assert "DefaultPassword" in script and "AutoAdminLogon" in script and "Panther" in script
     vmware.detach_installation_media.assert_awaited_once_with(ctx.target, "vm-101")
     assert "boot order set to disk only" in outcome.output
 
 
-async def test_iso_that_cannot_be_disconnected_is_a_warning_not_a_failure() -> None:
+async def test_cleanup_restarts_windows_so_the_tools_drivers_load(fast_restart) -> None:
+    vmware = SimpleNamespace(remove_answer_media=AsyncMock(), detach_installation_media=AsyncMock(return_value=[]))
+    ctx = cleanup_context(vmware)
+
+    outcome = await stage_cleanup_unattended_media(ctx)
+
+    [(program, arguments)] = ctx.guest_ops.programs
+    assert program == SHUTDOWN_PATH and arguments.startswith("/r /t 10")
+    # The restart is confirmed by a new boot time, not by Tools answering
+    # while Windows is still going down.
+    assert ctx.guest_ops.scripts.count(GUEST_BOOT_TIME_SCRIPT) == 4  # before, 2 while down, after
+    assert "Windows restarted from its disk to load the VMware Tools drivers" in outcome.output
+
+
+async def test_windows_that_never_restarts_fails_cleanup(fast_restart, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workers import stages
+
+    monkeypatch.setattr(stages, "_TOOLS_RESTART_SECONDS", 0.0)
+    vmware = SimpleNamespace(remove_answer_media=AsyncMock(), detach_installation_media=AsyncMock(return_value=[]))
+    ctx = cleanup_context(vmware)
+    ctx.guest_ops.restarts = False
+
+    with pytest.raises(InfraOperationError, match="did not come back after the restart") as caught:
+        await stage_cleanup_unattended_media(ctx)
+
+    assert caught.value.retryable is True
+    assert "Windows had not restarted yet" in caught.value.reason
+
+
+async def test_vm_frozen_by_a_vcenter_question_stops_cleanup_with_the_question() -> None:
+    vmware = SimpleNamespace(
+        remove_answer_media=AsyncMock(),
+        detach_installation_media=AsyncMock(
+            side_effect=VmQuestionPending(
+                "The VM is waiting for an answer to a question in vCenter.",
+                reason="vCenter asked: The guest operating system has locked the CD-ROM door.",
+                recommended_action="Answer the question in the vSphere Client, then retry this stage.",
+            )
+        ),
+    )
+    ctx = cleanup_context(vmware)
+
+    with pytest.raises(VmQuestionPending, match="waiting for an answer"):
+        await stage_cleanup_unattended_media(ctx)
+
+    assert ctx.guest_ops.scripts == []  # nothing is attempted inside a frozen VM
+
+
+async def test_iso_that_cannot_be_disconnected_is_a_warning_not_a_failure(fast_restart) -> None:
     vmware = SimpleNamespace(
         remove_answer_media=AsyncMock(),
         detach_installation_media=AsyncMock(
@@ -726,7 +818,7 @@ async def test_answer_file_left_in_the_guest_stops_the_job_after_the_media_is_re
     vmware = SimpleNamespace(remove_answer_media=AsyncMock(), detach_installation_media=AsyncMock(return_value=[]))
     ctx = cleanup_context(vmware, scrub_exit=scrub_exit or 0)
     if scrub_exit is None:
-        ctx.guest_ops.run_powershell.side_effect = GuestFileTransferError(
+        ctx.guest_ops.scrub_error = GuestFileTransferError(
             "InfraOps could not connect to ESXi host 'esx01.corp' on port 443.",
             reason="Connection refused",
             recommended_action="Allow HTTPS (TCP 443) from the InfraOps server to every ESXi host.",
@@ -742,3 +834,43 @@ async def test_answer_file_left_in_the_guest_stops_the_job_after_the_media_is_re
     if scrub_exit is None:
         assert "esx01.corp" in caught.value.reason
         assert caught.value.recommended_action.startswith("Allow HTTPS (TCP 443)")
+
+
+# ── Restart after the domain join ────────────────────────────────────────────
+
+
+def restart_context() -> SimpleNamespace:
+    ctx = context(SimpleNamespace())
+    ctx.hostname_changed = True
+    ctx.steps_by_key = {"join_domain": SimpleNamespace(artifacts={"joined": True})}
+    ctx.guest_ops = RestartingWindows()
+    return ctx
+
+
+async def test_guest_ready_waits_for_the_restart_instead_of_a_fixed_delay(fast_restart) -> None:
+    ctx = restart_context()
+
+    reboot = await stage_reboot_guest(ctx)
+    assert reboot.artifacts == {"boot_time": "2026-10-12T08:00:00.0000000Z"}
+    ctx.steps_by_key["reboot_guest"] = SimpleNamespace(status=StepStatus.SUCCEEDED, artifacts=reboot.artifacts)
+
+    ready = await stage_wait_guest_ready(ctx)
+
+    assert ready.output == "Guest responsive after restart (3 probe(s))."
+
+
+async def test_mock_guest_reports_a_new_boot_time_after_a_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.guest import mock as guest_mock
+
+    guest_mock.reset_mock_guests()
+    monkeypatch.setattr(guest_mock, "_LATENCY_PROGRAM", 0)
+    guest = guest_mock.MockGuestOperations()
+    credentials = SimpleNamespace(username="Administrator", password="secret")
+
+    async def boot_time() -> str:
+        return (await guest.run_powershell(object(), "SRV-RESTART", credentials, GUEST_BOOT_TIME_SCRIPT, 60)).stdout
+
+    before = await boot_time()
+    assert await boot_time() == before
+    await guest.run_program(object(), "SRV-RESTART", credentials, SHUTDOWN_PATH, "/r /t 10", 60)
+    assert await boot_time() > before

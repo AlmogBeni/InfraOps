@@ -1,4 +1,4 @@
-# InfraOps — handoff (2026-10-11)
+# InfraOps — handoff (2026-10-12)
 
 Paste this file into a new conversation, or ask Claude to read `HANDOFF.md`, to continue.
 
@@ -22,7 +22,7 @@ Repo: github.com/AlmogBeni/InfraOps. Work happens directly on `main`. The user t
 - Access is controlled by RBAC.
 - Never edit existing migrations; add new forward ones.
 
-## How provisioning works (main @ `14fe6de`)
+## How provisioning works
 
 Every VM is created empty, and Windows Server is installed unattended from an ISO. There is no other source (OVF/OVA support was removed) and no human gate anywhere. Jobs either complete or fail with an actionable error. The only manual prerequisite is placing the ISO on a datastore.
 
@@ -66,8 +66,9 @@ All three CDs are temporary.
 
 **Cleanup**, in order:
 1. delete the answer CD and its file;
-2. disconnect the ISOs and set the boot order to disk only;
-3. scrub the cached answer files and AutoLogon values in the guest. This step fails the stage, retryably, if it can't run.
+2. disconnect the ISOs and set the boot order to disk only. A vCenter question InfraOps cannot answer stops the stage with its text, because it freezes the VM;
+3. scrub the cached answer files and AutoLogon values in the guest. This step fails the stage, retryably, if it can't run;
+4. restart Windows once. Tools was installed with its restart suppressed, so its mouse, display and network drivers only load now. The restart counts as done when Windows reports a new `LastBootUpTime`. The `reboot_guest` and `wait_guest_ready` stages use the same check.
 
 **Data disks** are hot-added after installation, then brought online and formatted NTFS (`Data1`, `Data2`, …).
 
@@ -101,32 +102,30 @@ All three CDs are temporary.
 - `0c27462` Desktop Experience editions; ESXi transfer errors name the host and cause; HTTPS preflight to the ESXi hosts; cleanup releases the ISOs first.
 - `a079e94` First-logon Tools script on the answer CD accepts `setup64.exe` or `setup.exe`, shows progress and logs.
 - `14fe6de` "Install Windows" watches the VM live instead of a fixed timeout; the Tools script is copied to disk during specialize.
+- `5b19109` Automatic storage uses **Settings → Preferred datastores**.
+- *(latest)* Guest file uploads fixed (`vim.vm.guest.FileManager.FileAttributes`); a restart after cleanup loads the Tools drivers; guest operation errors name the vSphere fault; a test checks that every pyVmomi name in `app/` exists.
 
 ## Status of real-vCenter testing
 
 - **Confirmed working:**
   - the ISO boots unattended under EFI;
   - disk partitioning;
-  - Windows Server 2025 Standard installs with the Desktop Experience;
+  - Windows Server 2025 Standard installs with the Desktop Experience, fast on a preferred datastore;
   - AutoLogon reaches the desktop;
+  - VMware Tools installs at first logon and "Install Windows" passes;
   - the ESXi HTTPS preflight check passes.
-- **Last run (INFRAOPS-TEST, before `14fe6de`) was extremely slow:** still at "Installing 42%" after 2 h. The old fixed limit failed it, and cleanup removed the answer CD, so that VM can never get Tools. It must be deleted.
-- **Not yet seen working on real vCenter:**
-  - Tools installation at first logon;
-  - everything after it: data disks, static IP, domain join, certificates, applications, final validation.
+- **Last run failed at "Remove installation media"** with "Guest operation 'upload-file' failed". Cause: `upload_file` built `vim.vm.guest.FileAttributes()`, a type pyVmomi doesn't have, so every guest file upload raised `AttributeError` before reaching the VM. No guest step had ever run against real vCenter. The file-exists check had a similar bad name (`vim.fault.FileNotFoundFault`). Both are fixed. `tests/test_pyvmomi_references.py` now resolves every `vim.*`/`vmodl.*` name in `app/` against the installed pyVmomi.
+- **The console had no mouse or keyboard** after Tools installed. Expected cause: Tools' drivers wait for a restart, which InfraOps suppressed. Cleanup now restarts Windows once.
+- **Not yet seen working on real vCenter:** everything after cleanup, that is data disks, static IP, domain join, certificates, applications and final validation.
 
 ## Next steps
 
-0. **Slow installs come from InfraOps' old automatic datastore choice** (most free space, a slow tier). The user confirmed a manual install on the right datastore was much faster. Fix: configure **Settings → Preferred datastores** with the fast datastores, or pick the datastore in the wizard.
-1. **Before the next run:**
-   - deploy `14fe6de`;
-   - delete the INFRAOPS-TEST VM;
-   - in **Settings → Default operation time limits** raise "Install Windows" if it still shows 120 (a saved value overrides the new 360 default);
-   - create the `domain-join` credential if it doesn't exist.
-2. **During the run,** read the stage's live status.
-   - If it fails as idle, use the console screenshot.
-   - If the desktop shows without Tools, read `C:\Windows\Temp\infraops-firstlogon.log` and check what is at the Tools CD's root. An empty drive means the host doesn't provide the Tools ISO.
-3. **Investigate why Setup is so slow** on that host or datastore; 15–40 min is normal. The live CPU figure shows whether the VM is busy or starved.
+0. **Slow installs came from InfraOps' old automatic datastore choice** (most free space, a slow tier). Keep **Settings → Preferred datastores** filled with the fast datastores, or pick the datastore in the wizard.
+1. **Deploy the guest upload fix, then retry the failed "Remove installation media" stage** of the last job; no new VM is needed. The retry skips the answer CD and ISOs that are already gone, scrubs the answer file and restarts Windows. The job then continues with data disks, IP, domain join and the rest.
+   - If a guest step fails, the error now names the vSphere fault. For example, a missing privilege names `VirtualMachine.GuestOperations.*`.
+   - Create the `domain-join` credential if it doesn't exist.
+2. **If the mouse or keyboard is still missing after the restart:** check whether the VM shows a pending question in the vSphere Client, and read `C:\Windows\Temp\infraops-vmtools-msi.log`.
+3. **Optional:** Docker build speed-ups (pip and npm cache mounts, one shared backend image for migrate, backend and worker, a `backend/.dockerignore`). These were offered, but the user hasn't answered.
 4. **Manual end-to-end checklist** on real vCenter:
    - EFI with and without Secure Boot, and BIOS;
    - Server 2019, 2022 and 2025, Standard and Datacenter;
@@ -145,7 +144,7 @@ All three CDs are temporary.
   - `pytest`;
   - `pytest tests/integration` with `INFRAOPS_TEST_DATABASE_URL` (runtime role) and `INFRAOPS_MIGRATION_TEST_URL` (owner role connecting to the `postgres` DB);
   - frontend `npm run typecheck && npm test && npm run bundle`.
-- **Last results:** backend 354 passed, 7 skipped (DB-only); frontend 93 passed; bundle builds.
+- **Last results:** backend 380 passed, 7 skipped (DB-only); frontend 93 passed; bundle builds.
 - **Local PostgreSQL:** CI's database steps were last run against portable PostgreSQL 16 binaries in a session scratchpad, which is gone. Re-download them if needed and run on a private port.
 - **Golden answer files:** regenerate with `UPDATE_GOLDEN=1 pytest tests/test_windows_unattend.py -k golden`. Generated PowerShell can be checked locally with `[System.Management.Automation.Language.Parser]::ParseInput`, and answer ISOs with `Mount-DiskImage`.
 - **Files must be LF** (`.gitattributes` sets `eol=lf`). When editing through Python, write with `newline="\n"`.

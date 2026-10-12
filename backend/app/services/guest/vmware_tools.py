@@ -51,7 +51,7 @@ _TRANSFER_TIMEOUT_SECONDS = 60.0
 _RUNNER_GRACE_SECONDS = 30.0
 
 if HAS_PYVMOMI:
-    from pyVmomi import vim
+    from pyVmomi import vim, vmodl
 
 
 def _file_transfer_url(url: str, target: VCenterTarget) -> str:
@@ -169,9 +169,34 @@ def _wrap(operation: str, exc: Exception, *, retryable: bool = True) -> InfraOpe
             technical_detail=technical,
             retryable=True,
         )
+    if HAS_PYVMOMI and isinstance(exc, vim.fault.NoPermission):
+        privilege = getattr(exc, "privilegeId", None) or "a guest operations privilege"
+        return InfraOperationError(
+            f"The vCenter service account may not run the '{operation}' guest operation.",
+            reason=f"vCenter denied the privilege {privilege} on this VM.",
+            recommended_action=(
+                "Give the service account's role Virtual machine > Guest operations (modification, "
+                "program execution and queries) on the VM folder, then retry this stage."
+            ),
+            technical_detail=technical,
+            retryable=True,
+        )
+    if HAS_PYVMOMI and isinstance(exc, vmodl.MethodFault):
+        # Name the fault vCenter returned; a pending VM question, a running
+        # task or a powered-off VM all block guest operations.
+        return InfraOperationError(
+            f"vCenter refused the '{operation}' guest operation.",
+            reason=f"{type(exc).__name__.rsplit('.', 1)[-1]}: {getattr(exc, 'msg', None) or exc}",
+            recommended_action=(
+                "Check the VM in vCenter for a question waiting for an answer, a running task or a "
+                "powered-off state, then retry this stage."
+            ),
+            technical_detail=technical,
+            retryable=True,
+        )
     return InfraOperationError(
         f"Guest operation '{operation}' failed.",
-        reason="An unexpected error occurred while communicating with the VM.",
+        reason=f"An unexpected error occurred while communicating with the VM: {technical}",
         recommended_action="Verify VM and VMware Tools health, then retry.",
         technical_detail=technical,
         retryable=retryable,
@@ -354,7 +379,7 @@ class VMwareToolsGuestOperations(GuestOperations):
 
         def prepare_url():
             return file_manager.InitiateFileTransferToGuest(
-                vm, auth, guest_path, vim.vm.guest.FileAttributes(), len(content), True
+                vm, auth, guest_path, vim.vm.guest.FileManager.FileAttributes(), len(content), True
             )
 
         try:
@@ -418,6 +443,6 @@ class VMwareToolsGuestOperations(GuestOperations):
             result = await asyncio.to_thread(listing)
             return bool(getattr(result, "files", None))
         except Exception as exc:  # noqa: BLE001
-            if HAS_PYVMOMI and isinstance(exc, vim.fault.FileNotFoundFault):
+            if HAS_PYVMOMI and isinstance(exc, vim.fault.FileNotFound):
                 return False
             raise _wrap("file-exists", exc) from exc
