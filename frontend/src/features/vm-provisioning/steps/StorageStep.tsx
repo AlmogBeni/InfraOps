@@ -58,7 +58,7 @@ export function StorageStep({ embedded = false }: { embedded?: boolean }) {
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-700">Storage placement</p>
             <h2>Datastore selection</h2>
-            <p>Choose automatic capacity-aware placement or pin all requested disks to a datastore.</p>
+            <p>Use the administrators' preferred datastores or pin all requested disks to a datastore.</p>
           </div>
           <Badge tone="neutral">{accessibleItems.length} accessible datastore(s)</Badge>
         </div>
@@ -94,7 +94,7 @@ export function StorageStep({ embedded = false }: { embedded?: boolean }) {
                 {
                   value: 'auto',
                   label: 'Automatic placement',
-                  description: 'Use the accessible datastore with the most available capacity.',
+                  description: 'Use the first preferred datastore (Settings) with room for every disk.',
                   disabled: noAccessibleDatastores,
                 },
                 {

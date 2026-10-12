@@ -105,6 +105,9 @@ address to evade login rate limits or falsify audit records.
   detection rule, timeout, reboot behavior, and dependencies.
 - Public root/intermediate CA certificates and their intended LocalMachine stores. Private
   keys are neither needed nor accepted.
+- **Preferred datastores** (Settings): the fast datastores, in priority order, for requests that
+  leave storage on automatic. Without them InfraOps picks the datastore with the most free
+  space, often a slow capacity tier, and Windows Setup can take hours instead of minutes.
 - Naming policy, job timeouts, reverse-proxy HTTPS origin, backup/retention policy, and a
   decision on whether the existing ICMP/DNS/vCenter IP conflict checks are sufficient.
 

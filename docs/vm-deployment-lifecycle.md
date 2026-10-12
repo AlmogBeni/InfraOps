@@ -58,7 +58,10 @@ and final verification passed.
 submit -> server-side preflight (blocking failures create nothing)
 validate request and live inventory (ISO, placement, capacity, network)
   -> create_vm: CreateVM_Task, powered off — LSI Logic SAS + OS disk only,
-       Windows ISO on SATA 0:0, host VMware Tools ISO on SATA 0:1, CD-then-disk boot
+       Windows ISO on SATA 0:0, host VMware Tools ISO on SATA 0:1, CD-then-disk boot;
+       on the datastore chosen in the wizard, or the first preferred datastore
+       (Settings → Preferred datastores) with room for every disk — recorded in the
+       stage output
   -> configure_hardware: CPU and memory
   -> attach_network_adapter: VMXNET3/E1000E on the selected port group
   -> prepare_unattended_install: answer ISO (Autounattend.xml) uploaded and attached as a

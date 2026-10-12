@@ -84,6 +84,12 @@ All three CDs are temporary.
 - ESXi hosts that cannot be reached over HTTPS;
 - placement, capacity, IP-conflict, credential, certificate, application and installer-root problems.
 
+**Storage placement.** The datastore chosen in the wizard is used as is. Automatic storage uses the first datastore of **Settings → Preferred datastores** that the compute target can reach and that has room for every disk.
+- Without a list, it falls back to the most free space, and preflight warns.
+- If no preferred datastore has room, preflight blocks.
+- `create_vm` records the chosen datastore in its output.
+- The logic is in `backend/app/services/provisioning/placement.py`.
+
 **Credentials**, including domain join and product keys, live in **Administration → Credentials**, encrypted in PostgreSQL. `.env` variables such as `SECRETS_DOMAIN_JOIN_USERNAME` are not read by anything. The wizard preselects a credential named `domain-join`.
 
 **Migration `0009_iso_only_unattended`** removed the ACTION_REQUIRED and WAITING states and renamed the stage clone_vm to create_vm. Jobs from removed workflows stay read-only and cannot be retried.
@@ -111,6 +117,7 @@ All three CDs are temporary.
 
 ## Next steps
 
+0. **Slow installs come from InfraOps' old automatic datastore choice** (most free space, a slow tier). The user confirmed a manual install on the right datastore was much faster. Fix: configure **Settings → Preferred datastores** with the fast datastores, or pick the datastore in the wizard.
 1. **Before the next run:**
    - deploy `14fe6de`;
    - delete the INFRAOPS-TEST VM;

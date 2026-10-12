@@ -11,12 +11,15 @@ SETTING_VM_NAME_POLICY = "vm_name_policy_regex"
 SETTING_ALLOWED_INSTALLER_ROOTS = "allowed_installer_roots"
 SETTING_DEFAULT_TIMEOUTS = "default_timeouts"
 SETTING_ENVIRONMENT_LABEL = "environment_label"
+# Datastore names, in priority order, for requests that leave storage on automatic.
+SETTING_PREFERRED_DATASTORES = "preferred_datastores"
 
 DEFAULTS: dict[str, object] = {
     SETTING_VM_NAME_POLICY: "",
     SETTING_ALLOWED_INSTALLER_ROOTS: [],
     SETTING_DEFAULT_TIMEOUTS: {},
     SETTING_ENVIRONMENT_LABEL: "INTERNAL",
+    SETTING_PREFERRED_DATASTORES: [],
 }
 
 KNOWN_KEYS = set(DEFAULTS)

@@ -38,6 +38,7 @@ const platformSettings: PlatformSettingsOut = {
     guest_operations_minutes: 30,
   },
   environment_label: 'Production',
+  preferred_datastores: ['ALLFLASH-01'],
 }
 
 const vcenterCredential: SecretReferenceOut = {
@@ -154,6 +155,10 @@ describe('admin infrastructure and settings redesign', () => {
     fireEvent.change(repositoryRoots, { target: { value: '\\\\fileserver\\software\n' } })
     expect(repositoryRoots).toHaveValue('\\\\fileserver\\software\n')
 
+    // Priority order is kept; blank lines and padding are dropped on save.
+    const datastores = screen.getByRole('textbox', { name: 'Datastores for automatic placement' })
+    fireEvent.change(datastores, { target: { value: 'ALLFLASH-01\n\n  ALLFLASH-02  ' } })
+
     const environmentLabel = await screen.findByRole('textbox', { name: 'Workspace label' })
     fireEvent.change(environmentLabel, { target: { value: 'Staging' } })
     expect(saveButton).toBeEnabled()
@@ -164,6 +169,7 @@ describe('admin infrastructure and settings redesign', () => {
       allowed_installer_roots: platformSettings.allowed_installer_roots,
       default_timeouts: platformSettings.default_timeouts,
       environment_label: 'Staging',
+      preferred_datastores: ['ALLFLASH-01', 'ALLFLASH-02'],
     }))
   })
 })

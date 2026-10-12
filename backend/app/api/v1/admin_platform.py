@@ -30,6 +30,7 @@ from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
     SETTING_DEFAULT_TIMEOUTS,
     SETTING_ENVIRONMENT_LABEL,
+    SETTING_PREFERRED_DATASTORES,
     SETTING_VM_NAME_POLICY,
     load_effective,
     save_platform_setting,
@@ -153,6 +154,7 @@ def _settings_out(effective: dict[str, object]) -> PlatformSettingsOut:
             guest_operations_minutes=int(timeouts.get("guest_operations_minutes", 10)),
         ),
         environment_label=str(effective.get(SETTING_ENVIRONMENT_LABEL) or "INTERNAL"),
+        preferred_datastores=[str(name) for name in effective.get(SETTING_PREFERRED_DATASTORES) or []],
     )
 
 

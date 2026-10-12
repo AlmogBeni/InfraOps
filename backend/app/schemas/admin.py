@@ -118,6 +118,8 @@ class PlatformSettingsOut(BaseModel):
     allowed_installer_roots: list[str]
     default_timeouts: DefaultTimeouts
     environment_label: str
+    # Datastore names, in priority order, for automatic storage placement.
+    preferred_datastores: list[str] = Field(default_factory=list)
 
 
 class PlatformSettingsUpdate(BaseModel):
@@ -127,6 +129,19 @@ class PlatformSettingsUpdate(BaseModel):
     allowed_installer_roots: list[str] | None = Field(default=None, max_length=20)
     default_timeouts: DefaultTimeouts | None = None
     environment_label: str | None = Field(default=None, max_length=40)
+    preferred_datastores: list[str] | None = Field(default=None, max_length=30)
+
+    @field_validator("preferred_datastores")
+    @classmethod
+    def _datastore_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        from app.services.provisioning.placement import normalize_preferred
+
+        names = normalize_preferred(value)
+        if any(len(name) > 80 for name in names):
+            raise ValueError("Datastore names are at most 80 characters.")
+        return names
 
     @field_validator("vm_name_policy_regex")
     @classmethod

@@ -19,6 +19,7 @@ from app.models.jobs import (
     StepStatus,
     VMwareToolsStatus,
 )
+from app.schemas.infrastructure import DatastoreOut
 from app.schemas.provisioning import DiskProvisioning, DiskSpec, ProvisioningRequest
 from app.services.guest.base import CommandResult
 from app.services.vmware.base import PowerStateInfo, VmOwnership, VmRef
@@ -401,26 +402,88 @@ async def test_existing_vm_not_created_by_this_job_is_never_adopted(owner) -> No
     vmware.create_vm.assert_not_awaited()
 
 
-async def test_vm_is_created_with_only_its_os_disk_and_the_ownership_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+def _datastore(id_: str, name: str, free_gb: float, accessible: bool = True) -> DatastoreOut:
+    return DatastoreOut(id=id_, name=name, type="VMFS", capacity_gb=4000, free_gb=free_gb,
+                        usage_percent=50, accessible=accessible)
+
+
+DATASTORES = [
+    _datastore("datastore-slow", "CAPACITY-NFS", 9000),  # most free space, slow tier
+    _datastore("datastore-fast", "ALLFLASH-01", 1200),
+    _datastore("datastore-full", "ALLFLASH-02", 100),
+]
+
+
+def create_context(monkeypatch: pytest.MonkeyPatch, request: ProvisioningRequest, preferred: list[str]):
     from app.audit import recorder as recorder_module
+    from app.workers import stages
 
     monkeypatch.setattr(recorder_module, "record_audit", lambda _db: SimpleNamespace(record=AsyncMock()))
+    monkeypatch.setattr(stages, "load_effective", AsyncMock(return_value={"preferred_datastores": preferred}))
     vmware = SimpleNamespace(
         find_vm_ownership=AsyncMock(return_value=None),
         create_vm=AsyncMock(return_value=VmRef(id="vm-new", name="SERVER-PROD-042")),
+        get_datastores=AsyncMock(return_value=DATASTORES),
     )
-    ctx = context(vmware, with_disks(80, 200, 50))
+    ctx = context(vmware, request)
     ctx.actor_username = "operator"
+    return ctx
+
+
+async def test_vm_is_created_with_only_its_os_disk_and_the_ownership_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = create_context(monkeypatch, with_disks(80, 200, 50), preferred=["ALLFLASH-01"])
 
     outcome = await stage_create_vm(ctx)
 
-    spec = vmware.create_vm.await_args.args[1]
+    spec = ctx.vmware.create_vm.await_args.args[1]
     assert spec.job_id == str(JOB_ID)
     assert spec.iso_id == "iso-corp-windows-2025"
     # Setup sees exactly one disk, so DiskID 0 is always the OS disk.
     assert spec.os_disk.size_gb == 80
     assert outcome.artifacts["owner_job_id"] == str(JOB_ID)
-    assert "2 data disk(s) are added after Windows is installed" in outcome.output
+    assert "2 data disk(s) are added on the same datastore after Windows is installed" in outcome.output
+
+
+async def test_automatic_storage_uses_the_first_preferred_datastore_with_room(monkeypatch) -> None:
+    # ALLFLASH-02 is first but too small for 330 GB; the slow tier is never used.
+    ctx = create_context(monkeypatch, with_disks(80, 200, 50), preferred=["allflash-02", "ALLFLASH-01"])
+
+    outcome = await stage_create_vm(ctx)
+
+    assert ctx.vmware.create_vm.await_args.args[1].datastore_id == "datastore-fast"
+    assert outcome.artifacts["datastore_id"] == "datastore-fast"
+    assert "Datastore: ALLFLASH-01 (preferred datastore 2 of 2, 1200 GB free)." in outcome.output
+
+
+async def test_without_preferred_datastores_the_most_free_space_still_decides(monkeypatch) -> None:
+    ctx = create_context(monkeypatch, with_disks(100), preferred=[])
+
+    outcome = await stage_create_vm(ctx)
+
+    assert ctx.vmware.create_vm.await_args.args[1].datastore_id == "datastore-slow"
+    assert "no preferred datastores are configured" in outcome.output
+
+
+async def test_no_preferred_datastore_with_room_stops_before_creating_anything(monkeypatch) -> None:
+    ctx = create_context(monkeypatch, with_disks(2000), preferred=["ALLFLASH-01", "ALLFLASH-02", "GONE"])
+
+    with pytest.raises(InfraOperationError, match="No datastore can take this VM") as caught:
+        await stage_create_vm(ctx)
+
+    assert "ALLFLASH-01 has 1200 GB free" in caught.value.reason
+    assert "GONE is not connected to this compute target" in caught.value.reason
+    ctx.vmware.create_vm.assert_not_awaited()
+
+
+async def test_a_datastore_chosen_in_the_wizard_wins(monkeypatch) -> None:
+    request = with_disks(100)
+    request.hardware.disks[0].datastore_id = "datastore-full"
+    ctx = create_context(monkeypatch, request, preferred=["ALLFLASH-01"])
+
+    outcome = await stage_create_vm(ctx)
+
+    assert ctx.vmware.create_vm.await_args.args[1].datastore_id == "datastore-full"
+    assert "ALLFLASH-02 (selected in the request)" in outcome.output
 
 
 async def test_hardware_stage_sets_only_cpu_and_memory() -> None:

@@ -411,6 +411,8 @@ export interface PlatformSettingsOut {
   allowed_installer_roots: string[]
   default_timeouts: DefaultTimeouts
   environment_label: string
+  /** Datastore names, in priority order, for requests that leave storage on automatic. */
+  preferred_datastores: string[]
 }
 
 export interface RoleOut {

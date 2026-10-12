@@ -12,7 +12,9 @@ the ISO on a datastore of the target datacenter.
    for retail or MAK media, a stored product key (volume-license and evaluation media need
    none).
 3. **Configuration** — VM name, CPU, memory, firmware (UEFI with optional Secure Boot, or
-   BIOS), the OS disk and up to seven data disks, storage placement, Windows computer name,
+   BIOS), the OS disk and up to seven data disks, storage placement (a datastore, or automatic:
+   the first datastore of **Settings → Preferred datastores** with room for every disk; without
+   that list, the one with the most free space), Windows computer name,
    time zone, language, keyboard, Windows Server edition (Standard or Datacenter, always with
    the Desktop Experience), certificate packages and applications.
 4. **Administrator** — the encrypted local administrator credential Windows Setup creates
@@ -25,7 +27,9 @@ the ISO on a datastore of the target datacenter.
 **Create virtual machine** submits immediately with an idempotency key; there is no
 confirmation dialog and no mandatory dry run. The server runs the complete preflight on
 every submission and creates nothing when a blocking check fails; the wizard then lists the
-blocking checks inline. Preflight covers the vCenter connection, placement, capacity, the
+blocking checks inline. Preflight covers the vCenter connection, placement, the datastore the
+VM will use (it blocks when no preferred datastore has room and warns while no preferred list
+is configured), capacity, the
 ISO (present, reachable from the compute target, and Windows Server media), HTTPS to the ESXi
 hosts (guest file transfers go there directly), the product key, credentials, VM name and
 ownership, static-IP conflicts, certificates, applications and installer-root policy.

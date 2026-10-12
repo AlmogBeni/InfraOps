@@ -47,6 +47,7 @@ from app.services.guest.scripts import HOSTNAME_PATH
 from app.services.guest.scripts import ps_quote as ps_single_quote
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
+    SETTING_PREFERRED_DATASTORES,
     SETTING_VM_NAME_POLICY,
     load_effective,
 )
@@ -513,8 +514,39 @@ def _definition_from_orm(app: Application) -> ApplicationDefinition:
 
 
 def _os_disk_datastore(ctx: JobRunContext) -> str | None:
+    """The VM's datastore: the one in the request, else the automatic choice
+    recorded by create_vm."""
     disks = ctx.request.hardware.disks
-    return disks[0].datastore_id or next((d.datastore_id for d in disks if d.datastore_id), None)
+    requested = disks[0].datastore_id or next((d.datastore_id for d in disks if d.datastore_id), None)
+    if requested:
+        return requested
+    create = ctx.steps_by_key.get("create_vm")
+    return ((create.artifacts or {}).get("datastore_id") if create is not None else None) or None
+
+
+async def _placement_datastore(ctx: JobRunContext) -> tuple[str, str]:
+    """(datastore id, why) for the VM. Every disk lives on the VM's datastore."""
+    from app.services.provisioning.placement import choose_automatic_datastore
+
+    r = ctx.request
+    datastores = await ctx.vmware.get_datastores(ctx.target, r.compute.cluster_id)
+    requested = _os_disk_datastore(ctx)
+    if requested:
+        selected = next((entry for entry in datastores if entry.id == requested), None)
+        return requested, f"{selected.name if selected else requested} (selected in the request)"
+    rows = await load_effective(ctx.db)
+    choice = choose_automatic_datastore(datastores, rows.get(SETTING_PREFERRED_DATASTORES), r.total_disk_gb)
+    if choice.datastore is None:
+        raise InfraOperationError(
+            "No datastore can take this VM.",
+            reason=choice.detail,
+            recommended_action=(
+                "Free space on a preferred datastore, add one under Settings → Preferred datastores, "
+                "or submit a new request with a datastore chosen in the wizard."
+            ),
+            retryable=True,
+        )
+    return choice.datastore.id, choice.detail
 
 
 # ── stage handlers ───────────────────────────────────────────────────────────
@@ -731,6 +763,7 @@ async def stage_create_vm(ctx: JobRunContext) -> StageOutcome:
         )
 
     os_disk = r.hardware.disks[0]
+    datastore_id, placement = await _placement_datastore(ctx)
     spec = VmCreateSpec(
         vm_name=r.vm.name,
         datacenter_id=r.compute.datacenter_id,
@@ -740,7 +773,7 @@ async def stage_create_vm(ctx: JobRunContext) -> StageOutcome:
         cluster_id=r.compute.cluster_id,
         host_id=r.compute.host_id,
         resource_pool_id=r.compute.resource_pool_id,
-        datastore_id=_os_disk_datastore(ctx),
+        datastore_id=datastore_id,
         cpu=r.hardware.cpu,
         memory_mb=r.hardware.memory_mb,
         firmware=r.hardware.firmware,
@@ -764,16 +797,25 @@ async def stage_create_vm(ctx: JobRunContext) -> StageOutcome:
             "requested_fqdn": r.effective_fqdn,
             "iso_id": r.guest.iso_id,
             "vm_id": vm_ref.id,
+            "datastore_id": datastore_id,
         },
     )
     data_disks = len(r.hardware.disks) - 1
     return StageOutcome(
         output=(
             f"Created '{vm_ref.name}' powered off with its {os_disk.size_gb} GB OS disk, the Windows "
-            "installation ISO and the host's VMware Tools ISO."
-            + (f" {data_disks} data disk(s) are added after Windows is installed." if data_disks else "")
+            "installation ISO and the host's VMware Tools ISO.\n"
+            f"Datastore: {placement}."
+            + (f"\n{data_disks} data disk(s) are added on the same datastore after Windows is installed."
+               if data_disks else "")
         ),
-        artifacts={"vm_id": vm_ref.id, "vm_name": vm_ref.name, "owner_job_id": job_marker},
+        artifacts={
+            "vm_id": vm_ref.id,
+            "vm_name": vm_ref.name,
+            "owner_job_id": job_marker,
+            "datastore_id": datastore_id,
+            "datastore": placement,
+        },
     )
 
 

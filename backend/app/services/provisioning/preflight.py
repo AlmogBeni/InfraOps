@@ -36,8 +36,10 @@ from app.services.network.conflict import (
     run_conflict_check,
 )
 from app.services.network.validation import validate_static_ipv4
+from app.services.provisioning.placement import choose_automatic_datastore
 from app.services.settings_store import (
     SETTING_ALLOWED_INSTALLER_ROOTS,
+    SETTING_PREFERRED_DATASTORES,
     SETTING_VM_NAME_POLICY,
     load_effective,
 )
@@ -121,7 +123,7 @@ class PreflightValidator:
 
         # ── Infrastructure discovery ─────────────────────────────────────────
         if target is not None:
-            await self._check_infrastructure(request, target, add)
+            await self._check_infrastructure(request, target, add, settings_rows)
 
         # ── VM name policy & uniqueness ──────────────────────────────────────
         policy = str(settings_rows.get(SETTING_VM_NAME_POLICY) or "")
@@ -232,7 +234,9 @@ class PreflightValidator:
 
     # ── section helpers ──────────────────────────────────────────────────────
 
-    async def _check_infrastructure(self, request: ProvisioningRequest, target: VCenterTarget, add) -> None:
+    async def _check_infrastructure(
+        self, request: ProvisioningRequest, target: VCenterTarget, add, settings_rows: dict
+    ) -> None:
         try:
             datacenters = {dc.id: dc for dc in await self._vmware.get_datacenters(target)}
             dc = datacenters.get(request.compute.datacenter_id)
@@ -280,25 +284,7 @@ class PreflightValidator:
                     add("resource_pool", "Resource pool exists", CheckStatus.PASS)
 
             datastores = {d.id: d for d in await self._vmware.get_datastores(target, cluster.id)}
-            total_gb = request.total_disk_gb
-            explicit_ids = {disk.datastore_id for disk in request.hardware.disks if disk.datastore_id}
-            if explicit_ids:
-                missing = [ds_id for ds_id in explicit_ids if ds_id not in datastores]
-                if missing:
-                    add("datastore", "Datastore availability", CheckStatus.FAIL,
-                        f"Datastore(s) not found: {', '.join(missing)}")
-                else:
-                    add("datastore", "Datastore availability", CheckStatus.PASS,
-                        ", ".join(datastores[ds_id].name for ds_id in explicit_ids))
-            candidates = [d for d in datastores.values() if d.accessible]
-            best_free = max((d.free_gb for d in candidates), default=0.0)
-            if best_free < total_gb:
-                add("datastore_capacity", "Datastore capacity", CheckStatus.FAIL,
-                    f"The request requires approximately {total_gb} GB but the largest "
-                    f"accessible datastore has {best_free:.0f} GB free.")
-            else:
-                add("datastore_capacity", "Datastore has sufficient capacity",
-                    CheckStatus.PASS, f"{total_gb} GB required")
+            self._check_storage(request, datastores, settings_rows, add)
 
             networks = {n.id: n for n in await self._vmware.get_networks(target, dc.id)}
             network = networks.get(request.network.network_id)
@@ -331,6 +317,41 @@ class PreflightValidator:
                     "Infrastructure inventory could not be loaded. Try again.",
                 ),
             )
+
+    @staticmethod
+    def _check_storage(request: ProvisioningRequest, datastores: dict, settings_rows: dict, add) -> None:
+        """Every disk lives on the VM's datastore: the selected one, or the
+        automatic choice made from the preferred list."""
+        total_gb = request.total_disk_gb
+        selected_id = next((disk.datastore_id for disk in request.hardware.disks if disk.datastore_id), None)
+        if selected_id is not None:
+            selected = datastores.get(selected_id)
+            if selected is None or not selected.accessible:
+                add("datastore", "Selected datastore available", CheckStatus.FAIL,
+                    "The selected datastore is not accessible from this compute target.")
+            elif selected.free_gb < total_gb:
+                add("datastore_capacity", "Selected datastore capacity", CheckStatus.FAIL,
+                    f"{selected.name} has {selected.free_gb:.0f} GB free; the VM needs about {total_gb} GB.")
+            else:
+                add("datastore_capacity", "Selected datastore has room", CheckStatus.PASS,
+                    f"{selected.name} ({selected.free_gb:.0f} GB free, {total_gb} GB needed)")
+            return
+
+        choice = choose_automatic_datastore(
+            datastores.values(), settings_rows.get(SETTING_PREFERRED_DATASTORES), total_gb
+        )
+        if choice.datastore is None:
+            add("datastore_capacity", "Automatic storage placement", CheckStatus.FAIL,
+                choice.detail + " Choose a datastore in the wizard"
+                + (" or add one under Settings → Preferred datastores." if choice.preferred_configured else "."))
+            return
+        add("datastore_capacity", "Automatic storage placement", CheckStatus.PASS, choice.detail)
+        if not choice.preferred_configured:
+            add("preferred_datastores", "Preferred datastores configured", CheckStatus.WARN,
+                "Automatic placement uses the datastore with the most free space, which is often a "
+                "slow capacity tier. List the fast datastores under Settings → Preferred datastores, "
+                "or choose a datastore in the wizard.",
+                blocking=False)
 
     async def _check_host_file_transfers(self, target: VCenterTarget, host_names: list[str], add) -> None:
         """VMware Tools file transfers go directly to the ESXi host that runs the VM."""

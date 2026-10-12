@@ -334,7 +334,7 @@ export function ReviewStep() {
           icon={HardDrive}
           title="Storage"
           rows={[
-            ['Placement', data.storage_mode === 'auto' ? 'Automatic capacity-aware placement' : nameOf(datastores, data.datastore_id)],
+            ['Placement', data.storage_mode === 'auto' ? 'Automatic: first preferred datastore with room' : nameOf(datastores, data.datastore_id)],
             ...data.disks.map((disk, index) => [
               index === 0 ? 'OS disk' : `Data disk ${index}`,
               `${disk.size_gb} GB · ${disk.provisioning === 'thin' ? 'Thin provisioned' : 'Thick provisioned'}${index === 0 ? '' : ' · NTFS volume'}`,

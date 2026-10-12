@@ -3,6 +3,7 @@ import {
   Clock3,
   Code2,
   FolderLock,
+  HardDrive,
   RotateCcw,
   Save,
   ShieldCheck,
@@ -144,6 +145,9 @@ export function SettingsPage() {
           .filter(Boolean),
         default_timeouts: payload.default_timeouts,
         environment_label: payload.environment_label,
+        preferred_datastores: payload.preferred_datastores
+          .map((name) => name.trim())
+          .filter(Boolean),
       }),
     onMutate: () => setSaved(false),
     onSuccess: (updated) => {
@@ -162,6 +166,7 @@ export function SettingsPage() {
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(settings.data)
   const installerRootCount = draft.allowed_installer_roots.filter((root) => root.trim()).length
+  const preferredDatastoreCount = draft.preferred_datastores.filter((name) => name.trim()).length
   const validation = validatePlatformSettings(draft)
 
   function resetDraft() {
@@ -240,6 +245,25 @@ export function SettingsPage() {
               <Textarea id="setting-roots" rows={5} className="font-mono text-xs" placeholder={'\\\\fileserver\\software'} value={draft.allowed_installer_roots.join('\n')} onChange={(event) => setDraft({ ...draft, allowed_installer_roots: event.target.value.split('\n') })} />
             </FormRow>
           </div>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
+        icon={HardDrive}
+        eyebrow="Storage placement"
+        title="Preferred datastores"
+        description="Requests that leave storage on automatic go to the first datastore in this list that the compute target can reach and that has room for every disk. If none has room, the request is blocked at submit."
+        aside={<Badge tone={preferredDatastoreCount > 0 ? 'success' : 'warning'}>{preferredDatastoreCount > 0 ? `${preferredDatastoreCount} preferred` : 'Most free space'}</Badge>}
+      >
+        <div className="rounded-2xl border border-[#dfe5df] bg-[#f9fbf8] p-4 sm:p-5">
+          <FormRow
+            label="Datastores for automatic placement"
+            htmlFor="setting-datastores"
+            hint="One datastore name per line, fastest first, exactly as shown in vCenter. Leave empty to use the datastore with the most free space, which is often a slow capacity tier."
+            className="mb-0"
+          >
+            <Textarea id="setting-datastores" rows={5} className="font-mono text-xs" placeholder={'ALLFLASH-01\nALLFLASH-02'} value={draft.preferred_datastores.join('\n')} onChange={(event) => setDraft({ ...draft, preferred_datastores: event.target.value.split('\n') })} />
+          </FormRow>
         </div>
       </SettingsSection>
 
